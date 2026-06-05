@@ -1,0 +1,242 @@
+{
+  "project": {
+    "name": "Wehunt Preserve; Davidson Homes",
+    "location": "Braselton, GA",
+    "description": "Hickory - C, Slab",
+    "design_conditions": {
+      "outdoor_cooling_db": 95.0,
+      "outdoor_heating_db": 18.0,
+      "indoor_cooling_db": 75.0,
+      "indoor_heating_db": 72.0,
+      "slab_delta_t": 27.0
+    },
+    "infiltration": {
+      "mode": "standard_ach"
+    },
+    "selected_system_tons": 3.5,
+    "selected_system_kw": 15.0,
+    "assemblies": {
+      "W1": {
+        "code": "W1",
+        "u_value": 0.077,
+        "description": "Above Grade 2x4 R-13 batt"
+      },
+      "D1": {
+        "code": "D1",
+        "u_value": 0.13,
+        "description": "Exterior Door R-7.7"
+      },
+      "D2": {
+        "code": "D2",
+        "u_value": 0.083,
+        "description": "Garage Door R-12"
+      },
+      "R1": {
+        "code": "R1",
+        "u_value": 0.026,
+        "description": "Flat Ceiling R-38 blown"
+      },
+      "F2": {
+        "code": "F2",
+        "u_value": 0.1,
+        "description": "Slab on grade"
+      },
+      "G1": {
+        "code": "G1",
+        "u_value": 0.35,
+        "shgc": 0.22,
+        "description": "Double insulated, blinds/draperies"
+      }
+    },
+    "levels": [
+      {
+        "name": "First Floor",
+        "floor_area": 1163,
+        "volume": 10467,
+        "selected_tons": 1.5,
+        "selected_kw": 8,
+        "cooling_cfm_divisor": 18.1,
+        "heating_cfm_divisor": 20.2,
+        "rooms": [
+          {
+            "name": "Foyer & Hall",
+            "cooling_btuh": 846,
+            "heating_btuh": 1451
+          },
+          {
+            "name": "Study",
+            "cooling_btuh": 1582,
+            "heating_btuh": 3053
+          },
+          {
+            "name": "Powder",
+            "cooling_btuh": 299,
+            "heating_btuh": 582
+          },
+          {
+            "name": "Family",
+            "cooling_btuh": 4111,
+            "heating_btuh": 3983
+          },
+          {
+            "name": "Breakfast",
+            "cooling_btuh": 1680,
+            "heating_btuh": 1896
+          },
+          {
+            "name": "Kitchen",
+            "cooling_btuh": 3461,
+            "heating_btuh": 2198
+          },
+          {
+            "name": "Mud",
+            "cooling_btuh": 395,
+            "heating_btuh": 796
+          },
+          {
+            "name": "Pantry",
+            "cooling_btuh": 155,
+            "heating_btuh": 213
+          }
+        ],
+        "line_items": [
+          {
+            "name": "Published envelope and internal cooling/heating subtotal less infiltration",
+            "kind": "manual",
+            "cooling_btuh": 11588.44,
+            "heating_btuh": 11658.92
+          },
+          {
+            "name": "Standard 0.25 ACH infiltration",
+            "kind": "infiltration"
+          }
+        ]
+      },
+      {
+        "name": "Second Floor",
+        "floor_area": 1500,
+        "volume": 12770,
+        "selected_tons": 2.0,
+        "selected_kw": 8,
+        "cooling_cfm_divisor": 18.1,
+        "heating_cfm_divisor": 20.13,
+        "rooms": [
+          {
+            "name": "Stairs",
+            "cooling_btuh": 580,
+            "heating_btuh": 844
+          },
+          {
+            "name": "Hallway",
+            "cooling_btuh": 594,
+            "heating_btuh": 516
+          },
+          {
+            "name": "Bed 2 WIC",
+            "cooling_btuh": 440,
+            "heating_btuh": 679
+          },
+          {
+            "name": "Bed 2",
+            "cooling_btuh": 1499,
+            "heating_btuh": 1855
+          },
+          {
+            "name": "Bath 2",
+            "cooling_btuh": 327,
+            "heating_btuh": 430
+          },
+          {
+            "name": "Bed 3",
+            "cooling_btuh": 1169,
+            "heating_btuh": 1141
+          },
+          {
+            "name": "Bed 3 WIC",
+            "cooling_btuh": 185,
+            "heating_btuh": 319
+          },
+          {
+            "name": "Bed 4 WIC",
+            "cooling_btuh": 275,
+            "heating_btuh": 532
+          },
+          {
+            "name": "Bed 4",
+            "cooling_btuh": 1440,
+            "heating_btuh": 1184
+          },
+          {
+            "name": "Bath 3",
+            "cooling_btuh": 286,
+            "heating_btuh": 377
+          },
+          {
+            "name": "Owners Bed",
+            "cooling_btuh": 3178,
+            "heating_btuh": 3201
+          },
+          {
+            "name": "Owners Bath",
+            "cooling_btuh": 706,
+            "heating_btuh": 1030
+          },
+          {
+            "name": "Owners WIC",
+            "cooling_btuh": 959,
+            "heating_btuh": 1394
+          },
+          {
+            "name": "Laundry",
+            "cooling_btuh": 1174,
+            "heating_btuh": 566
+          }
+        ],
+        "line_items": [
+          {
+            "name": "Published envelope and internal cooling/heating subtotal less infiltration",
+            "kind": "manual",
+            "cooling_btuh": 11656.7,
+            "heating_btuh": 11005.2
+          },
+          {
+            "name": "Standard 0.25 ACH infiltration",
+            "kind": "infiltration"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "first_floor": {
+      "cooling_subtotal": 12530,
+      "cooling_load": 13784,
+      "tons_min": 1.53,
+      "tons_selected": 1.5,
+      "cfm": 600,
+      "heating_subtotal": 14171,
+      "heat_loss": 16297,
+      "kw_min": 4.77,
+      "kw_selected": 8
+    },
+    "second_floor": {
+      "cooling_subtotal": 12806,
+      "cooling_load": 14087,
+      "tons_min": 1.57,
+      "tons_selected": 2.0,
+      "cfm": 800,
+      "heating_subtotal": 14070,
+      "heat_loss": 16180,
+      "kw_min": 4.74,
+      "kw_selected": 8
+    },
+    "whole_house": {
+      "sensible_cooling": 27870,
+      "heating": 32477,
+      "tons_min": 3.1,
+      "system_tons": 3.5,
+      "system_kw": 15.0,
+      "system_cfm": 1400
+    }
+  }
+}

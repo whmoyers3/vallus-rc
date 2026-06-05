@@ -1,0 +1,802 @@
+{
+  "project": {
+    "name": "Screenshot Cooling Load Test",
+    "location": "Screenshot Reference",
+    "description": "User-input-only screenshot test",
+    "design_conditions": {
+      "outdoor_cooling_db": 95,
+      "outdoor_heating_db": 18,
+      "indoor_cooling_db": 75,
+      "indoor_heating_db": 72,
+      "slab_delta_t": 27
+    },
+    "infiltration": {
+      "mode": "standard_ach"
+    },
+    "selected_system_tons": 3.0,
+    "selected_system_kw": 10.0,
+    "assemblies": {
+      "G1": {
+        "code": "G1",
+        "u_value": 0.33,
+        "shgc": 0.19,
+        "description": "Window from screenshot test inputs"
+      },
+      "D1": {
+        "code": "D1",
+        "u_value": 0.5,
+        "description": "Door"
+      },
+      "D2": {
+        "code": "D2",
+        "u_value": 0.5,
+        "description": "Door"
+      },
+      "W1": {
+        "code": "W1",
+        "u_value": 0.077,
+        "description": "Above grade wall"
+      },
+      "W2": {
+        "code": "W2",
+        "u_value": 0.067,
+        "description": "Grade wall"
+      },
+      "W3": {
+        "code": "W3",
+        "u_value": 0.053,
+        "description": "Attic / kneewall"
+      },
+      "R1": {
+        "code": "R1",
+        "u_value": 0.026,
+        "description": "Ceiling"
+      },
+      "R2": {
+        "code": "R2",
+        "u_value": 0.033,
+        "description": "Vaulted"
+      },
+      "F1": {
+        "code": "F1",
+        "u_value": 0.053,
+        "description": "Garage / crawl floor"
+      },
+      "F2": {
+        "code": "F2",
+        "u_value": 0.1,
+        "description": "Slab"
+      }
+    },
+    "levels": [
+      {
+        "name": "Main Level",
+        "floor_area": 2226,
+        "volume": 20718,
+        "selected_tons": 3.0,
+        "selected_kw": 10.0,
+        "cooling_cfm_divisor": 18.1,
+        "heating_cfm_divisor": 20.2,
+        "rooms": [
+          {
+            "name": "Foyer",
+            "floor_area": 76,
+            "volume": 684
+          },
+          {
+            "name": "Laundry",
+            "floor_area": 57,
+            "volume": 513
+          },
+          {
+            "name": "Sitting",
+            "floor_area": 95,
+            "volume": 855
+          },
+          {
+            "name": "Master Bed",
+            "floor_area": 211,
+            "volume": 1899
+          },
+          {
+            "name": "Master Bath",
+            "floor_area": 107,
+            "volume": 963
+          },
+          {
+            "name": "Master WIC",
+            "floor_area": 62,
+            "volume": 558
+          },
+          {
+            "name": "Great Rm",
+            "floor_area": 360,
+            "volume": 4320
+          },
+          {
+            "name": "Breakfast",
+            "floor_area": 99,
+            "volume": 891
+          },
+          {
+            "name": "Kitchen",
+            "floor_area": 135,
+            "volume": 1215
+          },
+          {
+            "name": "Bed 3",
+            "floor_area": 159,
+            "volume": 1431
+          },
+          {
+            "name": "Bath",
+            "floor_area": 55,
+            "volume": 495
+          },
+          {
+            "name": "Bed 2",
+            "floor_area": 184,
+            "volume": 1656
+          },
+          {
+            "name": "Dining & Hallway",
+            "floor_area": 230,
+            "volume": 2070
+          },
+          {
+            "name": "Bonus & Stairs",
+            "floor_area": 396,
+            "volume": 3168
+          }
+        ],
+        "line_items": [
+          {
+            "name": "G1 Northeast window",
+            "kind": "glass",
+            "room_name": "Bath",
+            "assembly": "G1",
+            "area": 6,
+            "direction": "NE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 Southeast window",
+            "kind": "glass",
+            "room_name": "Bonus & Stairs",
+            "assembly": "G1",
+            "area": 15,
+            "direction": "SE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 Southwest window",
+            "kind": "glass",
+            "room_name": "Sitting",
+            "assembly": "G1",
+            "area": 36,
+            "direction": "SW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 Southwest window",
+            "kind": "glass",
+            "room_name": "Master Bed",
+            "assembly": "G1",
+            "area": 36,
+            "direction": "SW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 Northwest window",
+            "kind": "glass",
+            "room_name": "Master Bath",
+            "assembly": "G1",
+            "area": 18,
+            "direction": "NW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 Northwest window",
+            "kind": "glass",
+            "room_name": "Breakfast",
+            "assembly": "G1",
+            "area": 36,
+            "direction": "NW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 Northwest window",
+            "kind": "glass",
+            "room_name": "Bed 3",
+            "assembly": "G1",
+            "area": 18,
+            "direction": "NW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 shaded window",
+            "kind": "glass",
+            "room_name": "Foyer",
+            "assembly": "G1",
+            "area": 8.338,
+            "direction": "Shaded",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 shaded window",
+            "kind": "glass",
+            "room_name": "Great Rm",
+            "assembly": "G1",
+            "area": 33,
+            "direction": "Shaded",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 shaded window",
+            "kind": "glass",
+            "room_name": "Bed 2",
+            "assembly": "G1",
+            "area": 36,
+            "direction": "Shaded",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "G1 shaded window",
+            "kind": "glass",
+            "room_name": "Dining & Hallway",
+            "assembly": "G1",
+            "area": 36,
+            "direction": "Shaded",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "D1 Door",
+            "kind": "opaque",
+            "room_name": "Foyer",
+            "assembly": "D1",
+            "area": 25.01,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "D1 Door",
+            "kind": "opaque",
+            "room_name": "Great Rm",
+            "assembly": "D1",
+            "area": 5,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "D2 Door",
+            "kind": "opaque",
+            "room_name": "Laundry",
+            "assembly": "D2",
+            "area": 20.01,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northeast wall",
+            "kind": "opaque",
+            "room_name": "Laundry",
+            "assembly": "W1",
+            "area": 23,
+            "direction": "NE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northeast wall",
+            "kind": "opaque",
+            "room_name": "Bed 3",
+            "assembly": "W1",
+            "area": 129,
+            "direction": "NE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northeast wall",
+            "kind": "opaque",
+            "room_name": "Bath",
+            "assembly": "W1",
+            "area": 74,
+            "direction": "NE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northeast wall",
+            "kind": "opaque",
+            "room_name": "Bed 2",
+            "assembly": "W1",
+            "area": 148,
+            "direction": "NE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Southeast wall",
+            "kind": "opaque",
+            "room_name": "Foyer",
+            "assembly": "W1",
+            "area": 47,
+            "direction": "SE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Southeast wall",
+            "kind": "opaque",
+            "room_name": "Bed 2",
+            "assembly": "W1",
+            "area": 97,
+            "direction": "SE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Southeast wall",
+            "kind": "opaque",
+            "room_name": "Dining & Hallway",
+            "assembly": "W1",
+            "area": 82,
+            "direction": "SE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Southeast wall",
+            "kind": "opaque",
+            "room_name": "Bonus & Stairs",
+            "assembly": "W1",
+            "area": 122,
+            "direction": "SE",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Southwest wall",
+            "kind": "opaque",
+            "room_name": "Sitting",
+            "assembly": "W1",
+            "area": 64,
+            "direction": "SW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Southwest wall",
+            "kind": "opaque",
+            "room_name": "Master Bed",
+            "assembly": "W1",
+            "area": 100,
+            "direction": "SW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Southwest wall",
+            "kind": "opaque",
+            "room_name": "Master Bath",
+            "assembly": "W1",
+            "area": 109,
+            "direction": "SW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Southwest wall",
+            "kind": "opaque",
+            "room_name": "Dining & Hallway",
+            "assembly": "W1",
+            "area": 35,
+            "direction": "SW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northwest wall",
+            "kind": "opaque",
+            "room_name": "Master Bath",
+            "assembly": "W1",
+            "area": 80,
+            "direction": "NW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northwest wall",
+            "kind": "opaque",
+            "room_name": "Master WIC",
+            "assembly": "W1",
+            "area": 58,
+            "direction": "NW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northwest wall",
+            "kind": "opaque",
+            "room_name": "Great Rm",
+            "assembly": "W1",
+            "area": 159,
+            "direction": "NW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northwest wall",
+            "kind": "opaque",
+            "room_name": "Breakfast",
+            "assembly": "W1",
+            "area": 64,
+            "direction": "NW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Northwest wall",
+            "kind": "opaque",
+            "room_name": "Bed 3",
+            "assembly": "W1",
+            "area": 119,
+            "direction": "NW",
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W1 Garage wall",
+            "kind": "opaque",
+            "room_name": "Laundry",
+            "assembly": "W1",
+            "area": 62,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "W1 Garage wall",
+            "kind": "opaque",
+            "room_name": "Sitting",
+            "assembly": "W1",
+            "area": 94,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "W1 Garage wall",
+            "kind": "opaque",
+            "room_name": "Bonus & Stairs",
+            "assembly": "W1",
+            "area": 32,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "W3 Attic wall",
+            "kind": "opaque",
+            "room_name": "Bonus & Stairs",
+            "assembly": "W3",
+            "area": 159,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W3 Kneewall",
+            "kind": "opaque",
+            "room_name": "Foyer",
+            "assembly": "W3",
+            "area": 16,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W3 Kneewall",
+            "kind": "opaque",
+            "room_name": "Master Bed",
+            "assembly": "W3",
+            "area": 64,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W3 Kneewall",
+            "kind": "opaque",
+            "room_name": "Great Rm",
+            "assembly": "W3",
+            "area": 188,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W3 Kneewall",
+            "kind": "opaque",
+            "room_name": "Dining & Hallway",
+            "assembly": "W3",
+            "area": 31,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "W3 Kneewall",
+            "kind": "opaque",
+            "room_name": "Bonus & Stairs",
+            "assembly": "W3",
+            "area": 220,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Foyer",
+            "assembly": "R1",
+            "area": 76,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Laundry",
+            "assembly": "R1",
+            "area": 57,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Sitting",
+            "assembly": "R1",
+            "area": 95,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Master Bed",
+            "assembly": "R1",
+            "area": 211,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Master Bath",
+            "assembly": "R1",
+            "area": 107,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Master WIC",
+            "assembly": "R1",
+            "area": 62,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Great Rm",
+            "assembly": "R1",
+            "area": 360,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Breakfast",
+            "assembly": "R1",
+            "area": 99,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Kitchen",
+            "assembly": "R1",
+            "area": 135,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Bed 3",
+            "assembly": "R1",
+            "area": 159,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Bath",
+            "assembly": "R1",
+            "area": 55,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Bed 2",
+            "assembly": "R1",
+            "area": 184,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Dining & Hallway",
+            "assembly": "R1",
+            "area": 230,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R1 Ceiling",
+            "kind": "opaque",
+            "room_name": "Bonus & Stairs",
+            "assembly": "R1",
+            "area": 78,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "R2 Vaulted ceiling",
+            "kind": "opaque",
+            "room_name": "Bonus & Stairs",
+            "assembly": "R2",
+            "area": 450,
+            "heating_delta_t": 54,
+            "heating_area": 318
+          },
+          {
+            "name": "F1 Garage floor",
+            "kind": "opaque",
+            "room_name": "Bonus & Stairs",
+            "assembly": "F1",
+            "area": 335,
+            "heating_delta_t": 54
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Foyer",
+            "assembly": "F2",
+            "area": 76,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Laundry",
+            "assembly": "F2",
+            "area": 57,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Sitting",
+            "assembly": "F2",
+            "area": 95,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Master Bed",
+            "assembly": "F2",
+            "area": 211,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Master Bath",
+            "assembly": "F2",
+            "area": 107,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Master WIC",
+            "assembly": "F2",
+            "area": 62,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Great Rm",
+            "assembly": "F2",
+            "area": 360,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Breakfast",
+            "assembly": "F2",
+            "area": 99,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Kitchen",
+            "assembly": "F2",
+            "area": 135,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Bed 3",
+            "assembly": "F2",
+            "area": 159,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Bath",
+            "assembly": "F2",
+            "area": 55,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Bed 2",
+            "assembly": "F2",
+            "area": 184,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Dining & Hallway",
+            "assembly": "F2",
+            "area": 230,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "F2 Slab",
+            "kind": "opaque",
+            "room_name": "Bonus & Stairs",
+            "assembly": "F2",
+            "area": 61,
+            "heating_delta_t": 27
+          },
+          {
+            "name": "People",
+            "kind": "internal_people",
+            "room_name": "Master Bed",
+            "quantity": 1
+          },
+          {
+            "name": "People",
+            "kind": "internal_people",
+            "room_name": "Great Rm",
+            "quantity": 1
+          },
+          {
+            "name": "People",
+            "kind": "internal_people",
+            "room_name": "Bed 3",
+            "quantity": 1
+          },
+          {
+            "name": "People",
+            "kind": "internal_people",
+            "room_name": "Bonus & Stairs",
+            "quantity": 1
+          },
+          {
+            "name": "People",
+            "kind": "internal_people",
+            "room_name": "Bed 2",
+            "quantity": 1
+          },
+          {
+            "name": "Appliances",
+            "kind": "internal_watts",
+            "room_name": "Laundry",
+            "watts": 200
+          },
+          {
+            "name": "Appliances",
+            "kind": "internal_watts",
+            "room_name": "Great Rm",
+            "watts": 250
+          },
+          {
+            "name": "Appliances",
+            "kind": "internal_watts",
+            "room_name": "Kitchen",
+            "watts": 680
+          },
+          {
+            "name": "Appliances",
+            "kind": "internal_watts",
+            "room_name": "Bonus & Stairs",
+            "watts": 250
+          }
+        ],
+        "auto_lighting_w_per_sf": 0.5,
+        "auto_infiltration": true
+      }
+    ]
+  }
+}

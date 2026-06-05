@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python3 -c ' *)",
+      "Bash(pip3 install *)",
+      "Bash(python3 -m pytest tests/ -q)",
+      "Bash(pandoc resload_roadmap_v3.docx -o /tmp/roadmap_preview.md)",
+      "Read(//tmp/**)",
+      "Bash(brew install *)",
+      "Bash(python3 '/Users/will/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/761568b7-9eb1-47c2-9ddc-9cb9fc2f842a/f454d9fa-e79d-4032-a167-3819ff3c3581/skills/docx/scripts/office/unpack.py' resload_roadmap_v3.docx /tmp/roadmap_unpacked/)",
+      "Bash(python3 '/Users/will/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/761568b7-9eb1-47c2-9ddc-9cb9fc2f842a/f454d9fa-e79d-4032-a167-3819ff3c3581/skills/docx/scripts/office/pack.py' /tmp/roadmap_unpacked/ resload_roadmap_v3.docx --original resload_roadmap_v3.docx)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(python3 __TRACKED_VAR__/scripts/office/pack.py /tmp/roadmap_unpacked/ resload_roadmap_v3.docx --original resload_roadmap_v3.docx)",
+      "Bash(python3 -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(cp \"/Users/will/Documents/Claude/Projects/Load Calculation Software/resload_roadmap_v3.docx\" \"/Users/will/Documents/Claude/Projects/Load Calculation Software/resload_roadmap_v3.docx.bak2\")",
+      "Bash(python3 -)",
+      "Bash(/opt/homebrew/bin/pandoc \"/Users/will/Documents/Claude/Projects/Load Calculation Software/resload_roadmap_v3.docx\" -o /tmp/verify.md)",
+      "Bash(npm run *)",
+      "Bash(python3 -m pytest tests/test_phase3_api.py::test_project_list_update_delete -s)",
+      "Bash(pkill -f \"uvicorn\")",
+      "Bash(python3 -m uvicorn backend.api.app:app --reload --port 8000)",
+      "Bash(curl -s http://localhost:8000/api/health)",
+      "Bash(/opt/homebrew/bin/pandoc \"/Users/will/Documents/Claude/Projects/Load Calculation Software/resload_roadmap_v3.docx\" -o /tmp/roadmap.md)",
+      "Bash(/opt/homebrew/bin/pandoc \"/Users/will/Documents/Claude/Projects/Load Calculation Software/resload_roadmap_v3.docx\" -o /tmp/verify14.md)"
+    ]
+  }
+}
