@@ -7,9 +7,11 @@ import json
 import os
 import re
 import secrets
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
@@ -201,12 +203,17 @@ def create_app() -> FastAPI:
 
     @api.get("/api/fixtures/screenshot-cooling-load")
     def get_screenshot_fixture() -> dict[str, Any]:
-        from pathlib import Path
         fixture_path = (
             Path(__file__).resolve().parents[2]
             / "tests" / "reference_cases" / "screenshot_cooling_load.json"
         )
         return json.loads(fixture_path.read_text())
+
+    # Serve the built React frontend for all non-API paths.
+    # Falls back gracefully when dist/ doesn't exist (local dev without a build).
+    static_dir = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if static_dir.exists():
+        api.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
 
     return api
 
