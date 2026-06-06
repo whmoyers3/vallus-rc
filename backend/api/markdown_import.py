@@ -83,7 +83,9 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
 
     house_cooling = re.search(r"^\*\*House Sensible Cooling:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     house_heating = re.search(r"^\*\*House Sensible Heating:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
-    house: dict[str, float] = {}
+    house_floor_area = re.search(r"^\*\*Total Floor Area:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
+    house_facing = re.search(r"^\*\*House Facing:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
+    house: dict[str, Any] = {}
     if house_cooling:
         value = _number(house_cooling.group(1))
         if value is not None:
@@ -92,6 +94,17 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
         value = _number(house_heating.group(1))
         if value is not None:
             house["heating_btuh"] = value
+    if house_floor_area:
+        value = _number(house_floor_area.group(1))
+        if value is not None:
+            house["floor_area"] = value
+    if house_facing:
+        raw = house_facing.group(1).strip().rstrip(" ").strip()
+        # Extract just the compass direction (e.g. "Worst S" → "S", "N" → "N")
+        worst = re.search(r"Worst\s+(\w+)", raw, re.IGNORECASE)
+        facing = worst.group(1).upper() if worst else raw.upper()
+        if facing in {"N", "NE", "E", "SE", "S", "SW", "W", "NW"}:
+            house["orientation"] = facing
     if house:
         comparison["house"] = house
 
@@ -119,6 +132,18 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
             units.append(unit)
     if units:
         comparison["units"] = units
+        # Derive house-level min_tons from unit cooling loads
+        total_cooling = sum(u.get("cooling_btuh", 0) for u in units)
+        if total_cooling > 0 and "house" not in comparison:
+            house = {}
+            comparison["house"] = house
+        if total_cooling > 0:
+            comparison["house"]["min_tons"] = round(total_cooling / 9000, 2)
+        # Derive house-level floor area from units if not already set
+        if comparison.get("house", {}).get("floor_area") is None:
+            total_area = sum(u.get("floor_area", 0) for u in units)
+            if total_area > 0:
+                comparison.setdefault("house", {})["floor_area"] = total_area
 
     rooms: dict[str, dict[str, Any]] = {}
     section_three = text.split("## SECTION 3", 1)[1] if "## SECTION 3" in text else ""

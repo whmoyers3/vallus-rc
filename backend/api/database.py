@@ -83,9 +83,15 @@ def _compute_comparison_snapshot(payload: dict[str, Any]) -> dict[str, Any] | No
     }
 
     salas_rooms: dict[str, dict[str, Any]] = {}
+    # Support both structures: levels[].rooms[] (legacy) and flat rooms dict
     for level_salas in salas.get("levels", []):
         for room in level_salas.get("rooms", []):
             salas_rooms[room["name"]] = room
+    flat_rooms = salas.get("rooms")
+    if isinstance(flat_rooms, dict):
+        for name, data in flat_rooms.items():
+            if name not in salas_rooms:
+                salas_rooms[name] = data
 
     rooms = []
     for level_result in result.levels:
@@ -162,10 +168,13 @@ def _compute_import_fidelity(payload: dict[str, Any]) -> tuple[bool | None, dict
 
     # Room count
     vrc_room_count = sum(len(level.get("rooms", [])) for level in p.get("levels", []))
+    # Support both structures: levels[].rooms[] and flat rooms dict
     salas_room_count = sum(
         len(level.get("rooms", []))
         for level in salas.get("levels", [])
     )
+    if salas_room_count == 0 and isinstance(salas.get("rooms"), dict):
+        salas_room_count = len(salas["rooms"])
     if salas_room_count:
         room_count_match = vrc_room_count == salas_room_count
         details.update(
