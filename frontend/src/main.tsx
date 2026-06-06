@@ -2122,6 +2122,7 @@ interface EligibleRow {
   builder_name: string;
   foundation: string | null;
   comparison_snapshot: ComparisonSnapshot | null;
+  import_fidelity_details: Record<string, unknown> | null;
 }
 
 // ── Admin panel helpers ───────────────────────────────────────────────────────
@@ -2215,6 +2216,37 @@ function DeltaCell({
       {unit === "pct" ? fmtPct(pct) : fmtBtuh(delta)}
     </td>
   );
+}
+
+/** Returns badges for area/volume/room-count mismatches. Orientation mismatch is a hard block so never shown here. */
+function FidelityBadges({ details }: { details: Record<string, unknown> | null | undefined }) {
+  if (!details) return null;
+  const badges: React.ReactNode[] = [];
+  if (details.floor_area_match === false) {
+    badges.push(
+      <span key="area" className="badge badge-amber" style={{ fontSize: 10 }}
+        title={`Area: VRC ${details.vrc_floor_area} sf vs Salas ${details.salas_floor_area} sf`}>
+        Area Δ
+      </span>
+    );
+  }
+  if (details.volume_match === false) {
+    badges.push(
+      <span key="vol" className="badge badge-amber" style={{ fontSize: 10 }}
+        title={`Volume: VRC ${details.vrc_volume} cf vs Salas ${details.salas_volume} cf`}>
+        Vol Δ
+      </span>
+    );
+  }
+  if (details.room_count_match === false) {
+    badges.push(
+      <span key="rooms" className="badge badge-amber" style={{ fontSize: 10 }}
+        title={`Rooms: VRC ${details.vrc_room_count} vs Salas ${details.salas_room_count}`}>
+        Rooms Δ
+      </span>
+    );
+  }
+  return <>{badges}</>;
 }
 
 // ── Admin panel component ─────────────────────────────────────────────────────
@@ -2648,13 +2680,11 @@ function AdminPanel() {
                           : <span className="badge badge-amber" style={{ fontSize: 11 }}>{outliers}</span>
                         }
                       </td>
-                      <td>
-                        {row.import_fidelity_passed
-                          ? <span className="badge badge-green" style={{ fontSize: 11 }}>✓</span>
-                          : row.import_fidelity_passed === false
-                          ? <span className="badge badge-amber" style={{ fontSize: 11 }}>⚠</span>
-                          : <span style={{ color: "#999", fontSize: 12 }}>—</span>
-                        }
+                      <td style={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
+                        <FidelityBadges details={row.import_fidelity_details} />
+                        {!row.import_fidelity_details && (
+                          <span style={{ color: "#999", fontSize: 12 }}>—</span>
+                        )}
                       </td>
                       {recomputeTime && (
                         <td>
@@ -2811,7 +2841,7 @@ function AdminPanel() {
                         {sf && <span>{sf.toLocaleString()} SF</span>}
                         {outliers > 0 && <span className="badge badge-amber" style={{ fontSize: 10 }}>{outliers} Outlier{outliers > 1 ? "s" : ""}</span>}
                         {outliers === 0 && snap && <span className="badge badge-green" style={{ fontSize: 10 }}>Rooms OK</span>}
-                        {row.import_fidelity_passed === false && <span className="badge badge-amber" style={{ fontSize: 10 }}>Input Mismatch</span>}
+                        <FidelityBadges details={row.import_fidelity_details} />
                       </div>
                       {snap && (
                         <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
@@ -2898,7 +2928,7 @@ function AdminPanel() {
           >
             <h3 style={{ fontSize: 18, marginBottom: 4 }}>Add to Test Battery</h3>
             <p style={{ fontSize: 13, color: "#666", marginBottom: 16 }}>
-              Select eligible projects with Salas reference data and passing import fidelity.
+              Projects with Salas comparison data and matching orientation. Area/volume differences are flagged but allowed.
             </p>
             <input
               type="text"
@@ -2926,9 +2956,12 @@ function AdminPanel() {
                   }}
                 >
                   <input type="checkbox" readOnly checked={eligibleSelected.has(e.id)} style={{ width: 16, height: 16 }} />
-                  <div>
+                  <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600 }}>{e.plan_name}</div>
-                    <div style={{ color: "#666", fontSize: 12 }}>{e.builder_name}{e.foundation ? ` · ${e.foundation}` : ""}</div>
+                    <div style={{ color: "#666", fontSize: 12, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span>{e.builder_name}{e.foundation ? ` · ${e.foundation}` : ""}</span>
+                      <FidelityBadges details={e.import_fidelity_details} />
+                    </div>
                   </div>
                 </li>
               ))}

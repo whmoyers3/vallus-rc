@@ -325,20 +325,27 @@ class Database:
         return result.data or []
 
     def list_battery_eligible(self, search: str = "") -> list[dict[str, Any]]:
-        """Projects eligible for battery: salas_import, comparison data, fidelity passed, no battery copy."""
-        query = (
+        """Projects eligible for battery: salas_import with comparison data and no orientation mismatch."""
+        result = (
             self._client.table("calculations")
             .select(
                 "id, name, plan_name, builder_name, foundation, orientation, "
-                "salas_reference_orientation, import_fidelity_passed, "
+                "salas_reference_orientation, import_fidelity_passed, import_fidelity_details, "
                 "comparison_snapshot, created_at, updated_at"
             )
             .eq("source", "salas_import")
-            .eq("import_fidelity_passed", True)
             .not_.is_("comparison_snapshot", "null")
+            .order("updated_at", desc=True)
+            .execute()
         )
-        result = query.order("updated_at", desc=True).execute()
         rows = result.data or []
+
+        # Block only on confirmed orientation mismatch
+        def _orientation_ok(row: dict[str, Any]) -> bool:
+            details = row.get("import_fidelity_details") or {}
+            return details.get("orientation_match", True) is not False
+
+        rows = [r for r in rows if _orientation_ok(r)]
 
         # Exclude projects that already have a battery copy
         battery_result = (
@@ -368,10 +375,16 @@ class Database:
         source = self.get_project_row(source_id)
         if source.get("source") != "salas_import":
             raise BatteryError("Only salas_import projects can be added to the battery.")
-        if not source.get("import_fidelity_passed"):
-            raise BatteryError("Project did not pass import fidelity checks.")
         if source.get("comparison_snapshot") is None:
-            raise BatteryError("Project has no comparison snapshot.")
+            raise BatteryError("Project has no Salas O'Brien comparison data.")
+        # Block only on confirmed orientation mismatch — area/volume differences are flagged but allowed
+        details = source.get("import_fidelity_details") or {}
+        if details.get("orientation_match") is False:
+            raise BatteryError(
+                f"Orientation mismatch: VRC has {details.get('vrc_orientation')}, "
+                f"Salas reference is {details.get('salas_orientation')}. "
+                "Fix front_door_faces before adding to battery."
+            )
 
         # Check not already in battery
         existing = (
