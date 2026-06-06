@@ -293,31 +293,31 @@ def create_app() -> FastAPI:
         return {"updated": len(updates)}
 
     @api.post("/api/battery/snapshot/export")
-    def export_battery_snapshot(body: SnapshotExportPayload) -> dict[str, str]:
-        import subprocess
+    def export_battery_snapshot(body: SnapshotExportPayload) -> Response:
         battery = database.list_battery()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S")
         label = re.sub(r"[^a-zA-Z0-9_-]", "-", body.label).strip("-") if body.label else ""
         filename = f"{now}_{label}.json" if label else f"{now}.json"
-        snapshots_dir = Path(__file__).resolve().parents[2] / "snapshots"
-        snapshots_dir.mkdir(exist_ok=True)
-        try:
-            git_hash = subprocess.check_output(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=snapshots_dir.parent, stderr=subprocess.DEVNULL
-            ).decode().strip()
-        except Exception:
-            git_hash = "unknown"
         export = {
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "label": body.label,
-            "engine_version": git_hash,
             "battery": battery,
         }
-        (snapshots_dir / filename).write_text(
-            json.dumps(export, indent=2, default=str)
+        content = json.dumps(export, indent=2, default=str)
+
+        # Try to write locally (works in dev, no-op on Vercel)
+        try:
+            snapshots_dir = Path(__file__).resolve().parents[2] / "snapshots"
+            snapshots_dir.mkdir(exist_ok=True)
+            (snapshots_dir / filename).write_text(content)
+        except Exception:
+            pass
+
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
-        return {"filename": filename}
 
     # ── Fixture (dev/test only) ───────────────────────────────────────────────
 

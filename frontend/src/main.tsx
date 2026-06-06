@@ -2405,8 +2405,17 @@ function AdminPanel() {
         body: JSON.stringify({ label: exportLabel }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setStatusMsg(`Exported: ${data.filename}`);
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") ?? "";
+      const filenameMatch = disposition.match(/filename="(.+?)"/);
+      const filename = filenameMatch ? filenameMatch[1] : "snapshot.json";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatusMsg(`Exported: ${filename}`);
     } catch (e) {
       setStatusMsg(e instanceof Error ? e.message : "Export failed");
     } finally {
