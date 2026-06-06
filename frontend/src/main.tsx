@@ -2463,17 +2463,78 @@ function AdminPanel() {
     for (let i = 0; i < bulkFiles.length; i++) {
       const file = bulkFiles[i];
       try {
+        // Step 1: Extract PDF to payload (existing endpoint)
         const b64 = await fileToBase64(file);
-        const res = await fetch("/api/import/salas-pdf/batch-single", {
+        const importRes = await fetch("/api/import/salas-pdf", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ filename: file.name, data_base64: b64 }),
         });
-        const data = await res.json();
-        if (!res.ok) {
-          results.push({ filename: file.name, ok: false, error: data.detail ?? "Import failed" });
+        const importData = await importRes.json();
+        if (!importRes.ok) {
+          results.push({ filename: file.name, ok: false, error: importData.detail ?? "Import failed" });
+          setBulkProgress({ done: i + 1, total: bulkFiles.length, results: [...results] });
+          continue;
+        }
+        const payload = importData.payload;
+        const warnings = importData.warnings ?? [];
+        const planName = payload?.project?.plan_name ?? file.name;
+
+        // Step 2: Check for existing duplicate and delete it
+        let replaced = false;
+        try {
+          const existingRes = await fetch("/api/battery/eligible?search=" + encodeURIComponent(planName));
+          const existingList: Array<{ id: number }> = await existingRes.json();
+          // Also check non-eligible salas imports
+          const allRes = await fetch("/api/projects");
+          const allProjects: Array<{ id: number; plan_name: string; foundation: string | null; elevation: string | null; source: string }> = await allRes.json();
+          const pf = payload?.project?.foundation ?? null;
+          const pe = payload?.project?.elevation ?? null;
+          const dupes = allProjects.filter((p) =>
+            p.source === "salas_import" && p.plan_name === planName &&
+            (p.foundation ?? null) === pf && (p.elevation ?? null) === pe
+          );
+          for (const dupe of dupes) {
+            // Delete any battery copies first
+            const batteryRes = await fetch("/api/battery");
+            const batteryList: Array<{ id: number; parent_id: number | null }> = await batteryRes.json();
+            const copies = batteryList.filter((b) => b.parent_id === dupe.id);
+            for (const copy of copies) {
+              await fetch(`/api/battery/${copy.id}`, { method: "DELETE" });
+            }
+            await fetch(`/api/projects/${dupe.id}`, { method: "DELETE" });
+            replaced = true;
+          }
+        } catch {
+          // Duplicate check failed, continue with import anyway
+        }
+
+        // Step 3: Save as project (auto-detects salas_import)
+        const saveRes = await fetch("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const saveData = await saveRes.json();
+        if (!saveRes.ok) {
+          results.push({ filename: file.name, ok: false, error: saveData.detail ?? "Save failed" });
+          setBulkProgress({ done: i + 1, total: bulkFiles.length, results: [...results] });
+          continue;
+        }
+        const sourceId = saveData.id;
+
+        // Step 4: Add to battery
+        const batteryRes = await fetch("/api/battery", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_id: sourceId }),
+        });
+        const batteryData = await batteryRes.json();
+        if (!batteryRes.ok) {
+          // Saved but couldn't add to battery — still report as partial success
+          results.push({ filename: file.name, ok: true, plan_name: planName, replaced, warnings: [...warnings, batteryData.detail ?? "Could not add to battery"] });
         } else {
-          results.push({ filename: file.name, ok: true, plan_name: data.plan_name, replaced: data.replaced, warnings: data.warnings });
+          results.push({ filename: file.name, ok: true, plan_name: planName, replaced, warnings });
         }
       } catch (e) {
         results.push({ filename: file.name, ok: false, error: e instanceof Error ? e.message : "Network error" });
