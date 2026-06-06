@@ -37,6 +37,8 @@
 - **Views** — Two toggleable layouts: Table view (scannable rows, sortable columns) and Status Columns view (kanban-style triage by accuracy status). Toggle in the top bar.
 - **Unit toggle** — Switches delta display between percentage and absolute BTU/hr across both views. Segmented control in the top bar.
 - **Battery management** — Add via multi-select modal with search (from admin panel or main editor). Remove via per-card/row action. Refresh battery copy from main editor when parent is updated.
+- **Bulk import** — Upload multiple Salas PDFs at once from the admin panel. Each PDF goes through the full pipeline (extract → import → save as `salas_import` → create `test_battery` copy) sequentially. Warnings are stored on the record, not blocking. If a matching record already exists (by plan_name + foundation + elevation), the old record and its battery copy are replaced. Progress shown per-file.
+- **Battery reset** — Delete all `test_battery` records and their `salas_import` parents in one action. Used when the importer has changed and all records need re-importing from scratch. Requires explicit confirmation.
 
 ## Model Development
 

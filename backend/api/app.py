@@ -260,6 +260,32 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"status": "refreshed"}
 
+    @api.post("/api/import/salas-pdf/batch-single")
+    def import_salas_pdf_batch_single(payload: PdfImportPayload) -> dict[str, Any]:
+        """Full pipeline: PDF → markdown → payload → save as salas_import → battery copy."""
+        try:
+            markdown = import_salas_pdf_to_markdown(
+                base64.b64decode(payload.data_base64), payload.filename
+            )
+            md_filename = re.sub(r"\.pdf$", ".md", payload.filename, flags=re.IGNORECASE)
+            project, warnings = import_room_cooling_markdown(markdown, md_filename)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        try:
+            result = database.import_and_add_to_battery(project)
+        except BatteryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return {**result, "warnings": warnings}
+
+    @api.delete("/api/battery/all")
+    def delete_all_battery(body: dict[str, Any]) -> dict[str, Any]:
+        if not body.get("confirm"):
+            raise HTTPException(status_code=422, detail="Must send {confirm: true} to delete all battery records.")
+        result = database.delete_all_battery()
+        return result
+
     @api.post("/api/battery/snapshots/bulk")
     def bulk_update_snapshots(body: dict[str, Any]) -> dict[str, int]:
         updates = body.get("updates", [])

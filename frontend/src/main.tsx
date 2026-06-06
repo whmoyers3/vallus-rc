@@ -2290,6 +2290,17 @@ function AdminPanel() {
   const [exportLabel, setExportLabel] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
+  // Bulk import state
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkFiles, setBulkFiles] = useState<File[]>([]);
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number; results: Array<{ filename: string; ok: boolean; plan_name?: string; replaced?: boolean; error?: string; warnings?: string[] }> }>({ done: 0, total: 0, results: [] });
+  const bulkFileInput = useRef<HTMLInputElement>(null);
+
+  // Delete all state
+  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
+  const [deleteAllLoading, setDeleteAllLoading] = useState(false);
+
   async function loadBattery() {
     setLoading(true);
     setError(null);
@@ -2444,6 +2455,53 @@ function AdminPanel() {
     loadBattery();
   }
 
+  async function bulkImport() {
+    if (bulkFiles.length === 0) return;
+    setBulkImporting(true);
+    const results: typeof bulkProgress.results = [];
+    setBulkProgress({ done: 0, total: bulkFiles.length, results: [] });
+    for (let i = 0; i < bulkFiles.length; i++) {
+      const file = bulkFiles[i];
+      try {
+        const b64 = await fileToBase64(file);
+        const res = await fetch("/api/import/salas-pdf/batch-single", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, data_base64: b64 }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          results.push({ filename: file.name, ok: false, error: data.detail ?? "Import failed" });
+        } else {
+          results.push({ filename: file.name, ok: true, plan_name: data.plan_name, replaced: data.replaced, warnings: data.warnings });
+        }
+      } catch (e) {
+        results.push({ filename: file.name, ok: false, error: e instanceof Error ? e.message : "Network error" });
+      }
+      setBulkProgress({ done: i + 1, total: bulkFiles.length, results: [...results] });
+    }
+    setBulkImporting(false);
+    loadBattery();
+  }
+
+  async function deleteAllBattery() {
+    setDeleteAllLoading(true);
+    try {
+      const res = await fetch("/api/battery/all", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const data = await res.json();
+      setStatusMsg(`Deleted ${data.deleted_battery} battery records and ${data.deleted_parents} source imports.`);
+    } catch (e) {
+      setStatusMsg(e instanceof Error ? e.message : "Delete failed");
+    }
+    setDeleteAllLoading(false);
+    setShowDeleteAllConfirm(false);
+    loadBattery();
+  }
+
   function sortedBattery(): BatteryRow[] {
     const rows = [...battery];
     rows.sort((a, b) => {
@@ -2559,9 +2617,11 @@ function AdminPanel() {
             <button className={`filter-btn${unit === "btuh" ? " active" : ""}`} onClick={() => setUnit("btuh")}>BTU/hr</button>
           </div>
           <button className="admin-btn admin-btn-outline" onClick={openAddModal}>+ Add to Battery</button>
+          <button className="admin-btn admin-btn-outline" onClick={() => { setBulkFiles([]); setBulkProgress({ done: 0, total: 0, results: [] }); setShowBulkModal(true); }}>Bulk Import</button>
           <button className="admin-btn admin-btn-primary" onClick={recomputeAll} disabled={recomputeLoading}>
             {recomputeLoading ? "Recomputing…" : "Recompute All"}
           </button>
+          <button className="admin-btn admin-btn-danger" onClick={() => setShowDeleteAllConfirm(true)} disabled={battery.length === 0}>Delete All</button>
         </div>
       </div>
 
@@ -2914,6 +2974,144 @@ function AdminPanel() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Bulk Import modal */}
+      {showBulkModal && (
+        <div
+          className="modal-backdrop"
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 200, display: "flex", justifyContent: "center", alignItems: "center" }}
+          onClick={() => { if (!bulkImporting) setShowBulkModal(false); }}
+        >
+          <div
+            className="modal"
+            style={{ width: 600, maxHeight: "80vh", overflow: "auto", background: "#fff", borderRadius: 16, padding: 24, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ fontSize: 18, marginBottom: 4 }}>Bulk Import Salas PDFs</h3>
+            <p style={{ fontSize: 13, color: "#666", marginBottom: 16 }}>
+              Upload Salas O'Brien PDFs to import, save, and add to the test battery. Existing records with the same plan/foundation/elevation will be replaced.
+            </p>
+
+            {!bulkImporting && bulkProgress.results.length === 0 && (
+              <>
+                <div
+                  style={{
+                    border: "2px dashed #d0d0d0", borderRadius: 12, padding: "32px 16px",
+                    textAlign: "center", cursor: "pointer", marginBottom: 16,
+                    background: bulkFiles.length > 0 ? "#f0fdf4" : "#fafafa",
+                  }}
+                  onClick={() => bulkFileInput.current?.click()}
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onDrop={(e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    const files = Array.from(e.dataTransfer.files).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+                    if (files.length > 0) setBulkFiles(files);
+                  }}
+                >
+                  {bulkFiles.length === 0 ? (
+                    <span style={{ color: "#888", fontSize: 14 }}>Drop PDF files here or click to select</span>
+                  ) : (
+                    <span style={{ color: "#16a34a", fontSize: 14, fontWeight: 600 }}>{bulkFiles.length} PDF{bulkFiles.length > 1 ? "s" : ""} selected</span>
+                  )}
+                </div>
+                <input
+                  ref={bulkFileInput}
+                  type="file"
+                  accept=".pdf"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files ?? []);
+                    if (files.length > 0) setBulkFiles(files);
+                    e.target.value = "";
+                  }}
+                />
+                {bulkFiles.length > 0 && (
+                  <ul style={{ listStyle: "none", padding: 0, margin: "0 0 16px", maxHeight: 200, overflow: "auto" }}>
+                    {bulkFiles.map((f, i) => (
+                      <li key={i} style={{ fontSize: 13, padding: "4px 0", color: "#333" }}>{f.name}</li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+
+            {/* Progress during import */}
+            {bulkImporting && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+                  Importing {bulkProgress.done} of {bulkProgress.total}…
+                </div>
+                <div style={{ height: 6, background: "#e5e7eb", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", background: "#2563eb", borderRadius: 3, width: `${(bulkProgress.done / bulkProgress.total) * 100}%`, transition: "width 0.3s" }} />
+                </div>
+              </div>
+            )}
+
+            {/* Results summary */}
+            {!bulkImporting && bulkProgress.results.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+                  {bulkProgress.results.filter((r) => r.ok).length} imported
+                  {bulkProgress.results.some((r) => r.replaced) && `, ${bulkProgress.results.filter((r) => r.replaced).length} replaced`}
+                  {bulkProgress.results.some((r) => !r.ok) && `, ${bulkProgress.results.filter((r) => !r.ok).length} failed`}
+                </div>
+                <ul style={{ listStyle: "none", padding: 0, margin: 0, maxHeight: 300, overflow: "auto" }}>
+                  {bulkProgress.results.map((r, i) => (
+                    <li key={i} style={{ fontSize: 13, padding: "6px 0", borderBottom: "1px solid #f0f0f0", display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <span style={{ color: r.ok ? "#16a34a" : "#dc2626", fontWeight: 700, flexShrink: 0 }}>{r.ok ? "OK" : "FAIL"}</span>
+                      <div style={{ flex: 1 }}>
+                        <div>{r.plan_name ?? r.filename}{r.replaced ? " (replaced)" : ""}</div>
+                        {r.error && <div style={{ color: "#dc2626", fontSize: 12 }}>{r.error}</div>}
+                        {r.warnings && r.warnings.length > 0 && (
+                          <div style={{ color: "#d97706", fontSize: 12 }}>{r.warnings.join(" ")}</div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 16, borderTop: "1px solid #e0e0e0" }}>
+              <button className="admin-btn admin-btn-outline" onClick={() => setShowBulkModal(false)} disabled={bulkImporting}>
+                {bulkProgress.results.length > 0 ? "Close" : "Cancel"}
+              </button>
+              {bulkProgress.results.length === 0 && (
+                <button className="admin-btn admin-btn-primary" onClick={bulkImport} disabled={bulkFiles.length === 0 || bulkImporting}>
+                  {bulkImporting ? "Importing…" : `Import ${bulkFiles.length} PDF${bulkFiles.length !== 1 ? "s" : ""}`}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete All confirmation */}
+      {showDeleteAllConfirm && (
+        <div
+          className="modal-backdrop"
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 200, display: "flex", justifyContent: "center", alignItems: "center" }}
+          onClick={() => { if (!deleteAllLoading) setShowDeleteAllConfirm(false); }}
+        >
+          <div
+            className="modal"
+            style={{ width: 420, background: "#fff", borderRadius: 16, padding: 24, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ fontSize: 18, marginBottom: 8 }}>Delete All Battery Records</h3>
+            <p style={{ fontSize: 14, color: "#666", marginBottom: 20 }}>
+              This will permanently delete all <strong>{battery.length}</strong> battery record{battery.length !== 1 ? "s" : ""} and their source Salas imports. This cannot be undone.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button className="admin-btn admin-btn-outline" onClick={() => setShowDeleteAllConfirm(false)} disabled={deleteAllLoading}>Cancel</button>
+              <button className="admin-btn admin-btn-danger" onClick={deleteAllBattery} disabled={deleteAllLoading}>
+                {deleteAllLoading ? "Deleting…" : "Delete All"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

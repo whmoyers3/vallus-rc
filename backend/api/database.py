@@ -472,6 +472,87 @@ class Database:
 
         self._client.table("calculations").update(row).eq("id", battery_id).execute()
 
+    def find_existing_import(self, plan_name: str, foundation: str | None, elevation: str | None) -> dict[str, Any] | None:
+        """Find an existing salas_import by plan_name + foundation + elevation."""
+        query = (
+            self._client.table("calculations")
+            .select("id, parent_id, source")
+            .eq("source", "salas_import")
+            .eq("plan_name", plan_name)
+        )
+        if foundation:
+            query = query.eq("foundation", foundation)
+        else:
+            query = query.is_("foundation", "null")
+        if elevation:
+            query = query.eq("elevation", elevation)
+        else:
+            query = query.is_("elevation", "null")
+        result = query.maybe_single().execute()
+        return result.data
+
+    def import_and_add_to_battery(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Full pipeline: save as salas_import, create battery copy, replace if duplicate exists."""
+        hierarchy = _extract_hierarchy(payload)
+        plan_name = hierarchy.get("plan_name", "")
+        foundation = hierarchy.get("foundation")
+        elevation = hierarchy.get("elevation")
+
+        # Replace existing duplicate if found
+        existing = self.find_existing_import(plan_name, foundation, elevation)
+        if existing:
+            old_id = existing["id"]
+            # Delete any battery copies first
+            self._client.table("calculations").delete().eq("source", "test_battery").eq("parent_id", old_id).execute()
+            # Delete the old salas_import
+            self._client.table("calculations").delete().eq("id", old_id).execute()
+
+        # Save as salas_import
+        source_id = self.create_project(payload)
+
+        # Create battery copy
+        battery_id = self.create_battery_copy(source_id)
+
+        return {
+            "source_id": source_id,
+            "battery_id": battery_id,
+            "plan_name": plan_name,
+            "foundation": foundation,
+            "elevation": elevation,
+            "replaced": existing is not None,
+        }
+
+    def delete_all_battery(self) -> dict[str, int]:
+        """Delete all test_battery records and their salas_import parents."""
+        # Get all battery records to find parent IDs
+        battery = (
+            self._client.table("calculations")
+            .select("id, parent_id")
+            .eq("source", "test_battery")
+            .execute()
+        )
+        battery_rows = battery.data or []
+        parent_ids = {r["parent_id"] for r in battery_rows if r.get("parent_id")}
+        battery_ids = [r["id"] for r in battery_rows]
+
+        deleted_battery = 0
+        deleted_parents = 0
+
+        # Delete battery records
+        for bid in battery_ids:
+            self._client.table("calculations").delete().eq("id", bid).execute()
+            deleted_battery += 1
+
+        # Delete parent salas_import records
+        for pid in parent_ids:
+            try:
+                self._client.table("calculations").delete().eq("id", pid).eq("source", "salas_import").execute()
+                deleted_parents += 1
+            except Exception:
+                pass  # Parent may have been manually deleted already
+
+        return {"deleted_battery": deleted_battery, "deleted_parents": deleted_parents}
+
     def update_battery_snapshots(self, updates: list[dict[str, Any]]) -> None:
         """Bulk-write recomputed comparison snapshots for battery records."""
         for item in updates:
