@@ -117,7 +117,17 @@ type UnitLoadSummary = {
 type FixturePayload = { project: Record<string, any> };
 type MarkdownImportResponse = { payload: FixturePayload; warnings: string[] };
 type WorstCaseResult = { front_door_faces: CompassDirection; loads: Loads };
-type SavedProject = { id: number; name: string; location: string; description: string; created_at: string; updated_at: string };
+type SavedProject = {
+  id: number;
+  name: string;
+  location: string;
+  description: string;
+  source: string;
+  import_fidelity_passed: boolean | null;
+  import_fidelity_details: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+};
 type SaveConflict = {
   conflictProject: SavedProject;   // the existing project that shares this name+description
   payload: Record<string, unknown>; // fully built payload, ready to POST/PUT
@@ -567,6 +577,8 @@ function App() {
   const [openDialogLoading, setOpenDialogLoading] = useState(false);
   const [openDialogError, setOpenDialogError] = useState<string | null>(null);
   const [saveConflict, setSaveConflict] = useState<SaveConflict | null>(null);
+  const [importFidelity, setImportFidelity] = useState<{ passed: boolean | null; details: Record<string, unknown> | null } | null>(null);
+  const [batteryStatus, setBatteryStatus] = useState<"none" | "eligible" | "added" | "loading">("none");
   const [showImportMenu, setShowImportMenu] = useState(false);
   const markdownFileInput = useRef<HTMLInputElement>(null);
   const pdfFileInput = useRef<HTMLInputElement>(null);
@@ -984,6 +996,8 @@ function App() {
     setProjectId(null);
     setCollapsedRooms([]);
     setValidationMessage(null);
+    setImportFidelity(null);
+    setBatteryStatus("none");
   }
 
   async function importMarkdownFile(event: React.ChangeEvent<HTMLInputElement>) {
@@ -1064,6 +1078,14 @@ function App() {
       setCollapsedRooms([]);
       setValidationMessage(null);
       setShowOpenDialog(false);
+      setImportFidelity(null);
+      setBatteryStatus("none");
+      // Find the saved row for fidelity info, then check battery status
+      const row = savedProjects.find((p) => p.id === id);
+      if (row?.import_fidelity_passed != null) {
+        setImportFidelity({ passed: row.import_fidelity_passed, details: row.import_fidelity_details ?? null });
+      }
+      checkBatteryStatus(id, row);
     } catch {
       setOpenDialogError("Could not load that project.");
     }
@@ -1075,6 +1097,63 @@ function App() {
     setSavedProjects((current) => current.filter((p) => p.id !== id));
     if (projectId === id) {
       setProjectId(null);
+      setBatteryStatus("none");
+      setImportFidelity(null);
+    }
+  }
+
+  async function checkBatteryStatus(id: number, savedRow?: SavedProject) {
+    setBatteryStatus("loading");
+    try {
+      // Check if already has a battery copy
+      const battery: Array<{ parent_id: number | null }> = await fetch("/api/battery").then((r) => r.json());
+      const hasCopy = battery.some((b) => b.parent_id === id);
+      if (hasCopy) { setBatteryStatus("added"); return; }
+      // Check eligibility (source=salas_import, fidelity passed, has comparison)
+      const source = savedRow?.source;
+      const fidelityPassed = savedRow?.import_fidelity_passed;
+      if (source === "salas_import" && fidelityPassed) {
+        setBatteryStatus("eligible");
+      } else {
+        setBatteryStatus("none");
+      }
+    } catch {
+      setBatteryStatus("none");
+    }
+  }
+
+  async function addToTestBattery() {
+    if (!projectId) return;
+    setBatteryStatus("loading");
+    try {
+      const res = await fetch("/api/battery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: projectId }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        setValidationMessage(data.detail ?? "Could not add to battery.");
+        setBatteryStatus("eligible");
+        return;
+      }
+      setBatteryStatus("added");
+    } catch {
+      setBatteryStatus("eligible");
+    }
+  }
+
+  async function refreshBatteryCopy() {
+    if (!projectId) return;
+    setBatteryStatus("loading");
+    try {
+      const battery: Array<{ id: number; parent_id: number | null }> = await fetch("/api/battery").then((r) => r.json());
+      const copy = battery.find((b) => b.parent_id === projectId);
+      if (!copy) { setBatteryStatus("eligible"); return; }
+      await fetch(`/api/battery/${copy.id}/refresh`, { method: "POST" });
+      setBatteryStatus("added");
+    } catch {
+      setBatteryStatus("added");
     }
   }
 
@@ -1136,6 +1215,20 @@ function App() {
     }
     setLoads(await fetch(`/api/projects/${savedId}/loads`).then((r) => r.json()));
     setWorstCase(await calculateWorstCase(calculationProject));
+
+    // Refresh fidelity + battery status after save
+    try {
+      const allRows: SavedProject[] = await fetch("/api/projects").then((r) => r.json());
+      const savedRow = allRows.find((p) => p.id === savedId);
+      if (savedRow?.import_fidelity_passed != null) {
+        setImportFidelity({ passed: savedRow.import_fidelity_passed, details: savedRow.import_fidelity_details ?? null });
+      } else {
+        setImportFidelity(null);
+      }
+      checkBatteryStatus(savedId, savedRow);
+    } catch {
+      // non-fatal
+    }
   }
 
   // ── Conflict resolution handlers ──────────────────────────────────────────
@@ -1286,6 +1379,38 @@ function App() {
           <div className="toolbar-status">
             {projectId ? <span className="saved-badge">Saved #{projectId}</span> : <span className="unsaved-badge">Unsaved</span>}
             {projectId && <a className="button" href={`/api/projects/${projectId}/report`}>PDF</a>}
+            {/* Import fidelity badge */}
+            {importFidelity != null && (
+              <span
+                className={importFidelity.passed ? "fidelity-badge fidelity-pass" : "fidelity-badge fidelity-warn"}
+                title={
+                  importFidelity.passed
+                    ? "Import fidelity passed — areas, volume, orientation, and room count match Salas reference."
+                    : (() => {
+                        const d = importFidelity.details ?? {};
+                        const issues = [];
+                        if (d.orientation_match === false) issues.push(`Orientation: VRC=${d.vrc_orientation} Salas=${d.salas_orientation}`);
+                        if (d.floor_area_match === false) issues.push(`Floor area: VRC=${d.vrc_floor_area} Salas=${d.salas_floor_area}`);
+                        if (d.volume_match === false) issues.push(`Volume: VRC=${d.vrc_volume} Salas=${d.salas_volume}`);
+                        if (d.room_count_match === false) issues.push(`Rooms: VRC=${d.vrc_room_count} Salas=${d.salas_room_count}`);
+                        return issues.length ? issues.join(" | ") : "Import fidelity check failed.";
+                      })()
+                }
+              >
+                {importFidelity.passed ? "✓ Inputs" : "⚠ Inputs"}
+              </span>
+            )}
+            {/* Battery button */}
+            {batteryStatus === "eligible" && (
+              <button className="button battery-btn" onClick={addToTestBattery}>+ Battery</button>
+            )}
+            {batteryStatus === "loading" && (
+              <span className="battery-status-label">Battery…</span>
+            )}
+            {batteryStatus === "added" && (
+              <button className="button battery-btn battery-btn-added" onClick={refreshBatteryCopy} title="Refresh the test battery copy from this project">↻ Battery</button>
+            )}
+            <a className="button" href="/#/admin" style={{ marginLeft: 4 }}>Admin</a>
           </div>
         </header>
 
@@ -1944,4 +2069,898 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+// ── Admin panel types ─────────────────────────────────────────────────────────
+
+interface BatteryRow {
+  id: number;
+  plan_name: string;
+  builder_name: string;
+  foundation: string | null;
+  salas_reference_orientation: string | null;
+  import_fidelity_passed: boolean | null;
+  import_fidelity_details: Record<string, unknown> | null;
+  comparison_snapshot: ComparisonSnapshot | null;
+  parent_id: number | null;
+  source: string;
+  updated_at: string;
+  payload_json: Record<string, unknown>;
+}
+
+interface ComparisonSnapshot {
+  computed_at: string;
+  system: {
+    vrc_cooling_btuh: number;
+    salas_cooling_btuh: number | null;
+    vrc_heating_btuh: number;
+    salas_heating_btuh: number | null;
+    vrc_min_tons: number;
+    salas_min_tons: number | null;
+  };
+  rooms: Array<{
+    name: string;
+    vrc_cooling: number;
+    salas_cooling: number | null;
+    vrc_heating: number;
+    salas_heating: number | null;
+  }>;
+}
+
+interface AdminSettings {
+  tolerancePct: number;
+  toleranceBtuh: number;
+  accuracyThreshold: number;
+}
+
+interface RecomputeResult {
+  id: number;
+  snapshot: ComparisonSnapshot | null;
+}
+
+interface EligibleRow {
+  id: number;
+  plan_name: string;
+  builder_name: string;
+  foundation: string | null;
+  comparison_snapshot: ComparisonSnapshot | null;
+}
+
+// ── Admin panel helpers ───────────────────────────────────────────────────────
+
+function fmtBtuh(n: number): string {
+  return n >= 0 ? `+${n.toLocaleString()}` : n.toLocaleString();
+}
+function fmtPct(n: number): string {
+  return (n >= 0 ? "+" : "") + n.toFixed(1) + "%";
+}
+function fmtTons(n: number): string {
+  return (n >= 0 ? "+" : "") + n.toFixed(2);
+}
+
+function coolingDelta(snap: ComparisonSnapshot): number | null {
+  if (snap.system.salas_cooling_btuh == null) return null;
+  return snap.system.vrc_cooling_btuh - snap.system.salas_cooling_btuh;
+}
+function heatingDelta(snap: ComparisonSnapshot): number | null {
+  if (snap.system.salas_heating_btuh == null) return null;
+  return snap.system.vrc_heating_btuh - snap.system.salas_heating_btuh;
+}
+function tonsDelta(snap: ComparisonSnapshot): number | null {
+  if (snap.system.salas_min_tons == null) return null;
+  return snap.system.vrc_min_tons - snap.system.salas_min_tons;
+}
+
+function isAccurate(snap: ComparisonSnapshot, threshold: number): boolean {
+  const cd = coolingDelta(snap);
+  const hd = heatingDelta(snap);
+  if (cd == null || hd == null) return false;
+  return Math.abs(cd) <= threshold && Math.abs(hd) <= threshold;
+}
+
+function roomOutliers(snap: ComparisonSnapshot, tolPct: number, tolBtuh: number): number {
+  return snap.rooms.filter((r) => {
+    const cd = r.salas_cooling != null ? Math.abs(r.vrc_cooling - r.salas_cooling) : 0;
+    const hd = r.salas_heating != null ? Math.abs(r.vrc_heating - r.salas_heating) : 0;
+    const cOver = r.salas_cooling != null && (cd > tolBtuh && cd / r.salas_cooling * 100 > tolPct);
+    const hOver = r.salas_heating != null && (hd > tolBtuh && hd / r.salas_heating * 100 > tolPct);
+    return cOver || hOver;
+  }).length;
+}
+
+type ChangeDir = "improved" | "regressed" | "unchanged" | null;
+
+function changeDir(
+  oldSnap: ComparisonSnapshot | null,
+  newSnap: ComparisonSnapshot | null,
+  metric: "cooling" | "heating" | "tons"
+): ChangeDir {
+  if (!oldSnap || !newSnap) return null;
+  const oldD =
+    metric === "cooling" ? coolingDelta(oldSnap)
+    : metric === "heating" ? heatingDelta(oldSnap)
+    : tonsDelta(oldSnap);
+  const newD =
+    metric === "cooling" ? coolingDelta(newSnap)
+    : metric === "heating" ? heatingDelta(newSnap)
+    : tonsDelta(newSnap);
+  if (oldD == null || newD == null) return null;
+  const diff = Math.abs(newD) - Math.abs(oldD);
+  if (Math.abs(diff) < 0.001 * Math.abs(oldD || 1)) return "unchanged";
+  return diff < 0 ? "improved" : "regressed";
+}
+
+function ChangePill({ dir }: { dir: ChangeDir }) {
+  if (!dir) return null;
+  const cls = dir === "improved" ? "change-improved" : dir === "regressed" ? "change-regressed" : "change-unchanged";
+  const label = dir === "improved" ? "↑ Better" : dir === "regressed" ? "↓ Worse" : "— Same";
+  return <span className={`change-indicator ${cls}`}>{label}</span>;
+}
+
+function DeltaCell({
+  delta,
+  salas,
+  unit,
+}: {
+  delta: number | null;
+  salas: number | null;
+  unit: "pct" | "btuh";
+}) {
+  if (delta == null || salas == null) return <td className="delta-cell">—</td>;
+  const pct = salas !== 0 ? delta / salas * 100 : 0;
+  const color =
+    Math.abs(delta) <= 50 ? "var(--green)"
+    : Math.abs(pct) <= 5 ? "var(--text)"
+    : "var(--amber)";
+  return (
+    <td className="delta-cell" style={{ color }}>
+      {unit === "pct" ? fmtPct(pct) : fmtBtuh(delta)}
+    </td>
+  );
+}
+
+// ── Admin panel component ─────────────────────────────────────────────────────
+
+function AdminPanel() {
+  const [battery, setBattery] = useState<BatteryRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [view, setView] = useState<"table" | "columns">("table");
+  const [unit, setUnit] = useState<"pct" | "btuh">("pct");
+  const [filter, setFilter] = useState<"battery" | "all" | "salas">("battery");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<AdminSettings>({
+    tolerancePct: 5,
+    toleranceBtuh: 200,
+    accuracyThreshold: 50,
+  });
+
+  const [sortCol, setSortCol] = useState<string>("plan_name");
+  const [sortAsc, setSortAsc] = useState(true);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  const [recomputed, setRecomputed] = useState<Map<number, ComparisonSnapshot | null>>(new Map());
+  const [recomputeTime, setRecomputeTime] = useState<string | null>(null);
+  const [recomputeLoading, setRecomputeLoading] = useState(false);
+
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [eligible, setEligible] = useState<EligibleRow[]>([]);
+  const [eligibleSearch, setEligibleSearch] = useState("");
+  const [eligibleSelected, setEligibleSelected] = useState<Set<number>>(new Set());
+  const [addingBattery, setAddingBattery] = useState(false);
+
+  const [removeConfirm, setRemoveConfirm] = useState<number | null>(null);
+
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportLabel, setExportLabel] = useState("");
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  async function loadBattery() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/battery");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setBattery(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load battery");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadBattery(); }, []);
+
+  async function recomputeAll() {
+    setRecomputeLoading(true);
+    try {
+      const projects = battery.map((r) => r.payload_json);
+      const res = await fetch("/api/calculate/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projects }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const fresh = new Map<number, ComparisonSnapshot | null>();
+      battery.forEach((row, i) => {
+        const r = data.results[i];
+        if (r?.ok) {
+          // Build a mini snapshot from the fresh calc result and stored salas data
+          const salas = (row.payload_json as any)?.project?.metadata?.salas_obrien_comparison;
+          const house = salas?.house ?? {};
+          const salasRooms: Record<string, { cooling_btuh?: number; heating_btuh?: number }> = {};
+          for (const level of salas?.levels ?? []) {
+            for (const rm of level.rooms ?? []) salasRooms[rm.name] = rm;
+          }
+          const res_data = r.result;
+          const snap: ComparisonSnapshot = {
+            computed_at: new Date().toISOString(),
+            system: {
+              vrc_cooling_btuh: res_data.sensible_cooling ?? res_data.whole_house?.sensible_cooling ?? 0,
+              salas_cooling_btuh: house.cooling_btuh ?? null,
+              vrc_heating_btuh: res_data.heating ?? res_data.whole_house?.heating ?? 0,
+              salas_heating_btuh: house.heating_btuh ?? null,
+              vrc_min_tons: res_data.tons_min ?? res_data.whole_house?.tons_min ?? 0,
+              salas_min_tons: house.min_tons ?? null,
+            },
+            rooms: (res_data.rooms ?? res_data.levels?.flatMap((l: any) => l.rooms ?? []) ?? []).map((rm: any) => ({
+              name: rm.name,
+              vrc_cooling: rm.cooling_btuh ?? 0,
+              salas_cooling: salasRooms[rm.name]?.cooling_btuh ?? null,
+              vrc_heating: rm.heating_btuh ?? 0,
+              salas_heating: salasRooms[rm.name]?.heating_btuh ?? null,
+            })),
+          };
+          fresh.set(row.id, snap);
+        } else {
+          fresh.set(row.id, null);
+        }
+      });
+      setRecomputed(fresh);
+      setRecomputeTime(new Date().toLocaleTimeString());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Recompute failed");
+    } finally {
+      setRecomputeLoading(false);
+    }
+  }
+
+  async function saveSnapshots() {
+    setSaveLoading(true);
+    const updates = Array.from(recomputed.entries())
+      .filter(([, v]) => v != null)
+      .map(([id, snapshot]) => ({ id, snapshot }));
+    try {
+      const res = await fetch("/api/battery/snapshots/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStatusMsg("Snapshots saved.");
+      setRecomputed(new Map());
+      setRecomputeTime(null);
+      loadBattery();
+    } catch (e) {
+      setStatusMsg(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaveLoading(false);
+    }
+  }
+
+  async function exportSnapshot() {
+    setExportLoading(true);
+    try {
+      const res = await fetch("/api/battery/snapshot/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: exportLabel }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setStatusMsg(`Exported: ${data.filename}`);
+    } catch (e) {
+      setStatusMsg(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExportLoading(false);
+    }
+  }
+
+  async function openAddModal() {
+    setShowAddModal(true);
+    setEligibleSelected(new Set());
+    setEligibleSearch("");
+    try {
+      const res = await fetch("/api/battery/eligible");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setEligible(await res.json());
+    } catch {
+      setEligible([]);
+    }
+  }
+
+  async function addSelected() {
+    setAddingBattery(true);
+    for (const id of eligibleSelected) {
+      try {
+        await fetch("/api/battery", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_id: id }),
+        });
+      } catch {
+        // continue on error
+      }
+    }
+    setAddingBattery(false);
+    setShowAddModal(false);
+    loadBattery();
+  }
+
+  async function removeFromBattery(id: number) {
+    try {
+      await fetch(`/api/battery/${id}`, { method: "DELETE" });
+    } catch {
+      // ignore
+    }
+    setRemoveConfirm(null);
+    loadBattery();
+  }
+
+  function sortedBattery(): BatteryRow[] {
+    const rows = [...battery];
+    rows.sort((a, b) => {
+      let av: string | number = "";
+      let bv: string | number = "";
+      const aSnap = recomputed.has(a.id) ? recomputed.get(a.id) ?? null : a.comparison_snapshot;
+      const bSnap = recomputed.has(b.id) ? recomputed.get(b.id) ?? null : b.comparison_snapshot;
+      if (sortCol === "plan_name") { av = a.plan_name; bv = b.plan_name; }
+      else if (sortCol === "foundation") { av = a.foundation ?? ""; bv = b.foundation ?? ""; }
+      else if (sortCol === "cooling_delta") {
+        av = aSnap ? (coolingDelta(aSnap) ?? 0) : 0;
+        bv = bSnap ? (coolingDelta(bSnap) ?? 0) : 0;
+      } else if (sortCol === "heating_delta") {
+        av = aSnap ? (heatingDelta(aSnap) ?? 0) : 0;
+        bv = bSnap ? (heatingDelta(bSnap) ?? 0) : 0;
+      } else if (sortCol === "tons_delta") {
+        av = aSnap ? (tonsDelta(aSnap) ?? 0) : 0;
+        bv = bSnap ? (tonsDelta(bSnap) ?? 0) : 0;
+      } else if (sortCol === "status") {
+        av = aSnap ? (isAccurate(aSnap, settings.accuracyThreshold) ? 0 : 1) : 2;
+        bv = bSnap ? (isAccurate(bSnap, settings.accuracyThreshold) ? 0 : 1) : 2;
+      }
+      if (av < bv) return sortAsc ? -1 : 1;
+      if (av > bv) return sortAsc ? 1 : -1;
+      return 0;
+    });
+    return rows;
+  }
+
+  function toggleSort(col: string) {
+    if (sortCol === col) setSortAsc(!sortAsc);
+    else { setSortCol(col); setSortAsc(true); }
+  }
+
+  function SortTh({ col, children }: { col: string; children: React.ReactNode }) {
+    const active = sortCol === col;
+    return (
+      <th
+        style={{ cursor: "pointer", userSelect: "none" }}
+        onClick={() => toggleSort(col)}
+      >
+        {children}{active ? (sortAsc ? " ▲" : " ▼") : ""}
+      </th>
+    );
+  }
+
+  function recomputeSummary(): string {
+    if (!recomputeTime) return "";
+    let improved = 0, regressed = 0, unchanged = 0;
+    for (const row of battery) {
+      const fresh = recomputed.get(row.id);
+      const old = row.comparison_snapshot;
+      const dir = changeDir(old, fresh ?? null, "cooling");
+      if (dir === "improved") improved++;
+      else if (dir === "regressed") regressed++;
+      else unchanged++;
+    }
+    return `${improved} improved, ${regressed} regressed, ${unchanged} unchanged`;
+  }
+
+  const filteredEligible = eligible.filter((e) => {
+    if (!eligibleSearch) return true;
+    const q = eligibleSearch.toLowerCase();
+    return (
+      e.plan_name.toLowerCase().includes(q) ||
+      e.builder_name.toLowerCase().includes(q) ||
+      (e.foundation ?? "").toLowerCase().includes(q)
+    );
+  });
+
+  if (loading) return (
+    <main style={{ padding: 32, fontFamily: "system-ui, sans-serif" }}>
+      <p style={{ color: "#666" }}>Loading battery…</p>
+    </main>
+  );
+
+  const rows = sortedBattery();
+
+  return (
+    <main style={{ fontFamily: "system-ui, -apple-system, sans-serif", background: "#f5f5f5", minHeight: "100vh", padding: "24px" }}>
+      {/* Top bar */}
+      <div className="admin-topbar">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+          <a href="/" style={{ fontSize: 13, color: "#666", textDecoration: "none" }}>← Back to editor</a>
+          <span style={{ color: "#ccc" }}>|</span>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>Admin — Model Diagnostics</span>
+        </div>
+        <div className="admin-topbar-row">
+          {/* Filter group */}
+          <div className="filter-group">
+            {(["battery", "all", "salas"] as const).map((f) => (
+              <button
+                key={f}
+                className={`filter-btn${filter === f ? " active" : ""}`}
+                onClick={() => setFilter(f)}
+              >
+                {f === "battery" ? "Test Battery" : f === "all" ? "All Projects" : "Salas Imports"}
+              </button>
+            ))}
+          </div>
+          <button className={`admin-btn admin-btn-outline${settingsOpen ? " active" : ""}`} onClick={() => setSettingsOpen(!settingsOpen)}>
+            Settings
+          </button>
+          <div style={{ flex: 1 }} />
+          {/* View toggle */}
+          <div className="filter-group">
+            <button className={`filter-btn${view === "table" ? " active" : ""}`} onClick={() => setView("table")}>Table</button>
+            <button className={`filter-btn${view === "columns" ? " active" : ""}`} onClick={() => setView("columns")}>Columns</button>
+          </div>
+          {/* Unit toggle */}
+          <div className="filter-group">
+            <button className={`filter-btn${unit === "pct" ? " active" : ""}`} onClick={() => setUnit("pct")}>%</button>
+            <button className={`filter-btn${unit === "btuh" ? " active" : ""}`} onClick={() => setUnit("btuh")}>BTU/hr</button>
+          </div>
+          <button className="admin-btn admin-btn-outline" onClick={openAddModal}>+ Add to Battery</button>
+          <button className="admin-btn admin-btn-primary" onClick={recomputeAll} disabled={recomputeLoading}>
+            {recomputeLoading ? "Recomputing…" : "Recompute All"}
+          </button>
+        </div>
+      </div>
+
+      {/* Settings drawer */}
+      {settingsOpen && (
+        <div className="admin-settings-drawer">
+          {(
+            [
+              { key: "tolerancePct", label: "Tolerance %", min: 1, max: 20, step: 1 },
+              { key: "toleranceBtuh", label: "Tolerance BTU/hr", min: 50, max: 1000, step: 50 },
+              { key: "accuracyThreshold", label: "Accuracy Threshold BTU/hr", min: 10, max: 500, step: 10 },
+            ] as const
+          ).map(({ key, label, min, max, step }) => (
+            <div key={key} className="admin-setting">
+              <label className="admin-setting-label">{label}</label>
+              <input
+                type="number"
+                value={settings[key]}
+                min={min}
+                max={max}
+                step={step}
+                onChange={(e) =>
+                  setSettings((s) => ({ ...s, [key]: Number(e.target.value) }))
+                }
+                className="admin-setting-input"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Error */}
+      {error && <div className="admin-error">{error}</div>}
+
+      {/* Recompute banner */}
+      {recomputeTime && (
+        <div className="admin-recompute-banner">
+          <span>⟳ Recomputed at {recomputeTime} — {recomputeSummary()}</span>
+          <div style={{ flex: 1 }} />
+          <input
+            type="text"
+            placeholder="Export label (optional)"
+            value={exportLabel}
+            onChange={(e) => setExportLabel(e.target.value)}
+            className="admin-export-label"
+          />
+          <button className="admin-btn admin-btn-green" onClick={saveSnapshots} disabled={saveLoading}>
+            {saveLoading ? "Saving…" : "Save Snapshots"}
+          </button>
+          <button className="admin-btn admin-btn-outline" onClick={exportSnapshot} disabled={exportLoading}>
+            {exportLoading ? "Exporting…" : "Export Snapshot"}
+          </button>
+        </div>
+      )}
+
+      {statusMsg && (
+        <div className="admin-status-msg" onClick={() => setStatusMsg(null)}>{statusMsg} ✕</div>
+      )}
+
+      {/* TABLE VIEW */}
+      {view === "table" && (
+        <div style={{ overflowX: "auto" }}>
+          <table className="vb-table" style={{ background: "#fff", borderRadius: 12, border: "1px solid #e0e0e0", borderCollapse: "separate", borderSpacing: 0, width: "100%" }}>
+            <thead>
+              <tr>
+                <SortTh col="status">Status</SortTh>
+                <SortTh col="plan_name">Plan</SortTh>
+                <SortTh col="foundation">Foundation</SortTh>
+                <th>SF</th>
+                <SortTh col="cooling_delta">Cooling Δ</SortTh>
+                <SortTh col="heating_delta">Heating Δ</SortTh>
+                <SortTh col="tons_delta">Tons Δ</SortTh>
+                <th>Rooms</th>
+                <th>Inputs</th>
+                {recomputeTime && <th>Change</th>}
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const snap = recomputed.has(row.id) ? recomputed.get(row.id) ?? null : row.comparison_snapshot;
+                const oldSnap = row.comparison_snapshot;
+                const accurate = snap ? isAccurate(snap, settings.accuracyThreshold) : false;
+                const outliers = snap ? roomOutliers(snap, settings.tolerancePct, settings.toleranceBtuh) : 0;
+                const sf = (row.payload_json as any)?.project?.metadata?.floor_area
+                  ?? (row.payload_json as any)?.project?.levels?.reduce((s: number, l: any) => s + (l.floor_area ?? 0), 0)
+                  ?? null;
+                const isExpanded = expandedId === row.id;
+
+                return (
+                  <React.Fragment key={row.id}>
+                    <tr
+                      onClick={() => setExpandedId(isExpanded ? null : row.id)}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <td>
+                        <span
+                          className="dot"
+                          style={{
+                            background: !snap ? "#9ca3af" : accurate ? "#16a34a" : "#ca8a04",
+                            width: 8, height: 8, borderRadius: "50%", display: "inline-block",
+                          }}
+                        />
+                      </td>
+                      <td className="plan-cell">{row.plan_name || row.id}</td>
+                      <td>{row.foundation ?? "—"}</td>
+                      <td>{sf ? sf.toLocaleString() : "—"}</td>
+                      {snap
+                        ? <>
+                            <DeltaCell delta={coolingDelta(snap)} salas={snap.system.salas_cooling_btuh} unit={unit} />
+                            <DeltaCell delta={heatingDelta(snap)} salas={snap.system.salas_heating_btuh} unit={unit} />
+                            <td className="delta-cell">{tonsDelta(snap) != null ? fmtTons(tonsDelta(snap)!) : "—"}</td>
+                          </>
+                        : <><td>—</td><td>—</td><td>—</td></>
+                      }
+                      <td>
+                        {outliers === 0
+                          ? <span className="badge badge-green" style={{ fontSize: 11 }}>OK</span>
+                          : <span className="badge badge-amber" style={{ fontSize: 11 }}>{outliers}</span>
+                        }
+                      </td>
+                      <td>
+                        {row.import_fidelity_passed
+                          ? <span className="badge badge-green" style={{ fontSize: 11 }}>✓</span>
+                          : row.import_fidelity_passed === false
+                          ? <span className="badge badge-amber" style={{ fontSize: 11 }}>⚠</span>
+                          : <span style={{ color: "#999", fontSize: 12 }}>—</span>
+                        }
+                      </td>
+                      {recomputeTime && (
+                        <td>
+                          <ChangePill dir={changeDir(oldSnap, recomputed.get(row.id) ?? null, "cooling")} />
+                        </td>
+                      )}
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {removeConfirm === row.id ? (
+                          <>
+                            <button
+                              className="admin-btn admin-btn-danger"
+                              style={{ fontSize: 11, padding: "2px 8px" }}
+                              onClick={() => removeFromBattery(row.id)}
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              className="admin-btn admin-btn-outline"
+                              style={{ fontSize: 11, padding: "2px 8px", marginLeft: 4 }}
+                              onClick={() => setRemoveConfirm(null)}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            className="admin-btn admin-btn-outline"
+                            style={{ fontSize: 11, padding: "2px 6px", color: "#dc2626", borderColor: "#fca5a5" }}
+                            onClick={() => setRemoveConfirm(row.id)}
+                            title="Remove from battery"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && snap && (
+                      <tr>
+                        <td colSpan={recomputeTime ? 11 : 10} style={{ padding: 0 }}>
+                          <div style={{ padding: "12px 16px", borderTop: "1px solid #f0f0f0", background: "#fafafa" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                              <thead>
+                                <tr style={{ color: "#666", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                                  <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Room</th>
+                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>VRC Cool</th>
+                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Salas Cool</th>
+                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Δ Cool</th>
+                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>VRC Heat</th>
+                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Salas Heat</th>
+                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Δ Heat</th>
+                                  <th style={{ padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {snap.rooms.map((rm) => {
+                                  const cd = rm.salas_cooling != null ? rm.vrc_cooling - rm.salas_cooling : null;
+                                  const hd = rm.salas_heating != null ? rm.vrc_heating - rm.salas_heating : null;
+                                  const outlier = rm.salas_cooling != null && cd != null && (Math.abs(cd) > settings.toleranceBtuh && Math.abs(cd) / rm.salas_cooling * 100 > settings.tolerancePct);
+                                  return (
+                                    <tr key={rm.name} style={{ background: outlier ? "#fee2e2" : undefined }}>
+                                      <td style={{ padding: "4px 8px" }}>{rm.name}</td>
+                                      <td style={{ textAlign: "right", padding: "4px 8px" }}>{rm.vrc_cooling.toLocaleString()}</td>
+                                      <td style={{ textAlign: "right", padding: "4px 8px" }}>{rm.salas_cooling?.toLocaleString() ?? "—"}</td>
+                                      <td style={{ textAlign: "right", padding: "4px 8px", color: outlier ? "#dc2626" : "#666" }}>
+                                        {cd != null && rm.salas_cooling != null
+                                          ? unit === "pct" ? fmtPct(cd / rm.salas_cooling * 100) : fmtBtuh(cd)
+                                          : "—"}
+                                      </td>
+                                      <td style={{ textAlign: "right", padding: "4px 8px" }}>{rm.vrc_heating.toLocaleString()}</td>
+                                      <td style={{ textAlign: "right", padding: "4px 8px" }}>{rm.salas_heating?.toLocaleString() ?? "—"}</td>
+                                      <td style={{ textAlign: "right", padding: "4px 8px", color: "#666" }}>
+                                        {hd != null && rm.salas_heating != null
+                                          ? unit === "pct" ? fmtPct(hd / rm.salas_heating * 100) : fmtBtuh(hd)
+                                          : "—"}
+                                      </td>
+                                      <td style={{ padding: "4px 8px" }}>
+                                        <span
+                                          style={{
+                                            width: 7, height: 7, borderRadius: "50%", display: "inline-block",
+                                            background: outlier ? "#dc2626" : "#16a34a",
+                                          }}
+                                        />
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={10} style={{ textAlign: "center", padding: 32, color: "#666" }}>
+                    No battery records. Add projects using "+ Add to Battery".
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* COLUMNS VIEW */}
+      {view === "columns" && (
+        <div className="vc-columns" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
+          {(["accurate", "review", "regressed"] as const).map((col) => {
+            const colRows = rows.filter((row) => {
+              const snap = recomputed.has(row.id) ? recomputed.get(row.id) ?? null : row.comparison_snapshot;
+              if (!snap) return col === "review";
+              if (recomputeTime) {
+                const dir = changeDir(row.comparison_snapshot, recomputed.get(row.id) ?? null, "cooling");
+                if (dir === "regressed" && col === "regressed") return true;
+                if (dir === "regressed") return false;
+              } else if (col === "regressed") return false;
+              const acc = isAccurate(snap, settings.accuracyThreshold);
+              return col === "accurate" ? acc : col === "review" ? !acc : false;
+            });
+            const colColor = col === "accurate" ? "#16a34a" : col === "review" ? "#ca8a04" : "#dc2626";
+            const colLabel = col === "accurate" ? "Accurate" : col === "review" ? "Needs Review" : "Regressed";
+            return (
+              <div key={col}>
+                <div style={{ fontWeight: 700, fontSize: 13, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: colColor, display: "inline-block" }} />
+                  {colLabel}
+                  <span style={{ fontSize: 12, fontWeight: 600, background: "#f3f4f6", color: "#666", padding: "2px 8px", borderRadius: 99 }}>{colRows.length}</span>
+                </div>
+                {colRows.map((row) => {
+                  const snap = recomputed.has(row.id) ? recomputed.get(row.id) ?? null : row.comparison_snapshot;
+                  const oldSnap = row.comparison_snapshot;
+                  const outliers = snap ? roomOutliers(snap, settings.tolerancePct, settings.toleranceBtuh) : 0;
+                  const sf = (row.payload_json as any)?.project?.levels?.reduce((s: number, l: any) => s + (l.floor_area ?? 0), 0) ?? null;
+                  return (
+                    <div
+                      key={row.id}
+                      style={{
+                        background: "#fff",
+                        border: "1px solid #e0e0e0",
+                        borderLeft: `3px solid ${colColor}`,
+                        borderRadius: 10,
+                        padding: "14px",
+                        marginBottom: 10,
+                        cursor: "pointer",
+                      }}
+                      onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{row.plan_name || row.id}</div>
+                      <div style={{ fontSize: 12, color: "#666", marginBottom: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {row.foundation && <span>{row.foundation}</span>}
+                        {sf && <span>{sf.toLocaleString()} SF</span>}
+                        {outliers > 0 && <span className="badge badge-amber" style={{ fontSize: 10 }}>{outliers} Outlier{outliers > 1 ? "s" : ""}</span>}
+                        {outliers === 0 && snap && <span className="badge badge-green" style={{ fontSize: 10 }}>Rooms OK</span>}
+                        {row.import_fidelity_passed === false && <span className="badge badge-amber" style={{ fontSize: 10 }}>Input Mismatch</span>}
+                      </div>
+                      {snap && (
+                        <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
+                          {(["cooling", "heating", "tons"] as const).map((m) => {
+                            const delta = m === "cooling" ? coolingDelta(snap) : m === "heating" ? heatingDelta(snap) : tonsDelta(snap);
+                            const salas = m === "cooling" ? snap.system.salas_cooling_btuh : m === "heating" ? snap.system.salas_heating_btuh : snap.system.salas_min_tons;
+                            const pct = delta != null && salas != null && salas !== 0 ? delta / salas * 100 : null;
+                            const display = m === "tons"
+                              ? delta != null ? fmtTons(delta) : "—"
+                              : unit === "pct" ? (pct != null ? fmtPct(pct) : "—") : (delta != null ? fmtBtuh(delta) : "—");
+                            return (
+                              <div key={m}>
+                                <span style={{ color: "#666" }}>{m.charAt(0).toUpperCase() + m.slice(1)} </span>
+                                <span style={{ fontWeight: 700 }}>{display}</span>
+                                {recomputeTime && <> <ChangePill dir={changeDir(oldSnap, recomputed.get(row.id) ?? null, m)} /></>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {/* Expanded room detail */}
+                      {expandedId === row.id && snap && (
+                        <div style={{ marginTop: 12, borderTop: "1px solid #e0e0e0", paddingTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                          <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                            <thead>
+                              <tr style={{ color: "#999", fontSize: 10, textTransform: "uppercase" }}>
+                                <th style={{ textAlign: "left", padding: "3px 6px" }}>Room</th>
+                                <th style={{ textAlign: "right", padding: "3px 6px" }}>VRC Cool</th>
+                                <th style={{ textAlign: "right", padding: "3px 6px" }}>Salas Cool</th>
+                                <th style={{ textAlign: "right", padding: "3px 6px" }}>Δ</th>
+                                <th style={{ textAlign: "right", padding: "3px 6px" }}>VRC Heat</th>
+                                <th style={{ textAlign: "right", padding: "3px 6px" }}>Salas Heat</th>
+                                <th style={{ textAlign: "right", padding: "3px 6px" }}>Δ</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {snap.rooms.map((rm) => {
+                                const cd = rm.salas_cooling != null ? rm.vrc_cooling - rm.salas_cooling : null;
+                                const hd = rm.salas_heating != null ? rm.vrc_heating - rm.salas_heating : null;
+                                const outlier = rm.salas_cooling != null && cd != null && (Math.abs(cd) > settings.toleranceBtuh && Math.abs(cd) / rm.salas_cooling * 100 > settings.tolerancePct);
+                                return (
+                                  <tr key={rm.name} style={{ background: outlier ? "#fee2e2" : undefined }}>
+                                    <td style={{ padding: "3px 6px" }}>{rm.name}</td>
+                                    <td style={{ textAlign: "right", padding: "3px 6px" }}>{rm.vrc_cooling.toLocaleString()}</td>
+                                    <td style={{ textAlign: "right", padding: "3px 6px" }}>{rm.salas_cooling?.toLocaleString() ?? "—"}</td>
+                                    <td style={{ textAlign: "right", padding: "3px 6px", color: outlier ? "#dc2626" : "#666" }}>
+                                      {cd != null && rm.salas_cooling != null ? fmtBtuh(cd) : "—"}
+                                    </td>
+                                    <td style={{ textAlign: "right", padding: "3px 6px" }}>{rm.vrc_heating.toLocaleString()}</td>
+                                    <td style={{ textAlign: "right", padding: "3px 6px" }}>{rm.salas_heating?.toLocaleString() ?? "—"}</td>
+                                    <td style={{ textAlign: "right", padding: "3px 6px", color: "#666" }}>
+                                      {hd != null && rm.salas_heating != null ? fmtBtuh(hd) : "—"}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {colRows.length === 0 && (
+                  <div style={{ color: "#999", fontSize: 13, padding: "16px 0" }}>None</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Add to Battery modal */}
+      {showAddModal && (
+        <div
+          className="modal-backdrop"
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 200, display: "flex", justifyContent: "center", alignItems: "center" }}
+          onClick={() => setShowAddModal(false)}
+        >
+          <div
+            className="modal"
+            style={{ width: 560, maxHeight: "80vh", overflow: "auto", background: "#fff", borderRadius: 16, padding: 24, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ fontSize: 18, marginBottom: 4 }}>Add to Test Battery</h3>
+            <p style={{ fontSize: 13, color: "#666", marginBottom: 16 }}>
+              Select eligible projects with Salas reference data and passing import fidelity.
+            </p>
+            <input
+              type="text"
+              placeholder="Search by plan name, builder, foundation…"
+              value={eligibleSearch}
+              onChange={(e) => setEligibleSearch(e.target.value)}
+              style={{ width: "100%", padding: "10px 14px", border: "1px solid #e0e0e0", borderRadius: 8, fontSize: 14, marginBottom: 12 }}
+            />
+            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+              {filteredEligible.length === 0 && (
+                <li style={{ color: "#999", padding: 12, fontSize: 13 }}>No eligible projects found.</li>
+              )}
+              {filteredEligible.map((e) => (
+                <li
+                  key={e.id}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
+                    borderRadius: 8, cursor: "pointer", fontSize: 13,
+                    background: eligibleSelected.has(e.id) ? "#dbeafe" : undefined,
+                  }}
+                  onClick={() => {
+                    const s = new Set(eligibleSelected);
+                    if (s.has(e.id)) s.delete(e.id); else s.add(e.id);
+                    setEligibleSelected(s);
+                  }}
+                >
+                  <input type="checkbox" readOnly checked={eligibleSelected.has(e.id)} style={{ width: 16, height: 16 }} />
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{e.plan_name}</div>
+                    <div style={{ color: "#666", fontSize: 12 }}>{e.builder_name}{e.foundation ? ` · ${e.foundation}` : ""}</div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16, paddingTop: 16, borderTop: "1px solid #e0e0e0" }}>
+              <button className="admin-btn admin-btn-outline" onClick={() => setShowAddModal(false)}>Cancel</button>
+              <button
+                className="admin-btn admin-btn-primary"
+                onClick={addSelected}
+                disabled={eligibleSelected.size === 0 || addingBattery}
+              >
+                {addingBattery ? "Adding…" : `Add Selected (${eligibleSelected.size})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
+}
+
+// ── Root: hash-based routing ──────────────────────────────────────────────────
+
+function Root() {
+  const [hash, setHash] = useState(window.location.hash);
+  useEffect(() => {
+    const handler = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
+  }, []);
+  if (hash === "#/admin") return <AdminPanel />;
+  return <App />;
+}
+
+createRoot(document.getElementById("root")!).render(<Root />);

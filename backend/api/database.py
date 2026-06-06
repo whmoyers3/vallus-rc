@@ -13,8 +13,8 @@ Table: calculations
 
 from __future__ import annotations
 
-import json
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from supabase import create_client, Client
@@ -26,6 +26,10 @@ class ProjectNotFound(KeyError):
     pass
 
 
+class BatteryError(ValueError):
+    pass
+
+
 def _get_client() -> Client:
     url = os.environ["SUPABASE_URL"]
     key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -33,15 +37,10 @@ def _get_client() -> Client:
 
 
 def _extract_hierarchy(payload: dict[str, Any]) -> dict[str, Any]:
-    """Pull structured naming fields out of a project payload.
-
-    New payloads include these fields explicitly.  Legacy payloads that
-    pre-date the hierarchy schema will fall back to empty strings so that
-    the row is still valid.
-    """
+    """Pull structured naming fields out of a project payload."""
     p = payload.get("project", {})
     builder = p.get("builder_name", "")
-    project_name = p.get("project_name", "") or builder  # blank → mirrors builder
+    project_name = p.get("project_name", "") or builder
     return {
         "name":         p.get("name", ""),
         "location":     p.get("location", ""),
@@ -57,6 +56,135 @@ def _extract_hierarchy(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compute_comparison_snapshot(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Run the engine and diff results against salas_obrien_comparison."""
+    from ..engine import calculate_project
+    from .serialization import project_from_payload
+
+    p = payload.get("project", {})
+    meta = p.get("metadata", {})
+    salas = meta.get("salas_obrien_comparison")
+    if not salas:
+        return None
+
+    try:
+        result = calculate_project(project_from_payload(payload))
+    except Exception:
+        return None
+
+    salas_house = salas.get("house", {})
+    system: dict[str, Any] = {
+        "vrc_cooling_btuh": result.sensible_cooling,
+        "salas_cooling_btuh": salas_house.get("cooling_btuh"),
+        "vrc_heating_btuh": result.heating,
+        "salas_heating_btuh": salas_house.get("heating_btuh"),
+        "vrc_min_tons": round(result.tons_min, 2),
+        "salas_min_tons": salas_house.get("min_tons"),
+    }
+
+    salas_rooms: dict[str, dict[str, Any]] = {}
+    for level_salas in salas.get("levels", []):
+        for room in level_salas.get("rooms", []):
+            salas_rooms[room["name"]] = room
+
+    rooms = []
+    for level_result in result.levels:
+        for room_result in level_result.room_results:
+            salas_room = salas_rooms.get(room_result.name, {})
+            rooms.append({
+                "name": room_result.name,
+                "vrc_cooling": room_result.cooling_btuh,
+                "salas_cooling": salas_room.get("cooling_btuh"),
+                "vrc_heating": room_result.heating_btuh,
+                "salas_heating": salas_room.get("heating_btuh"),
+            })
+
+    return {
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "system": system,
+        "rooms": rooms,
+    }
+
+
+def _compute_import_fidelity(payload: dict[str, Any]) -> tuple[bool | None, dict[str, Any] | None]:
+    """Compare VRC inputs against Salas reference values from the PDF."""
+    p = payload.get("project", {})
+    meta = p.get("metadata", {})
+    salas = meta.get("salas_obrien_comparison")
+    if not salas:
+        return None, None
+
+    details: dict[str, Any] = {}
+
+    # Orientation
+    vrc_orientation = meta.get("front_door_faces") or meta.get("salas_reference_orientation")
+    salas_orientation = (
+        meta.get("salas_reference_orientation")
+        or salas.get("house", {}).get("orientation")
+    )
+    if vrc_orientation and salas_orientation:
+        orientation_match = vrc_orientation.upper() == salas_orientation.upper()
+        details.update(
+            orientation_match=orientation_match,
+            salas_orientation=salas_orientation,
+            vrc_orientation=vrc_orientation,
+        )
+
+    # Floor area: sum room floor_area across all levels
+    vrc_floor_area = sum(
+        room.get("floor_area", 0)
+        for level in p.get("levels", [])
+        for room in level.get("rooms", [])
+    )
+    salas_floor_area = salas.get("house", {}).get("floor_area")
+    if salas_floor_area:
+        floor_area_match = abs(vrc_floor_area - salas_floor_area) <= 2
+        details.update(
+            floor_area_match=floor_area_match,
+            salas_floor_area=salas_floor_area,
+            vrc_floor_area=vrc_floor_area,
+        )
+
+    # Volume
+    vrc_volume = sum(
+        room.get("volume", 0)
+        for level in p.get("levels", [])
+        for room in level.get("rooms", [])
+    )
+    salas_volume = salas.get("house", {}).get("volume")
+    if salas_volume:
+        volume_match = abs(vrc_volume - salas_volume) <= 10
+        details.update(
+            volume_match=volume_match,
+            salas_volume=salas_volume,
+            vrc_volume=vrc_volume,
+        )
+
+    # Room count
+    vrc_room_count = sum(len(level.get("rooms", [])) for level in p.get("levels", []))
+    salas_room_count = sum(
+        len(level.get("rooms", []))
+        for level in salas.get("levels", [])
+    )
+    if salas_room_count:
+        room_count_match = vrc_room_count == salas_room_count
+        details.update(
+            room_count_match=room_count_match,
+            salas_room_count=salas_room_count,
+            vrc_room_count=vrc_room_count,
+        )
+
+    if not details:
+        return None, None
+
+    passed = all(
+        details.get(k, True)
+        for k in ("orientation_match", "floor_area_match", "volume_match", "room_count_match")
+        if k in details
+    )
+    return passed, details
+
+
 class Database:
     """Thin wrapper around the Supabase `calculations` table."""
 
@@ -68,6 +196,20 @@ class Database:
     def create_project(self, payload: dict[str, Any]) -> int:
         row = _extract_hierarchy(payload)
         row["payload_json"] = payload
+
+        snapshot = _compute_comparison_snapshot(payload)
+        if snapshot:
+            row["comparison_snapshot"] = snapshot
+            p = payload.get("project", {})
+            salas_orientation = p.get("metadata", {}).get("salas_reference_orientation")
+            if salas_orientation:
+                row["salas_reference_orientation"] = salas_orientation
+
+        fidelity_passed, fidelity_details = _compute_import_fidelity(payload)
+        if fidelity_passed is not None:
+            row["import_fidelity_passed"] = fidelity_passed
+            row["import_fidelity_details"] = fidelity_details
+
         result = self._client.table("calculations").insert(row).execute()
         return int(result.data[0]["id"])
 
@@ -85,19 +227,26 @@ class Database:
             raise ProjectNotFound(project_id)
         return result.data["payload_json"]
 
-    def list_projects(self) -> list[dict[str, Any]]:
-        """Return summary rows for the project list panel.
+    def get_project_row(self, project_id: int) -> dict[str, Any]:
+        result = (
+            self._client.table("calculations")
+            .select("*")
+            .eq("id", project_id)
+            .maybe_single()
+            .execute()
+        )
+        if result.data is None:
+            raise ProjectNotFound(project_id)
+        return result.data
 
-        Returns the same shape the frontend expects (id, name, location,
-        description, created_at, updated_at) plus the new hierarchy fields
-        so the UI can display richer context when it is ready for them.
-        """
+    def list_projects(self) -> list[dict[str, Any]]:
         result = (
             self._client.table("calculations")
             .select(
                 "id, name, location, description, "
                 "builder_name, project_name, plan_name, "
                 "elevation, foundation, orientation, variations, source, "
+                "import_fidelity_passed, import_fidelity_details, "
                 "created_at, updated_at"
             )
             .order("updated_at", desc=True)
@@ -110,6 +259,20 @@ class Database:
     def update_project(self, project_id: int, payload: dict[str, Any]) -> None:
         row = _extract_hierarchy(payload)
         row["payload_json"] = payload
+
+        snapshot = _compute_comparison_snapshot(payload)
+        if snapshot:
+            row["comparison_snapshot"] = snapshot
+            p = payload.get("project", {})
+            salas_orientation = p.get("metadata", {}).get("salas_reference_orientation")
+            if salas_orientation:
+                row["salas_reference_orientation"] = salas_orientation
+
+        fidelity_passed, fidelity_details = _compute_import_fidelity(payload)
+        if fidelity_passed is not None:
+            row["import_fidelity_passed"] = fidelity_passed
+            row["import_fidelity_details"] = fidelity_details
+
         result = (
             self._client.table("calculations")
             .update(row)
@@ -143,3 +306,143 @@ class Database:
             .execute()
         )
         return result.data or []
+
+    # ── Test Battery ──────────────────────────────────────────────────────────
+
+    def list_battery(self) -> list[dict[str, Any]]:
+        result = (
+            self._client.table("calculations")
+            .select(
+                "id, name, plan_name, builder_name, foundation, orientation, "
+                "salas_reference_orientation, comparison_snapshot, "
+                "import_fidelity_passed, import_fidelity_details, "
+                "parent_id, source, created_at, updated_at, payload_json"
+            )
+            .eq("source", "test_battery")
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        return result.data or []
+
+    def list_battery_eligible(self, search: str = "") -> list[dict[str, Any]]:
+        """Projects eligible for battery: salas_import, comparison data, fidelity passed, no battery copy."""
+        query = (
+            self._client.table("calculations")
+            .select(
+                "id, name, plan_name, builder_name, foundation, orientation, "
+                "salas_reference_orientation, import_fidelity_passed, "
+                "comparison_snapshot, created_at, updated_at"
+            )
+            .eq("source", "salas_import")
+            .eq("import_fidelity_passed", True)
+            .not_.is_("comparison_snapshot", "null")
+        )
+        result = query.order("updated_at", desc=True).execute()
+        rows = result.data or []
+
+        # Exclude projects that already have a battery copy
+        battery_result = (
+            self._client.table("calculations")
+            .select("parent_id")
+            .eq("source", "test_battery")
+            .not_.is_("parent_id", "null")
+            .execute()
+        )
+        battery_parent_ids = {r["parent_id"] for r in (battery_result.data or [])}
+        rows = [r for r in rows if r["id"] not in battery_parent_ids]
+
+        if search:
+            s = search.lower()
+            rows = [
+                r for r in rows
+                if s in (r.get("plan_name") or "").lower()
+                or s in (r.get("builder_name") or "").lower()
+                or s in (r.get("name") or "").lower()
+                or s in (r.get("foundation") or "").lower()
+                or s in (r.get("orientation") or "").lower()
+            ]
+
+        return rows
+
+    def create_battery_copy(self, source_id: int) -> int:
+        source = self.get_project_row(source_id)
+        if source.get("source") != "salas_import":
+            raise BatteryError("Only salas_import projects can be added to the battery.")
+        if not source.get("import_fidelity_passed"):
+            raise BatteryError("Project did not pass import fidelity checks.")
+        if source.get("comparison_snapshot") is None:
+            raise BatteryError("Project has no comparison snapshot.")
+
+        # Check not already in battery
+        existing = (
+            self._client.table("calculations")
+            .select("id")
+            .eq("source", "test_battery")
+            .eq("parent_id", source_id)
+            .execute()
+        )
+        if existing.data:
+            raise BatteryError(f"Project {source_id} already has a battery copy.")
+
+        payload = source["payload_json"]
+
+        # Lock orientation to salas_reference_orientation
+        salas_orientation = source.get("salas_reference_orientation")
+        if salas_orientation and payload.get("project", {}).get("metadata"):
+            payload["project"]["metadata"]["front_door_faces"] = salas_orientation
+
+        row = _extract_hierarchy(payload)
+        row["payload_json"] = payload
+        row["source"] = "test_battery"
+        row["parent_id"] = source_id
+        row["salas_reference_orientation"] = salas_orientation
+        row["comparison_snapshot"] = _compute_comparison_snapshot(payload)
+        row["import_fidelity_passed"] = source.get("import_fidelity_passed")
+        row["import_fidelity_details"] = source.get("import_fidelity_details")
+
+        result = self._client.table("calculations").insert(row).execute()
+        return int(result.data[0]["id"])
+
+    def delete_battery(self, battery_id: int) -> None:
+        result = (
+            self._client.table("calculations")
+            .delete()
+            .eq("id", battery_id)
+            .eq("source", "test_battery")
+            .execute()
+        )
+        if not result.data:
+            raise ProjectNotFound(battery_id)
+
+    def refresh_battery(self, battery_id: int) -> None:
+        battery = self.get_project_row(battery_id)
+        if battery.get("source") != "test_battery":
+            raise BatteryError("Record is not a battery copy.")
+        parent_id = battery.get("parent_id")
+        if not parent_id:
+            raise BatteryError("Battery record has no parent project.")
+
+        source = self.get_project_row(parent_id)
+        if not source.get("import_fidelity_passed"):
+            raise BatteryError("Parent project no longer passes import fidelity.")
+
+        payload = source["payload_json"]
+        salas_orientation = source.get("salas_reference_orientation")
+        if salas_orientation and payload.get("project", {}).get("metadata"):
+            payload["project"]["metadata"]["front_door_faces"] = salas_orientation
+
+        row = _extract_hierarchy(payload)
+        row["payload_json"] = payload
+        row["salas_reference_orientation"] = salas_orientation
+        row["comparison_snapshot"] = _compute_comparison_snapshot(payload)
+        row["import_fidelity_passed"] = source.get("import_fidelity_passed")
+        row["import_fidelity_details"] = source.get("import_fidelity_details")
+
+        self._client.table("calculations").update(row).eq("id", battery_id).execute()
+
+    def update_battery_snapshots(self, updates: list[dict[str, Any]]) -> None:
+        """Bulk-write recomputed comparison snapshots for battery records."""
+        for item in updates:
+            self._client.table("calculations").update(
+                {"comparison_snapshot": item["snapshot"]}
+            ).eq("id", item["id"]).execute()

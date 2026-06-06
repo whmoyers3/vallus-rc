@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
-from backend.api.database import Database, ProjectNotFound
+from backend.api.database import Database, ProjectNotFound, BatteryError
 from backend.api.markdown_import import import_room_cooling_markdown
 from backend.api.salas_pdf_import import import_salas_pdf_to_markdown
 from backend.api.serialization import loads_response, project_from_payload
@@ -28,6 +29,14 @@ from backend.reports import generate_resload_pdf
 class ProjectPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     project: dict[str, Any]
+
+
+class BatchCalculatePayload(BaseModel):
+    projects: list[dict[str, Any]]
+
+
+class SnapshotExportPayload(BaseModel):
+    label: str = ""
 
 
 class MarkdownImportPayload(BaseModel):
@@ -198,6 +207,91 @@ def create_app() -> FastAPI:
             media_type="application/pdf",
             headers={"Content-Disposition": f'attachment; filename="{pdf_name}"'},
         )
+
+    # ── Batch calculate ───────────────────────────────────────────────────────
+
+    @api.post("/api/calculate/batch")
+    def calculate_batch(payload: BatchCalculatePayload) -> dict[str, Any]:
+        results = []
+        for project_dict in payload.projects:
+            try:
+                wrapped = {"project": project_dict} if "project" not in project_dict else project_dict
+                result = calculate_project(project_from_payload(wrapped))
+                results.append({"ok": True, "result": loads_response(result)})
+            except Exception as exc:
+                results.append({"ok": False, "error": str(exc)})
+        return {"results": results}
+
+    # ── Test Battery ──────────────────────────────────────────────────────────
+
+    @api.get("/api/battery")
+    def list_battery() -> list[dict[str, Any]]:
+        return database.list_battery()
+
+    @api.get("/api/battery/eligible")
+    def battery_eligible(search: str = "") -> list[dict[str, Any]]:
+        return database.list_battery_eligible(search)
+
+    @api.post("/api/battery", status_code=201)
+    def create_battery(body: dict[str, Any]) -> dict[str, int]:
+        source_id = body.get("source_id")
+        if not isinstance(source_id, int):
+            raise HTTPException(status_code=422, detail="source_id (int) required")
+        try:
+            new_id = database.create_battery_copy(source_id)
+        except BatteryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ProjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="Source project not found") from exc
+        return {"id": new_id}
+
+    @api.delete("/api/battery/{battery_id}", status_code=204)
+    def delete_battery(battery_id: int) -> None:
+        try:
+            database.delete_battery(battery_id)
+        except ProjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="Battery record not found") from exc
+
+    @api.post("/api/battery/{battery_id}/refresh")
+    def refresh_battery(battery_id: int) -> dict[str, str]:
+        try:
+            database.refresh_battery(battery_id)
+        except (ProjectNotFound, BatteryError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"status": "refreshed"}
+
+    @api.post("/api/battery/snapshots/bulk")
+    def bulk_update_snapshots(body: dict[str, Any]) -> dict[str, int]:
+        updates = body.get("updates", [])
+        database.update_battery_snapshots(updates)
+        return {"updated": len(updates)}
+
+    @api.post("/api/battery/snapshot/export")
+    def export_battery_snapshot(body: SnapshotExportPayload) -> dict[str, str]:
+        import subprocess
+        battery = database.list_battery()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S")
+        label = re.sub(r"[^a-zA-Z0-9_-]", "-", body.label).strip("-") if body.label else ""
+        filename = f"{now}_{label}.json" if label else f"{now}.json"
+        snapshots_dir = Path(__file__).resolve().parents[2] / "snapshots"
+        snapshots_dir.mkdir(exist_ok=True)
+        try:
+            git_hash = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=snapshots_dir.parent, stderr=subprocess.DEVNULL
+            ).decode().strip()
+        except Exception:
+            git_hash = "unknown"
+        export = {
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "label": body.label,
+            "engine_version": git_hash,
+            "battery": battery,
+        }
+        (snapshots_dir / filename).write_text(
+            json.dumps(export, indent=2, default=str)
+        )
+        return {"filename": filename}
 
     # ── Fixture (dev/test only) ───────────────────────────────────────────────
 

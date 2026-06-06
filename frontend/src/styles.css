@@ -926,3 +926,69 @@ label {
     right: auto;
   }
 }
+
+/* ── Admin panel ─────────────────────────────────────────────────────────── */
+
+.admin-topbar { margin-bottom: 16px; }
+.admin-topbar-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.filter-group { display: flex; gap: 3px; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 3px; }
+.filter-btn { padding: 6px 14px; border: none; background: transparent; border-radius: 6px; cursor: pointer; font-size: 13px; color: #666; font-weight: 500; }
+.filter-btn.active { background: #1a1a1a; color: #fff; }
+.filter-btn:hover:not(.active) { background: #f3f4f6; }
+
+.admin-btn { padding: 7px 14px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.admin-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.admin-btn-primary { background: #2563eb; color: #fff; }
+.admin-btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+.admin-btn-outline { background: #fff; color: #1a1a1a; border: 1px solid #e0e0e0; }
+.admin-btn-outline:hover:not(:disabled) { background: #f3f4f6; }
+.admin-btn-outline.active { background: #f3f4f6; }
+.admin-btn-green { background: #16a34a; color: #fff; }
+.admin-btn-green:hover:not(:disabled) { background: #15803d; }
+.admin-btn-danger { background: #dc2626; color: #fff; }
+
+.admin-settings-drawer { background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; padding: 16px 20px; margin-bottom: 16px; display: flex; gap: 28px; align-items: center; flex-wrap: wrap; }
+.admin-setting { display: flex; flex-direction: column; gap: 4px; }
+.admin-setting-label { font-size: 11px; color: #666; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.admin-setting-input { width: 80px; padding: 6px 8px; border: 1px solid #e0e0e0; border-radius: 6px; font-size: 14px; }
+
+.admin-error { background: #fee2e2; border: 1px solid #fca5a5; color: #dc2626; border-radius: 8px; padding: 10px 16px; margin-bottom: 16px; font-size: 13px; }
+
+.admin-recompute-banner { background: #dbeafe; border: 1px solid #93c5fd; border-radius: 10px; padding: 12px 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; font-size: 13px; flex-wrap: wrap; }
+.admin-export-label { padding: 6px 10px; border: 1px solid #bfdbfe; border-radius: 6px; font-size: 13px; background: #eff6ff; width: 200px; }
+
+.admin-status-msg { background: #f0fdf4; border: 1px solid #86efac; color: #16a34a; border-radius: 8px; padding: 8px 16px; margin-bottom: 16px; font-size: 13px; cursor: pointer; }
+
+.vb-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #666; font-weight: 600; padding: 12px 14px; border-bottom: 1px solid #e0e0e0; background: #fafafa; position: sticky; top: 0; }
+.vb-table td { padding: 12px 14px; border-bottom: 1px solid #f0f0f0; font-size: 13px; vertical-align: middle; }
+.vb-table tr:last-child td { border-bottom: none; }
+.vb-table tr:hover > td { background: #fafafa; }
+.vb-table .plan-cell { font-weight: 600; }
+.vb-table .delta-cell { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
+.badge-green { background: #dcfce7; color: #16a34a; border: 1px solid #86efac; }
+.badge-red { background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; }
+.badge-amber { background: #fef3c7; color: #d97706; border: 1px solid #fbbf24; }
+.badge-grey { background: #f3f4f6; color: #9ca3af; border: 1px solid #d1d5db; }
+
+.change-indicator { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+.change-improved { background: #dcfce7; color: #16a34a; }
+.change-regressed { background: #fee2e2; color: #dc2626; }
+.change-unchanged { background: #fef9c3; color: #ca8a04; }
+
+/* ── Import fidelity & battery toolbar additions ──────────────────────────── */
+
+.fidelity-badge {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px; border-radius: 99px;
+  font-size: 11px; font-weight: 600; cursor: help;
+  white-space: nowrap;
+}
+.fidelity-pass { background: #dcfce7; color: #16a34a; border: 1px solid #86efac; }
+.fidelity-warn { background: #fef3c7; color: #d97706; border: 1px solid #fbbf24; }
+
+.battery-btn { font-size: 12px !important; padding: 3px 10px !important; }
+.battery-btn-added { background: #dcfce7 !important; color: #16a34a !important; border-color: #86efac !important; }
+.battery-status-label { font-size: 12px; color: #9ca3af; }

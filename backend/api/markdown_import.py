@@ -158,9 +158,33 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
     title_match = re.search(r"^#\s+(.+?)\s+[—-]\s+Cooling Load Data Export\s*$", text, re.MULTILINE)
     project_match = re.search(r"^\*\*Project:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     location_match = re.search(r"^\*\*Location:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
+    facing_match = re.search(r"^\*\*House Facing:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     plan_name = title_match.group(1).strip() if title_match else re.sub(r"\.md$", "", filename, flags=re.IGNORECASE)
     project_description = project_match.group(1).strip() if project_match else "Imported Markdown project"
     location = location_match.group(1).strip() if location_match else ""
+
+    _FACING_MAP = {
+        "N": "N", "NORTH": "N",
+        "NE": "NE", "NORTHEAST": "NE",
+        "E": "E", "EAST": "E",
+        "SE": "SE", "SOUTHEAST": "SE",
+        "S": "S", "SOUTH": "S",
+        "SW": "SW", "SOUTHWEST": "SW",
+        "W": "W", "WEST": "W",
+        "NW": "NW", "NORTHWEST": "NW",
+    }
+    _WORST_RE = re.compile(r"Worst\s+(\w+)", re.IGNORECASE)
+    salas_reference_orientation: str | None = None
+    front_door_faces = "S"
+    facing_parsed = False
+    if facing_match:
+        raw = facing_match.group(1).strip().rstrip(" -").strip()
+        worst = _WORST_RE.search(raw)
+        candidate = worst.group(1).upper() if worst else raw.upper()
+        if candidate in _FACING_MAP:
+            front_door_faces = _FACING_MAP[candidate]
+            salas_reference_orientation = front_door_faces
+            facing_parsed = True
 
     comparison = _comparison_from_markdown(text)
     summary_match = re.search(r"### Unit Summary(.*?)(?:\n---|\n###)", text, re.DOTALL)
@@ -319,10 +343,11 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
                 "ach50": 5,
                 "bedrooms": max(bedrooms, 1),
                 "seer": 14,
-                "front_door_faces": "S",
+                "front_door_faces": front_door_faces,
                 "units": list(units.values()),
                 "zones": list(zones.values()),
                 **({"salas_obrien_comparison": comparison} if comparison else {}),
+                **({"salas_reference_orientation": salas_reference_orientation} if salas_reference_orientation else {}),
             },
             "selected_system_tons": selected_tons,
             "selected_system_kw": selected_kw,
@@ -342,8 +367,10 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
             }],
         }
     }
-    warnings = [
-        "Front door facing is not present in the Markdown export and was set to South. Review it before calculating.",
-        "Bedroom count was estimated from room names. Review it before calculating.",
-    ]
+    warnings: list[str] = []
+    if not facing_parsed:
+        warnings.append(
+            "Front door facing is not present in the Markdown export and was set to South. Review it before calculating."
+        )
+    warnings.append("Bedroom count was estimated from room names. Review it before calculating.")
     return payload, warnings
