@@ -61,6 +61,7 @@ type ProjectDraft = {
   components: ComponentDraft[];
   assemblies?: Record<string, { code: string; u_value?: number; shgc?: number | null; description?: string }>;
   comparison?: Record<string, any>;
+  salas_reference_orientation?: CompassDirection;
 };
 
 type RoomLoadResult = {
@@ -395,7 +396,8 @@ function buildPayload(project: ProjectDraft, assemblies: AssemblyRow[]) {
         front_door_faces: project.front_door_faces,
         units: project.units,
         zones: project.zones,
-        ...(project.comparison ? { salas_obrien_comparison: project.comparison } : {})
+        ...(project.comparison ? { salas_obrien_comparison: project.comparison } : {}),
+        ...(project.salas_reference_orientation ? { salas_reference_orientation: project.salas_reference_orientation } : {})
       },
       selected_system_tons: selectedSystemTons,
       selected_system_kw: selectedSystemKw,
@@ -417,7 +419,7 @@ function buildPayload(project: ProjectDraft, assemblies: AssemblyRow[]) {
 function draftFromPayload(payload: FixturePayload): ProjectDraft {
   const project = payload.project;
   const level = project.levels[0];
-  const metadata = "metadata" in project ? project.metadata as { ach50?: number; bedrooms?: number; seer?: number; front_door_faces?: CompassDirection; units?: UnitDraft[]; zones?: ZoneDraft[]; salas_obrien_comparison?: Record<string, any> } : {};
+  const metadata = "metadata" in project ? project.metadata as { ach50?: number; bedrooms?: number; seer?: number; front_door_faces?: CompassDirection; units?: UnitDraft[]; zones?: ZoneDraft[]; salas_obrien_comparison?: Record<string, any>; salas_reference_orientation?: CompassDirection } : {};
   const rawUnits = metadata.units?.length ? metadata.units : [{ id: defaultUnitId, name: "Whole House" }];
   const units = rawUnits.map((unit, index) => ({
     ...unit,
@@ -486,7 +488,8 @@ function draftFromPayload(payload: FixturePayload): ProjectDraft {
         direction: relativeFacingFromCompass(item.direction, metadata.front_door_faces ?? "S")
       } as ComponentDraft;
     }),
-    comparison: metadata.salas_obrien_comparison
+    comparison: metadata.salas_obrien_comparison,
+    salas_reference_orientation: metadata.salas_reference_orientation,
   };
 }
 
@@ -1109,10 +1112,10 @@ function App() {
       const battery: Array<{ parent_id: number | null }> = await fetch("/api/battery").then((r) => r.json());
       const hasCopy = battery.some((b) => b.parent_id === id);
       if (hasCopy) { setBatteryStatus("added"); return; }
-      // Check eligibility (source=salas_import, fidelity passed, has comparison)
+      // Check eligibility — any salas_import with comparison data is eligible
+      // (fidelity is informational, not a hard gate)
       const source = savedRow?.source;
-      const fidelityPassed = savedRow?.import_fidelity_passed;
-      if (source === "salas_import" && fidelityPassed) {
+      if (source === "salas_import") {
         setBatteryStatus("eligible");
       } else {
         setBatteryStatus("none");

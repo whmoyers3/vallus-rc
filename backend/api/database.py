@@ -197,6 +197,11 @@ class Database:
         row = _extract_hierarchy(payload)
         row["payload_json"] = payload
 
+        # Auto-detect salas_import source from comparison data
+        p = payload.get("project", {})
+        if p.get("metadata", {}).get("salas_obrien_comparison"):
+            row["source"] = "salas_import"
+
         snapshot = _compute_comparison_snapshot(payload)
         if snapshot:
             row["comparison_snapshot"] = snapshot
@@ -259,6 +264,11 @@ class Database:
     def update_project(self, project_id: int, payload: dict[str, Any]) -> None:
         row = _extract_hierarchy(payload)
         row["payload_json"] = payload
+
+        # Auto-detect salas_import source from comparison data
+        p = payload.get("project", {})
+        if p.get("metadata", {}).get("salas_obrien_comparison"):
+            row["source"] = "salas_import"
 
         snapshot = _compute_comparison_snapshot(payload)
         if snapshot:
