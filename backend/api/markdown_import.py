@@ -84,6 +84,7 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
     house_cooling = re.search(r"^\*\*House Sensible Cooling:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     house_heating = re.search(r"^\*\*House Sensible Heating:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     house_floor_area = re.search(r"^\*\*Total Floor Area:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
+    house_volume = re.search(r"^\*\*Volume:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     house_facing = re.search(r"^\*\*House Facing:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     house: dict[str, Any] = {}
     if house_cooling:
@@ -98,6 +99,10 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
         value = _number(house_floor_area.group(1))
         if value is not None:
             house["floor_area"] = value
+    if house_volume:
+        value = _number(house_volume.group(1))
+        if value is not None:
+            house["volume"] = value
     if house_facing:
         raw = house_facing.group(1).strip().rstrip(" ").strip()
         # Extract just the compass direction (e.g. "Worst S" → "S", "N" → "N")
@@ -347,7 +352,10 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
     volume = sum(room["volume"] for room in rooms)
     selected_tons = sum(float(unit.get("selected_tons", 0)) for unit in units.values())
     selected_kw = sum(float(unit.get("selected_kw", 0)) for unit in units.values())
-    bedrooms = sum(
+    # Prefer explicit bedroom count from PDF; fall back to guessing from room names
+    bedrooms_match = re.search(r"^\*\*Bedrooms:\*\*\s*(\d+)", text, re.MULTILINE)
+    bedrooms_explicit = int(bedrooms_match.group(1)) if bedrooms_match else None
+    bedrooms = bedrooms_explicit if bedrooms_explicit is not None else sum(
         1 for room in rooms
         if re.search(r"\bbed(?:room)?\b|\bowner suite\b|\bmaster bed\b", room["name"], re.IGNORECASE)
     )
@@ -397,5 +405,6 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
         warnings.append(
             "Front door facing is not present in the Markdown export and was set to South. Review it before calculating."
         )
-    warnings.append("Bedroom count was estimated from room names. Review it before calculating.")
+    if bedrooms_explicit is None:
+        warnings.append("Bedroom count was estimated from room names. Review it before calculating.")
     return payload, warnings

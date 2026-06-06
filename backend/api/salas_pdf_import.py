@@ -109,8 +109,14 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
 
     floor_area_match = re.search(r"Floor Area Served\s+([\d,]+\.?\d*)\s*SF", p1_text)
     load_match = re.search(r"Sensible Load\s+([\d,]+)\s*Btu/hr\s+([\d,]+)\s*Btu/hr", p1_text)
+    bedrooms_match = re.search(r"^(\d+)\s+Range\s", p1_text, re.MULTILINE)
+    volume_match = re.search(r"(?:Volume\s+)?([\d ,]+)\s*ft3", p1_text)
     p2_text = pdf.pages[1].extract_text() or "" if len(pdf.pages) > 1 else ""
     facing_match = re.search(r"House Faces:\s*(.+?)(?:\n|$)", f"{p1_text}\n{p2_text}")
+
+    volume_str = None
+    if volume_match:
+        volume_str = volume_match.group(1).replace(" ", "").replace(",", "")
 
     return {
         "units": units,
@@ -119,6 +125,8 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
         "cool_load": f"{load_match.group(1).replace(',', '')} Btu/hr" if load_match else "?",
         "heat_load": f"{load_match.group(2).replace(',', '')} Btu/hr" if load_match else "?",
         "facing": facing_match.group(1).strip() if facing_match else "-",
+        "bedrooms": int(bedrooms_match.group(1)) if bedrooms_match else None,
+        "volume": f"{volume_str} CF" if volume_str else None,
     }
 
 
@@ -554,12 +562,19 @@ def render_markdown(
             f"| {unit['name']} | {zone_desc} | {unit['sys_size']} | {unit['airflow']} | {unit['heat_kw']} | "
             f"{unit_info['floor_area']} | {unit_info['cool_load']} | {unit_info['heat_load']} |"
         )
-    lines += [
+    extra_lines = [
         "",
         f"**Total Floor Area:** {unit_info['floor_area']}  ",
         f"**House Sensible Cooling:** {unit_info['cool_load']}  ",
         f"**House Sensible Heating:** {unit_info['heat_load']}  ",
-        "",
+    ]
+    if unit_info.get("bedrooms") is not None:
+        extra_lines.append(f"**Bedrooms:** {unit_info['bedrooms']}  ")
+    if unit_info.get("volume"):
+        extra_lines.append(f"**Volume:** {unit_info['volume']}  ")
+    extra_lines.append("")
+    lines += extra_lines
+    lines += [
         "---",
         "",
         "### Zone & Room Index",
