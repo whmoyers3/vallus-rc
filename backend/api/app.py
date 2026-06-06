@@ -279,7 +279,7 @@ def create_app() -> FastAPI:
 
         return {**result, "warnings": warnings}
 
-    @api.delete("/api/battery/all")
+    @api.post("/api/battery/delete-all")
     def delete_all_battery(body: dict[str, Any]) -> dict[str, Any]:
         if not body.get("confirm"):
             raise HTTPException(status_code=422, detail="Must send {confirm: true} to delete all battery records.")

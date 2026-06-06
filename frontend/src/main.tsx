@@ -2487,8 +2487,8 @@ function AdminPanel() {
   async function deleteAllBattery() {
     setDeleteAllLoading(true);
     try {
-      const res = await fetch("/api/battery/all", {
-        method: "DELETE",
+      const res = await fetch("/api/battery/delete-all", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm: true }),
       });
