@@ -22,7 +22,19 @@
       "Bash(python3 -m uvicorn backend.api.app:app --reload --port 8000)",
       "Bash(curl -s http://localhost:8000/api/health)",
       "Bash(/opt/homebrew/bin/pandoc \"/Users/will/Documents/Claude/Projects/Load Calculation Software/resload_roadmap_v3.docx\" -o /tmp/roadmap.md)",
-      "Bash(/opt/homebrew/bin/pandoc \"/Users/will/Documents/Claude/Projects/Load Calculation Software/resload_roadmap_v3.docx\" -o /tmp/verify14.md)"
+      "Bash(/opt/homebrew/bin/pandoc \"/Users/will/Documents/Claude/Projects/Load Calculation Software/resload_roadmap_v3.docx\" -o /tmp/verify14.md)",
+      "Bash(pandoc --track-changes=all resload_roadmap_v3.docx -o /tmp/roadmap.md)",
+      "Bash(python -m pytest tests/test_phase1_hickory_c.py -v)",
+      "Bash(python3 -m pytest tests/test_phase1_hickory_c.py -v)",
+      "Bash(python3 -m pytest tests/test_phase1_hickory_c.py -q)",
+      "Bash(python3 -c \"from backend.api.database import Database, _compute_comparison_snapshot, _compute_import_fidelity; print\\('imports ok'\\)\")",
+      "Bash(python3 -m py_compile backend/api/database.py)",
+      "Bash(python3 -m py_compile backend/api/app.py)",
+      "Bash(python3 -m py_compile backend/api/markdown_import.py)",
+      "Bash(npx tsc *)",
+      "Bash(python3 -m pytest tests/test_phase1_hickory_c.py tests/test_phase2_hickory_c.py -q)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

@@ -30,6 +30,70 @@ DEFAULT_DESCRIPTIONS = {
 }
 
 
+KNOWN_FOUNDATIONS = {"Slab", "CBsmt", "UBsmt", "Crawl"}
+
+
+def _parse_hierarchy(description: str, project_field: str, filename: str) -> dict[str, str]:
+    """Extract plan_name, elevation, foundation, variations, builder_name, project_name
+    from Salas PDF Description/Project fields, falling back to filename parsing."""
+    result: dict[str, str] = {}
+
+    # Parse Project field: "ProjectName; BuilderName"
+    if project_field and project_field != filename:
+        parts = [p.strip() for p in project_field.split(";", 1)]
+        if len(parts) == 2:
+            result["project_name"] = parts[0]
+            result["builder_name"] = parts[1]
+        elif parts[0]:
+            result["project_name"] = parts[0]
+
+    # Parse Description field: "Plan - Elevation, Foundation[, Variations...]"
+    if description and description != filename:
+        dash_parts = description.split(" - ", 1)
+        result["plan_name"] = dash_parts[0].strip()
+        if len(dash_parts) > 1:
+            tokens = [t.strip() for t in dash_parts[1].split(",") if t.strip()]
+            if tokens:
+                if tokens[0] in KNOWN_FOUNDATIONS:
+                    result["foundation"] = tokens[0]
+                    if len(tokens) > 1:
+                        result["variations"] = ", ".join(tokens[1:])
+                else:
+                    result["elevation"] = tokens[0]
+                    if len(tokens) > 1:
+                        result["foundation"] = tokens[1]
+                    if len(tokens) > 2:
+                        result["variations"] = ", ".join(tokens[2:])
+        return result
+
+    # Fallback: parse filename (strip Resload/ACH50 suffixes)
+    name = re.sub(
+        r"\s+(?:ACH50\s+)?Resload(?:\s+ACH50)?$", "", filename, flags=re.IGNORECASE
+    ).strip()
+    foundation_match = re.search(r"\b(Slab|CBsmt|UBsmt|Crawl)\b", name)
+    if foundation_match:
+        before = name[: foundation_match.start()].strip()
+        result["foundation"] = foundation_match.group(1)
+        after = name[foundation_match.end() :].strip()
+        if after:
+            result["variations"] = after
+        # Last token before foundation may be an elevation code
+        before_tokens = before.rsplit(None, 1)
+        if len(before_tokens) == 2:
+            potential_plan, potential_elev = before_tokens
+            if re.fullmatch(r"[A-Z0-9](?:[A-Z0-9/\-]*[A-Z0-9])?", potential_elev):
+                result["plan_name"] = potential_plan
+                result["elevation"] = potential_elev
+            else:
+                result["plan_name"] = before
+        else:
+            result["plan_name"] = before
+    else:
+        result["plan_name"] = name
+
+    return result
+
+
 def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "item"
 
@@ -187,10 +251,12 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
 
     title_match = re.search(r"^#\s+(.+?)\s+[—-]\s+Cooling Load Data Export\s*$", text, re.MULTILINE)
     project_match = re.search(r"^\*\*Project:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
+    description_field_match = re.search(r"^\*\*Description:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     location_match = re.search(r"^\*\*Location:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     facing_match = re.search(r"^\*\*House Facing:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
     plan_name = title_match.group(1).strip() if title_match else re.sub(r"\.md$", "", filename, flags=re.IGNORECASE)
     project_description = project_match.group(1).strip() if project_match else "Imported Markdown project"
+    salas_description = description_field_match.group(1).strip() if description_field_match else ""
     location = location_match.group(1).strip() if location_match else ""
 
     _FACING_MAP = {
@@ -359,11 +425,14 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
         1 for room in rooms
         if re.search(r"\bbed(?:room)?\b|\bowner suite\b|\bmaster bed\b", room["name"], re.IGNORECASE)
     )
+    hierarchy = _parse_hierarchy(salas_description, project_description, plan_name)
     payload = {
         "project": {
             "name": plan_name,
             "location": location,
             "description": project_description,
+            # Structured hierarchy fields parsed from Salas Description/Project/filename
+            **{k: v for k, v in hierarchy.items() if v},
             "design_conditions": {
                 "outdoor_cooling_db": 95,
                 "outdoor_heating_db": 18,

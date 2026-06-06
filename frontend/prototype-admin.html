@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VRC Admin Panel — UI Prototype</title>
+<style>
+  :root {
+    --bg: #f5f5f5;
+    --card-bg: #fff;
+    --border: #e0e0e0;
+    --text: #1a1a1a;
+    --text-muted: #666;
+    --green: #16a34a;
+    --green-bg: #dcfce7;
+    --green-border: #86efac;
+    --red: #dc2626;
+    --red-bg: #fee2e2;
+    --red-border: #fca5a5;
+    --yellow: #ca8a04;
+    --yellow-bg: #fef9c3;
+    --yellow-border: #fde047;
+    --grey: #9ca3af;
+    --grey-bg: #f3f4f6;
+    --grey-border: #d1d5db;
+    --blue: #2563eb;
+    --blue-bg: #dbeafe;
+    --amber: #d97706;
+    --amber-bg: #fef3c7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+
+  .switcher {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: #1a1a1a; color: #fff; border-radius: 12px; padding: 6px;
+    display: flex; gap: 4px; z-index: 100; box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    font-size: 13px;
+  }
+  .switcher button {
+    background: transparent; color: #aaa; border: none; padding: 8px 16px;
+    border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
+    transition: all 0.15s;
+  }
+  .switcher button.active { background: #333; color: #fff; }
+  .switcher button:hover:not(.active) { color: #ddd; }
+
+  .variant { display: none; padding: 24px; max-width: 1400px; margin: 0 auto; padding-bottom: 80px; }
+  .variant.active { display: block; }
+  .variant-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; }
+  .variant-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .variant-desc { color: var(--text-muted); font-size: 14px; margin-bottom: 24px; }
+
+  .top-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .top-bar .filter-group { display: flex; gap: 4px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 3px; font-size: 13px; }
+  .top-bar .filter-btn { padding: 6px 14px; border: none; background: transparent; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--text-muted); font-weight: 500; }
+  .top-bar .filter-btn.active { background: var(--text); color: #fff; }
+  .top-bar .spacer { flex: 1; }
+  .btn { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-outline { background: var(--card-bg); color: var(--text); border: 1px solid var(--border); }
+  .btn-green { background: var(--green); color: #fff; }
+
+  .settings-drawer { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: none; }
+  .settings-drawer.open { display: flex; gap: 32px; align-items: center; flex-wrap: wrap; }
+  .settings-drawer label { font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .settings-drawer .setting { display: flex; flex-direction: column; gap: 4px; }
+  .settings-drawer input[type="number"] { width: 80px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; }
+
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
+  .badge-green { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+  .badge-red { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+  .badge-yellow { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
+  .badge-grey { background: var(--grey-bg); color: var(--grey); border: 1px solid var(--grey-border); }
+  .badge-amber { background: var(--amber-bg); color: var(--amber); border: 1px solid #fbbf24; }
+  .badge-blue { background: var(--blue-bg); color: var(--blue); border: 1px solid #93c5fd; }
+
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot-green { background: var(--green); }
+  .dot-red { background: var(--red); }
+  .dot-yellow { background: var(--yellow); }
+  .dot-grey { background: var(--grey); }
+
+  /* VARIANT A */
+  .va-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .va-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 16px; cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; position: relative; }
+  .va-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-color: #ccc; }
+  .va-card.expanded { grid-column: 1 / -1; cursor: default; }
+  .va-card .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+  .va-card .plan-name { font-size: 15px; font-weight: 700; }
+  .va-card .plan-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .va-card .badges { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .va-card .metrics { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .va-card .metric { text-align: center; padding: 8px 4px; border-radius: 8px; }
+  .va-card .metric-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; }
+  .va-card .metric-value { font-size: 16px; font-weight: 700; margin-top: 2px; }
+  .va-card .metric-sub { font-size: 11px; color: var(--text-muted); }
+  .va-card .accuracy-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 12px 0 0 12px; }
+  .va-card .accuracy-stripe.green { background: var(--green); }
+  .va-card .accuracy-stripe.grey { background: var(--grey-border); }
+  .va-card .accuracy-stripe.red { background: var(--red); }
+
+  .room-detail { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px; display: none; }
+  .va-card.expanded .room-detail { display: block; }
+  .room-detail table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .room-detail th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .room-detail td { padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }
+  .room-detail tr:last-child td { border-bottom: none; }
+
+  /* VARIANT B */
+  .vb-table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--card-bg); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; }
+  .vb-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; padding: 12px 14px; border-bottom: 1px solid var(--border); background: #fafafa; position: sticky; top: 0; }
+  .vb-table td { padding: 12px 14px; border-bottom: 1px solid #f0f0f0; font-size: 13px; vertical-align: middle; }
+  .vb-table tr:last-child td { border-bottom: none; }
+  .vb-table tr:hover td { background: #fafafa; }
+  .vb-table .plan-cell { font-weight: 600; }
+  .vb-table .delta-cell { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  .recompute-banner { background: var(--blue-bg); border: 1px solid #93c5fd; border-radius: 10px; padding: 12px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; font-size: 13px; }
+  .recompute-banner .icon { font-size: 18px; }
+
+  /* VARIANT C */
+  .vc-columns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .vc-column { min-width: 0; }
+  .vc-column-header { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .vc-column-count { font-size: 12px; font-weight: 600; background: var(--grey-bg); color: var(--text-muted); padding: 2px 8px; border-radius: 99px; }
+  .vc-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+  .vc-card .vc-plan { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .vc-card .vc-meta { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
+  .vc-card .vc-metrics { display: flex; gap: 12px; font-size: 12px; }
+  .vc-card .vc-metric-label { color: var(--text-muted); }
+  .vc-card .vc-metric-value { font-weight: 700; }
+
+  .change-indicator { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+  .change-improved { background: var(--green-bg); color: var(--green); }
+  .change-regressed { background: var(--red-bg); color: var(--red); }
+  .change-unchanged { background: var(--yellow-bg); color: var(--yellow); }
+
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 200; justify-content: center; align-items: center; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--card-bg); border-radius: 16px; padding: 24px; width: 560px; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  .modal h3 { font-size: 18px; margin-bottom: 4px; }
+  .modal .modal-desc { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
+  .modal .search-box { width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; margin-bottom: 12px; }
+  .modal .eligible-list { list-style: none; }
+  .modal .eligible-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  .modal .eligible-item:hover { background: #f5f5f5; }
+  .modal .eligible-item input[type="checkbox"] { width: 16px; height: 16px; }
+  .modal .eligible-item .item-name { font-weight: 600; }
+  .modal .eligible-item .item-meta { color: var(--text-muted); font-size: 12px; }
+  .modal .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<!-- VARIANT A — Card Grid -->
+<div class="variant active" id="variant-a">
+  <div class="variant-label">Variant A</div>
+  <div class="variant-title">Card Grid — Compact</div>
+  <div class="variant-desc">Dense cards with left-edge accuracy stripe, badge row, and three-column metrics. Click to expand room detail.</div>
+
+  <div class="top-bar">
+    <div class="filter-group">
+      <button class="filter-btn active">Test Battery</button>
+      <button class="filter-btn">All Projects</button>
+      <button class="filter-btn">Salas Imports</button>
+    </div>
+    <button class="btn btn-outline" onclick="toggleSettings('a')">Settings</button>
+    <div class="spacer"></div>
+    <button class="btn btn-outline" onclick="toggleModal()">+ Add to Battery</button>
+    <button class="btn btn-primary">Recompute All</button>
+  </div>
+
+  <div class="settings-drawer" id="settings-a">
+    <div class="setting"><label>Tolerance %</label><input type="number" value="5" min="1" max="20"></div>
+    <div class="setting"><label>Tolerance BTU/hr</label><input type="number" value="200" min="50" step="50"></div>
+    <div class="setting"><label>Accuracy Threshold BTU/hr</label><input type="number" value="50" min="10" step="10"></div>
+  </div>
+
+  <div class="va-grid">
+    <div class="va-card" onclick="this.classList.toggle('expanded')">
+      <div class="accuracy-stripe green"></div>
+      <div class="card-header"><div><div class="plan-name">Hickory C Slab</div><div class="plan-meta">Davidson Homes · Braselton, GA · Slab · 2,663 SF</div></div></div>
+      <div class="badges">
+        <span class="badge badge-green"><span class="dot dot-green"></span> Accurate</span>
+        <span class="badge badge-green"><span class="dot dot-green"></span> Inputs Verified</span>
+        <span class="badge badge-green"><span class="dot dot-green"></span> Rooms OK</span>
+      </div>
+      <div class="metrics">
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Cooling</div><div class="metric-value" style="color:var(--green)">+0.7%</div><div class="metric-sub">+182 BTU/hr</div></div>
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Heating</div><div class="metric-value" style="color:var(--green)">-0.4%</div><div class="metric-sub">-115 BTU/hr</div></div>
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Min Tons</div><div class="metric-value" style="color:var(--green)">+0.02</div><div class="metric-sub">2.83 vs 2.81</div></div>
+      </div>
+      <div class="room-detail"><table>
+        <tr><th>Room</th><th>VRC Cool</th><th>Salas Cool</th><th>Δ Cool</th><th>VRC Heat</th><th>Salas Heat</th><th>Δ Heat</th><th></th></tr>
+        <tr><td>Family</td><td>4,111</td><td>4,050</td><td style="color:var(--text-muted)">+1.5%</td><td>3,983</td><td>4,010</td><td style="color:var(--text-muted)">-0.7%</td><td><span class="dot dot-green"></span></td></tr>
+        <tr><td>Kitchen</td><td>3,461</td><td>3,420</td><td style="color:var(--text-muted)">+1.2%</td><td>2,198</td><td>2,180</td><td style="color:var(--text-muted)">+0.8%</td><td><span class="dot dot-green"></span></td></tr>
+        <tr><td>Study</td><td>1,582</td><td>1,560</td><td style="color:var(--text-muted)">+1.4%</td><td>3,053</td><td>3,100</td><td style="color:var(--text-muted)">-1.5%</td><td><span class="dot dot-green"></span></td></tr>
+        <tr><td>Owners Bed</td><td>3,178</td><td>3,150</td><td style="color:var(--text-muted)">+0.9%</td><td>3,201</td><td>3,230</td><td style="color:var(--text-muted)">-0.9%</td><td><span class="dot dot-green"></span></td></tr>
+        <tr><td>Breakfast</td><td>1,680</td><td>1,665</td><td style="color:var(--text-muted)">+0.9%</td><td>1,896</td><td>1,910</td><td style="color:var(--text-muted)">-0.7%</td><td><span class="dot dot-green"></span></td></tr>
+      </table></div>
+    </div>
+
+    <div class="va-card" onclick="this.classList.toggle('expanded')">
+      <div class="accuracy-stripe grey"></div>
+      <div class="card-header"><div><div class="plan-name">Finley 2A Slab CBonus</div><div class="plan-meta">Davidson Homes · Braselton, GA · Slab · 3,100 SF</div></div></div>
+      <div class="badges">
+        <span class="badge badge-grey"><span class="dot dot-grey"></span> Outside Threshold</span>
+        <span class="badge badge-green"><span class="dot dot-green"></span> Inputs Verified</span>
+        <span class="badge badge-amber"><span class="dot dot-yellow"></span> 2 Room Outliers</span>
+      </div>
+      <div class="metrics">
+        <div class="metric" style="background:var(--grey-bg)"><div class="metric-label">Cooling</div><div class="metric-value">+3.2%</div><div class="metric-sub">+845 BTU/hr</div></div>
+        <div class="metric" style="background:var(--red-bg)"><div class="metric-label">Heating</div><div class="metric-value" style="color:var(--red)">-4.8%</div><div class="metric-sub">-1,410 BTU/hr</div></div>
+        <div class="metric" style="background:var(--grey-bg)"><div class="metric-label">Min Tons</div><div class="metric-value">+0.09</div><div class="metric-sub">3.21 vs 3.12</div></div>
+      </div>
+      <div class="room-detail"><table>
+        <tr><th>Room</th><th>VRC Cool</th><th>Salas Cool</th><th>Δ Cool</th><th>VRC Heat</th><th>Salas Heat</th><th>Δ Heat</th><th></th></tr>
+        <tr style="background:var(--red-bg)"><td>Bonus Room</td><td>4,820</td><td>4,200</td><td style="color:var(--red)">+14.8%</td><td>3,100</td><td>3,050</td><td style="color:var(--text-muted)">+1.6%</td><td><span class="dot dot-red"></span></td></tr>
+        <tr style="background:var(--red-bg)"><td>Great Room</td><td>5,200</td><td>5,800</td><td style="color:var(--red)">-10.3%</td><td>4,500</td><td>4,480</td><td style="color:var(--text-muted)">+0.4%</td><td><span class="dot dot-red"></span></td></tr>
+        <tr><td>Kitchen</td><td>3,100</td><td>3,050</td><td style="color:var(--text-muted)">+1.6%</td><td>2,400</td><td>2,380</td><td style="color:var(--text-muted)">+0.8%</td><td><span class="dot dot-green"></span></td></tr>
+        <tr><td>Owner Suite</td><td>2,900</td><td>2,870</td><td style="color:var(--text-muted)">+1.0%</td><td>3,200</td><td>3,180</td><td style="color:var(--text-muted)">+0.6%</td><td><span class="dot dot-green"></span></td></tr>
+      </table></div>
+    </div>
+
+    <div class="va-card" onclick="this.classList.toggle('expanded')">
+      <div class="accuracy-stripe green"></div>
+      <div class="card-header"><div><div class="plan-name">Dogwood Slab</div><div class="plan-meta">Davidson Homes · Braselton, GA · Slab · 1,850 SF</div></div></div>
+      <div class="badges">
+        <span class="badge badge-green"><span class="dot dot-green"></span> Accurate</span>
+        <span class="badge badge-green"><span class="dot dot-green"></span> Inputs Verified</span>
+        <span class="badge badge-green"><span class="dot dot-green"></span> Rooms OK</span>
+      </div>
+      <div class="metrics">
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Cooling</div><div class="metric-value" style="color:var(--green)">+0.3%</div><div class="metric-sub">+48 BTU/hr</div><div class="change-indicator change-improved">Improved</div></div>
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Heating</div><div class="metric-value" style="color:var(--green)">+0.1%</div><div class="metric-sub">+22 BTU/hr</div><div class="change-indicator change-improved">Improved</div></div>
+        <div class="metric" style="background:var(--yellow-bg)"><div class="metric-label">Min Tons</div><div class="metric-value" style="color:var(--yellow)">+0.01</div><div class="metric-sub">2.07 vs 2.06</div><div class="change-indicator change-unchanged">No change</div></div>
+      </div>
+    </div>
+
+    <div class="va-card" onclick="this.classList.toggle('expanded')">
+      <div class="accuracy-stripe grey"></div>
+      <div class="card-header"><div><div class="plan-name">Belfort D2-D3 Slab</div><div class="plan-meta">Davidson Homes · Braselton, GA · Slab · 2,940 SF</div></div></div>
+      <div class="badges">
+        <span class="badge badge-grey"><span class="dot dot-grey"></span> Outside Threshold</span>
+        <span class="badge badge-amber"><span class="dot dot-yellow"></span> Input Mismatch</span>
+        <span class="badge badge-grey"><span class="dot dot-grey"></span> 4 Room Outliers</span>
+      </div>
+      <div class="metrics">
+        <div class="metric" style="background:var(--amber-bg)"><div class="metric-label">Cooling</div><div class="metric-value" style="color:var(--amber)">+8.1%</div><div class="metric-sub">+2,450 BTU/hr</div></div>
+        <div class="metric" style="background:var(--amber-bg)"><div class="metric-label">Heating</div><div class="metric-value" style="color:var(--amber)">+6.3%</div><div class="metric-sub">+1,920 BTU/hr</div></div>
+        <div class="metric" style="background:var(--amber-bg)"><div class="metric-label">Min Tons</div><div class="metric-value" style="color:var(--amber)">+0.27</div><div class="metric-sub">3.63 vs 3.36</div></div>
+      </div>
+    </div>
+
+    <div class="va-card" onclick="this.classList.toggle('expanded')">
+      <div class="accuracy-stripe red"></div>
+      <div class="card-header"><div><div class="plan-name">Mansfield P UBsmt</div><div class="plan-meta">Davidson Homes · Braselton, GA · Unfinished Bsmt · 3,400 SF</div></div></div>
+      <div class="badges">
+        <span class="badge badge-grey"><span class="dot dot-grey"></span> Outside Threshold</span>
+        <span class="badge badge-green"><span class="dot dot-green"></span> Inputs Verified</span>
+        <span class="badge badge-amber"><span class="dot dot-yellow"></span> 1 Room Outlier</span>
+      </div>
+      <div class="metrics">
+        <div class="metric" style="background:var(--red-bg)"><div class="metric-label">Cooling</div><div class="metric-value" style="color:var(--red)">+5.1%</div><div class="metric-sub">+1,580 BTU/hr</div><div class="change-indicator change-regressed">Regressed</div></div>
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Heating</div><div class="metric-value" style="color:var(--green)">-1.2%</div><div class="metric-sub">-420 BTU/hr</div><div class="change-indicator change-improved">Improved</div></div>
+        <div class="metric" style="background:var(--red-bg)"><div class="metric-label">Min Tons</div><div class="metric-value" style="color:var(--red)">+0.18</div><div class="metric-sub">3.62 vs 3.44</div><div class="change-indicator change-regressed">Regressed</div></div>
+      </div>
+    </div>
+
+    <div class="va-card" onclick="this.classList.toggle('expanded')">
+      <div class="accuracy-stripe green"></div>
+      <div class="card-header"><div><div class="plan-name">Williams Slab</div><div class="plan-meta">Davidson Homes · Braselton, GA · Slab · 2,200 SF</div></div></div>
+      <div class="badges">
+        <span class="badge badge-green"><span class="dot dot-green"></span> Accurate</span>
+        <span class="badge badge-green"><span class="dot dot-green"></span> Inputs Verified</span>
+        <span class="badge badge-green"><span class="dot dot-green"></span> Rooms OK</span>
+      </div>
+      <div class="metrics">
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Cooling</div><div class="metric-value" style="color:var(--green)">+0.1%</div><div class="metric-sub">+18 BTU/hr</div></div>
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Heating</div><div class="metric-value" style="color:var(--green)">-0.2%</div><div class="metric-sub">-52 BTU/hr</div></div>
+        <div class="metric" style="background:var(--green-bg)"><div class="metric-label">Min Tons</div><div class="metric-value" style="color:var(--green)">0.00</div><div class="metric-sub">2.45 vs 2.45</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- VARIANT B — Table -->
+<div class="variant" id="variant-b">
+  <div class="variant-label">Variant B</div>
+  <div class="variant-title">Table View — Scannable</div>
+  <div class="variant-desc">Maximum density. Each row is one project. Sortable columns. Best for quick triage across many projects at once.</div>
+
+  <div class="top-bar">
+    <div class="filter-group">
+      <button class="filter-btn active">Test Battery</button>
+      <button class="filter-btn">All Projects</button>
+      <button class="filter-btn">Salas Imports</button>
+    </div>
+    <button class="btn btn-outline" onclick="toggleSettings('b')">Settings</button>
+    <div class="spacer"></div>
+    <button class="btn btn-outline" onclick="toggleModal()">+ Add to Battery</button>
+    <button class="btn btn-primary">Recompute All</button>
+  </div>
+
+  <div class="settings-drawer" id="settings-b">
+    <div class="setting"><label>Tolerance %</label><input type="number" value="5" min="1" max="20"></div>
+    <div class="setting"><label>Tolerance BTU/hr</label><input type="number" value="200" min="50" step="50"></div>
+    <div class="setting"><label>Accuracy Threshold BTU/hr</label><input type="number" value="50" min="10" step="10"></div>
+  </div>
+
+  <div class="recompute-banner">
+    <span class="icon">&#x27F3;</span>
+    <span>Recomputed at 2:34 PM — showing live engine results. <strong>3 improved, 1 regressed, 2 unchanged.</strong></span>
+    <div class="spacer"></div>
+    <button class="btn btn-green">Save Snapshots</button>
+    <button class="btn btn-outline">Export Snapshot</button>
+  </div>
+
+  <table class="vb-table">
+    <thead><tr>
+      <th>Status</th><th>Plan</th><th>Foundation</th><th>SF</th><th>Cooling Δ</th><th>Heating Δ</th><th>Min Tons Δ</th><th>Rooms</th><th>Inputs</th><th>Change</th>
+    </tr></thead>
+    <tbody>
+      <tr><td><span class="dot dot-green"></span></td><td class="plan-cell">Hickory C Slab</td><td>Slab</td><td>2,663</td><td class="delta-cell" style="color:var(--green)">+0.7%</td><td class="delta-cell" style="color:var(--green)">-0.4%</td><td class="delta-cell" style="color:var(--green)">+0.02</td><td><span class="badge badge-green">OK</span></td><td><span class="badge badge-green">✓</span></td><td><span class="change-indicator change-improved">Improved</span></td></tr>
+      <tr><td><span class="dot dot-grey"></span></td><td class="plan-cell">Finley 2A Slab CBonus</td><td>Slab</td><td>3,100</td><td class="delta-cell">+3.2%</td><td class="delta-cell" style="color:var(--red)">-4.8%</td><td class="delta-cell">+0.09</td><td><span class="badge badge-amber">2</span></td><td><span class="badge badge-green">✓</span></td><td><span class="change-indicator change-improved">Improved</span></td></tr>
+      <tr><td><span class="dot dot-green"></span></td><td class="plan-cell">Dogwood Slab</td><td>Slab</td><td>1,850</td><td class="delta-cell" style="color:var(--green)">+0.3%</td><td class="delta-cell" style="color:var(--green)">+0.1%</td><td class="delta-cell" style="color:var(--green)">+0.01</td><td><span class="badge badge-green">OK</span></td><td><span class="badge badge-green">✓</span></td><td><span class="change-indicator change-unchanged">No change</span></td></tr>
+      <tr><td><span class="dot dot-grey"></span></td><td class="plan-cell">Belfort D2-D3 Slab</td><td>Slab</td><td>2,940</td><td class="delta-cell" style="color:var(--amber)">+8.1%</td><td class="delta-cell" style="color:var(--amber)">+6.3%</td><td class="delta-cell" style="color:var(--amber)">+0.27</td><td><span class="badge badge-amber">4</span></td><td><span class="badge badge-amber">⚠</span></td><td><span class="change-indicator change-unchanged">No change</span></td></tr>
+      <tr><td><span class="dot dot-red"></span></td><td class="plan-cell">Mansfield P UBsmt</td><td>Unfin. Bsmt</td><td>3,400</td><td class="delta-cell" style="color:var(--red)">+5.1%</td><td class="delta-cell" style="color:var(--green)">-1.2%</td><td class="delta-cell" style="color:var(--red)">+0.18</td><td><span class="badge badge-amber">1</span></td><td><span class="badge badge-green">✓</span></td><td><span class="change-indicator change-regressed">Regressed</span></td></tr>
+      <tr><td><span class="dot dot-green"></span></td><td class="plan-cell">Williams Slab</td><td>Slab</td><td>2,200</td><td class="delta-cell" style="color:var(--green)">+0.1%</td><td class="delta-cell" style="color:var(--green)">-0.2%</td><td class="delta-cell" style="color:var(--green)">0.00</td><td><span class="badge badge-green">OK</span></td><td><span class="badge badge-green">✓</span></td><td><span class="change-indicator change-improved">Improved</span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- VARIANT C — Kanban columns -->
+<div class="variant" id="variant-c">
+  <div class="variant-label">Variant C</div>
+  <div class="variant-title">Status Columns — Triage</div>
+  <div class="variant-desc">Projects grouped by accuracy status. Immediately shows what needs attention vs. what's passing. Best for the group review on a shared screen.</div>
+
+  <div class="top-bar">
+    <div class="filter-group">
+      <button class="filter-btn active">Test Battery</button>
+      <button class="filter-btn">All Projects</button>
+      <button class="filter-btn">Salas Imports</button>
+    </div>
+    <button class="btn btn-outline" onclick="toggleSettings('c')">Settings</button>
+    <div class="spacer"></div>
+    <button class="btn btn-outline" onclick="toggleModal()">+ Add to Battery</button>
+    <button class="btn btn-primary">Recompute All</button>
+  </div>
+
+  <div class="settings-drawer" id="settings-c">
+    <div class="setting"><label>Tolerance %</label><input type="number" value="5" min="1" max="20"></div>
+    <div class="setting"><label>Tolerance BTU/hr</label><input type="number" value="200" min="50" step="50"></div>
+    <div class="setting"><label>Accuracy Threshold BTU/hr</label><input type="number" value="50" min="10" step="10"></div>
+  </div>
+
+  <div class="vc-columns">
+    <div class="vc-column">
+      <div class="vc-column-header"><span class="dot dot-green" style="width:10px;height:10px"></span> Accurate <span class="vc-column-count">3</span></div>
+      <div class="vc-card" style="border-left:3px solid var(--green)"><div class="vc-plan">Hickory C Slab</div><div class="vc-meta">Slab · 2,663 SF · <span class="badge badge-green" style="font-size:10px">Rooms OK</span></div><div class="vc-metrics"><div><span class="vc-metric-label">Cool</span> <span class="vc-metric-value" style="color:var(--green)">+0.7%</span></div><div><span class="vc-metric-label">Heat</span> <span class="vc-metric-value" style="color:var(--green)">-0.4%</span></div><div><span class="vc-metric-label">Tons</span> <span class="vc-metric-value" style="color:var(--green)">+0.02</span></div></div></div>
+      <div class="vc-card" style="border-left:3px solid var(--green)"><div class="vc-plan">Dogwood Slab</div><div class="vc-meta">Slab · 1,850 SF · <span class="badge badge-green" style="font-size:10px">Rooms OK</span></div><div class="vc-metrics"><div><span class="vc-metric-label">Cool</span> <span class="vc-metric-value" style="color:var(--green)">+0.3%</span></div><div><span class="vc-metric-label">Heat</span> <span class="vc-metric-value" style="color:var(--green)">+0.1%</span></div><div><span class="vc-metric-label">Tons</span> <span class="vc-metric-value" style="color:var(--green)">+0.01</span></div></div></div>
+      <div class="vc-card" style="border-left:3px solid var(--green)"><div class="vc-plan">Williams Slab</div><div class="vc-meta">Slab · 2,200 SF · <span class="badge badge-green" style="font-size:10px">Rooms OK</span></div><div class="vc-metrics"><div><span class="vc-metric-label">Cool</span> <span class="vc-metric-value" style="color:var(--green)">+0.1%</span></div><div><span class="vc-metric-label">Heat</span> <span class="vc-metric-value" style="color:var(--green)">-0.2%</span></div><div><span class="vc-metric-label">Tons</span> <span class="vc-metric-value" style="color:var(--green)">0.00</span></div></div></div>
+    </div>
+
+    <div class="vc-column">
+      <div class="vc-column-header"><span class="dot dot-yellow" style="width:10px;height:10px"></span> Needs Review <span class="vc-column-count">2</span></div>
+      <div class="vc-card" style="border-left:3px solid var(--yellow)"><div class="vc-plan">Finley 2A Slab CBonus</div><div class="vc-meta">Slab · 3,100 SF · <span class="badge badge-amber" style="font-size:10px">2 Outliers</span></div><div class="vc-metrics"><div><span class="vc-metric-label">Cool</span> <span class="vc-metric-value">+3.2%</span></div><div><span class="vc-metric-label">Heat</span> <span class="vc-metric-value" style="color:var(--red)">-4.8%</span></div><div><span class="vc-metric-label">Tons</span> <span class="vc-metric-value">+0.09</span></div></div></div>
+      <div class="vc-card" style="border-left:3px solid var(--amber)"><div class="vc-plan">Belfort D2-D3 Slab</div><div class="vc-meta">Slab · 2,940 SF · <span class="badge badge-amber" style="font-size:10px">Input Mismatch</span> <span class="badge badge-amber" style="font-size:10px">4 Outliers</span></div><div class="vc-metrics"><div><span class="vc-metric-label">Cool</span> <span class="vc-metric-value" style="color:var(--amber)">+8.1%</span></div><div><span class="vc-metric-label">Heat</span> <span class="vc-metric-value" style="color:var(--amber)">+6.3%</span></div><div><span class="vc-metric-label">Tons</span> <span class="vc-metric-value" style="color:var(--amber)">+0.27</span></div></div></div>
+    </div>
+
+    <div class="vc-column">
+      <div class="vc-column-header"><span class="dot dot-red" style="width:10px;height:10px"></span> Regressed <span class="vc-column-count">1</span></div>
+      <div class="vc-card" style="border-left:3px solid var(--red)"><div class="vc-plan">Mansfield P UBsmt</div><div class="vc-meta">Unfin. Bsmt · 3,400 SF · <span class="badge badge-amber" style="font-size:10px">1 Outlier</span></div><div class="vc-metrics"><div><span class="vc-metric-label">Cool</span> <span class="vc-metric-value" style="color:var(--red)">+5.1%</span> <span class="change-indicator change-regressed">&#8593;</span></div><div><span class="vc-metric-label">Heat</span> <span class="vc-metric-value" style="color:var(--green)">-1.2%</span> <span class="change-indicator change-improved">&#8595;</span></div><div><span class="vc-metric-label">Tons</span> <span class="vc-metric-value" style="color:var(--red)">+0.18</span> <span class="change-indicator change-regressed">&#8593;</span></div></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Add to Battery Modal -->
+<div class="modal-overlay" id="add-modal">
+  <div class="modal">
+    <h3>Add to Test Battery</h3>
+    <div class="modal-desc">Select eligible projects with Salas reference data and passing import fidelity.</div>
+    <input class="search-box" type="text" placeholder="Search by plan name, builder, foundation..." oninput="filterEligible(this.value)">
+    <ul class="eligible-list" id="eligible-list">
+      <li class="eligible-item"><input type="checkbox"><div><div class="item-name">Ash B Slab Bed4 Loft</div><div class="item-meta">Davidson Homes · Slab · 2,800 SF</div></div></li>
+      <li class="eligible-item"><input type="checkbox"><div><div class="item-name">Carrington A-B-C Slab</div><div class="item-meta">Davidson Homes · Slab · 3,200 SF</div></div></li>
+      <li class="eligible-item"><input type="checkbox"><div><div class="item-name">Carrington E Slab SunRm</div><div class="item-meta">Davidson Homes · Slab · 3,450 SF</div></div></li>
+      <li class="eligible-item"><input type="checkbox"><div><div class="item-name">Evergreen TH A Slab Left</div><div class="item-meta">Davidson Homes · Slab · 1,600 SF</div></div></li>
+      <li class="eligible-item"><input type="checkbox"><div><div class="item-name">Evergreen TH C Slab Mid</div><div class="item-meta">Davidson Homes · Slab · 1,400 SF</div></div></li>
+      <li class="eligible-item"><input type="checkbox"><div><div class="item-name">Savannah A-B Slab CBonus</div><div class="item-meta">Davidson Homes · Slab · 2,950 SF</div></div></li>
+      <li class="eligible-item"><input type="checkbox"><div><div class="item-name">Six Sisters CBsmt E-Facing</div><div class="item-meta">Davidson Homes · Cond. Bsmt · 3,800 SF</div></div></li>
+      <li class="eligible-item"><input type="checkbox"><div><div class="item-name">Tranquility UBsmt SW-Facing</div><div class="item-meta">Davidson Homes · Unfin. Bsmt · 3,600 SF</div></div></li>
+    </ul>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="toggleModal()">Cancel</button>
+      <button class="btn btn-primary">Add Selected (0)</button>
+    </div>
+  </div>
+</div>
+
+<!-- Variant switcher bar -->
+<div class="switcher">
+  <button class="active" onclick="switchVariant('a',this)">A · Card Grid</button>
+  <button onclick="switchVariant('b',this)">B · Table</button>
+  <button onclick="switchVariant('c',this)">C · Status Columns</button>
+</div>
+
+<script>
+function switchVariant(id, btn) {
+  document.querySelectorAll('.variant').forEach(v => v.classList.remove('active'));
+  document.getElementById('variant-' + id).classList.add('active');
+  document.querySelectorAll('.switcher button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+function toggleSettings(id) { document.getElementById('settings-' + id).classList.toggle('open'); }
+function toggleModal() { document.getElementById('add-modal').classList.toggle('open'); }
+function filterEligible(query) {
+  var q = query.toLowerCase();
+  document.querySelectorAll('.eligible-item').forEach(function(item) {
+    item.style.display = item.textContent.toLowerCase().includes(q) ? 'flex' : 'none';
+  });
+}
+document.getElementById('add-modal').addEventListener('click', function(e) { if (e.target === this) toggleModal(); });
+</script>
+</body>
+</html>
