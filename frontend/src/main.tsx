@@ -2340,13 +2340,19 @@ function AdminPanel() {
           for (const level of salas?.levels ?? []) {
             for (const rm of level.rooms ?? []) salasRooms[rm.name] = rm;
           }
+          // Also support flat rooms dict (keyed by room name)
+          if (salas?.rooms && typeof salas.rooms === "object" && !Array.isArray(salas.rooms)) {
+            for (const [name, data] of Object.entries(salas.rooms as Record<string, any>)) {
+              if (!(name in salasRooms)) salasRooms[name] = data;
+            }
+          }
           const res_data = r.result;
           const snap: ComparisonSnapshot = {
             computed_at: new Date().toISOString(),
             system: {
-              vrc_cooling_btuh: res_data.sensible_cooling ?? res_data.whole_house?.sensible_cooling ?? 0,
+              vrc_cooling_btuh: res_data.whole_house_sensible_cooling ?? res_data.sensible_cooling ?? res_data.whole_house?.sensible_cooling ?? 0,
               salas_cooling_btuh: house.cooling_btuh ?? null,
-              vrc_heating_btuh: res_data.heating ?? res_data.whole_house?.heating ?? 0,
+              vrc_heating_btuh: res_data.whole_house_heating ?? res_data.heating ?? res_data.whole_house?.heating ?? 0,
               salas_heating_btuh: house.heating_btuh ?? null,
               vrc_min_tons: res_data.tons_min ?? res_data.whole_house?.tons_min ?? 0,
               salas_min_tons: house.min_tons ?? null,
@@ -2399,10 +2405,15 @@ function AdminPanel() {
   async function exportSnapshot() {
     setExportLoading(true);
     try {
+      const exportBattery = battery.map((row) => (
+        recomputed.has(row.id)
+          ? { ...row, comparison_snapshot: recomputed.get(row.id) ?? row.comparison_snapshot }
+          : row
+      ));
       const res = await fetch("/api/battery/snapshot/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label: exportLabel }),
+        body: JSON.stringify({ label: exportLabel, battery: exportBattery }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();

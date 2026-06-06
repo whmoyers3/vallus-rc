@@ -9,7 +9,7 @@ import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +37,7 @@ class BatchCalculatePayload(BaseModel):
 
 class SnapshotExportPayload(BaseModel):
     label: str = ""
+    battery: Optional[list[dict[str, Any]]] = None
 
 
 class MarkdownImportPayload(BaseModel):
@@ -294,7 +295,7 @@ def create_app() -> FastAPI:
 
     @api.post("/api/battery/snapshot/export")
     def export_battery_snapshot(body: SnapshotExportPayload) -> Response:
-        battery = database.list_battery()
+        battery = body.battery if body.battery is not None else database.list_battery()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S")
         label = re.sub(r"[^a-zA-Z0-9_-]", "-", body.label).strip("-") if body.label else ""
         filename = f"{now}_{label}.json" if label else f"{now}.json"
