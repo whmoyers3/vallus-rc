@@ -287,12 +287,14 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
                 if qty is None:
                     continue
                 spec = _master_specs.get((code, variant)) or _master_specs.get((code, ""), {})
+                # Prefer the per-room CLTD (col 5) so the match key de-collapses doors etc.
+                row_cltd = _number(row[5]) if len(row) > 5 and str(row[5]).strip() not in {"", "-", "—"} else None
                 type_label = _TYPE_MAP.get(code[0].upper(), code[0].upper()) if code else "Unknown"
                 components.append({
                     "type": type_label,
                     "type_code": code,
                     "u_value": spec.get("u_value"),
-                    "cltd": spec.get("cltd"),
+                    "cltd": row_cltd if row_cltd is not None else spec.get("cltd"),
                     "clf": spec.get("clf"),
                     "qty": qty,
                     "salas_cool_btuh": cool_btuh,
@@ -461,14 +463,22 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
                 }
                 if direction:
                     component["direction"] = direction
-                elif component["kind"] == "opaque":
-                    # Boundary condition (non-directional): the CLTD is a per-project
-                    # input read straight from the Salas schedule, not a climate-derived
-                    # value. Populating it lets the engine use e.g. a conditioned-attic
-                    # W3 = 15 instead of the hardcoded vented-attic default of 55.
-                    spec = variant_specs.get((code, description.strip()))
-                    if spec and spec.get("cltd") is not None:
-                        component["cooling_cltd"] = spec["cltd"]
+                elif component["kind"] == "opaque" and code != "C2":
+                    # Boundary condition (non-directional): the CLTD is a per-project input.
+                    # Prefer the PER-ROOM CLTD (SECTION 3 col 5) — it de-collapses components
+                    # that share a (code, variant) but differ per room, e.g. D2 garage doors
+                    # (30 vs 15). Fall back to the schedule value if the per-room CLTD is absent.
+                    # Lets the engine use e.g. a conditioned-attic W3 = 15 instead of 55.
+                    # EXCEPTION: vaulted ceilings (C2) are skipped — Salas's schedule shows
+                    # CLTD 55 but actually computes with ~78 (45° slope factor). The engine's
+                    # VAULTED_CEILING default (78) handles it. See constants.py / changelog.
+                    row_cltd = _number(row[5]) if len(row) > 5 else None
+                    if row_cltd is not None:
+                        component["cooling_cltd"] = row_cltd
+                    else:
+                        spec = variant_specs.get((code, description.strip()))
+                        if spec and spec.get("cltd") is not None:
+                            component["cooling_cltd"] = spec["cltd"]
             room_components.append(component)
             line_items.append(component)
 

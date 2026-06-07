@@ -51,7 +51,15 @@ SPECIAL_CLTD: dict[str, int] = {
     "ATTIC_WALL": 55,
     "KNEEWALL": 55,
     "FLAT_CEILING": 55,
-    "VAULTED_CEILING": 55,
+    # VAULTED/cathedral ceiling = flat-ceiling CLTD (55) x √2 ≈ 78, a 45° roof-slope
+    # factor (sloped surface area = projected x √2). Verified at exactly 77.8 on Finley
+    # AND Williams. Salas's schedule DISPLAYS 55 for vaulted but computes with ~78, so the
+    # importer deliberately does NOT populate vaulted CLTD from the schedule (see
+    # markdown_import.py). ⚠️ TROUBLESHOOTING: this assumes a fixed 45° pitch (Option A). If
+    # a resload with a different roof pitch shows an effective vaulted CLTD ≠ 78
+    # (i.e. ratio-to-55 ≠ √2≈1.414), switch to Option B: apply a per-project sloped-area
+    # factor to vaulted area instead of a fixed CLTD. See model_changelog 2026-06-07.
+    "VAULTED_CEILING": 78,
     "SLAB": 0,
     "FRAMED_FLOOR": 11,
     "CRAWLSPACE": 11,

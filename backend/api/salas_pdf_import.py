@@ -205,6 +205,21 @@ def extract_header_fields(pdf: Any) -> dict[str, str]:
     }
 
 
+def _construction_u_values(page0_text: str) -> dict[str, str]:
+    """Full-precision U-values from the cover-page Construction Descriptions table.
+
+    The per-component cooling tables display U rounded to 2 decimals (0.077 -> 0.08,
+    0.033 -> 0.03), which Salas does NOT use in its math. The construction-descriptions
+    table carries the real precision (``W1 0.077``, ``R1 0.033``). Parsing page 0 only
+    avoids the heating/cooling rows on later pages (e.g. ``W1 54 0.08 ...``).
+    """
+
+    out: dict[str, str] = {}
+    for match in re.finditer(r"^([A-Z]\d)\s+(\d*\.\d+|\d+)\s+\S", page0_text, re.MULTILINE):
+        out.setdefault(match.group(1), match.group(2))
+    return out
+
+
 def _report_assemblies(lines: list[str]) -> dict[str, dict[str, Any]]:
     assemblies: dict[str, dict[str, Any]] = {}
     pattern = re.compile(
@@ -616,15 +631,20 @@ def render_markdown(
     ]
     glass_specs = glass_specs or {}
     g1_spec = glass_specs.get("G1", {})
+    # Prefer full-precision U from the construction-descriptions table over the
+    # 2-decimal value shown in the per-component cooling tables.
+    full_u = _construction_u_values(p1_text)
     for component in master_components.values():
         if component["type"] == "G1":
             notes = f"SHGC {g1_spec.get('shgc', '')}".strip()
             glass_type = g1_spec.get("glass_type", "")
             if glass_type:
                 notes = f"{glass_type}; {notes}" if notes else glass_type
-            lines.append(f"| {component['type']} | {component['desc']} | {component['cltd']} | {g1_spec.get('uvalue', '-')} | {component['clf']} | {notes} |")
+            uval = full_u.get("G1") or g1_spec.get("uvalue", "-")
+            lines.append(f"| {component['type']} | {component['desc']} | {component['cltd']} | {uval} | {component['clf']} | {notes} |")
         else:
-            lines.append(f"| {component['type']} | {component['desc']} | {component['cltd']} | {component['uvalue']} | {component['clf']} | |")
+            uval = full_u.get(component["type"], component["uvalue"])
+            lines.append(f"| {component['type']} | {component['desc']} | {component['cltd']} | {uval} | {component['clf']} | |")
     lines += [
         "| - | People | - | - | 255 Btu/hr per person | |",
         "| - | Appliances | - | - | 3.413 Btu/hr per Watt | |",
@@ -705,7 +725,7 @@ def render_markdown(
             lines.append("  |  ".join(load_parts) + "  ")
         if airflow:
             lines.append(f"**Airflow:** {airflow['cool']} Cool / {airflow['heat']} Heat / {airflow['avg']} Avg CFM  ")
-        lines += ["", "| Type | Description | Qty | Cool BTU/hr | Heat BTU/hr |", "|------|-------------|----:|------------:|------------:|"]
+        lines += ["", "| Type | Description | Qty | Cool BTU/hr | Heat BTU/hr | CLTD (F) |", "|------|-------------|----:|------------:|------------:|:--------:|"]
         for component_key, component in master_components.items():
             quantity = data.get(component_key)
             if quantity:
@@ -713,7 +733,9 @@ def render_markdown(
                 heat_btuh = data.get(component_key + "|_heat")
                 cool_str = str(int(cool_btuh)) if cool_btuh else "-"
                 heat_str = str(int(heat_btuh)) if heat_btuh else "-"
-                lines.append(f"| {component['type']} | {component['desc']} | {fmt_qty(quantity)} sf | {cool_str} | {heat_str} |")
+                # Per-room CLTD (from the cooling-table row) — de-collapses components that
+                # share a (code, variant) but differ per room, e.g. D2 garage doors (30 vs 15).
+                lines.append(f"| {component['type']} | {component['desc']} | {fmt_qty(quantity)} sf | {cool_str} | {heat_str} | {component.get('cltd', '-')} |")
         for label, suffix in [("People", "person"), ("Appliances (W)", "W")]:
             value = data.get(label)
             if value:

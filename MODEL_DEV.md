@@ -141,6 +141,17 @@ Ensure existing reference case tests still pass. If the engine change intentiona
 4. Merge to main. Vercel deploys to production.
 5. Open production `/admin` and verify the new snapshots are live.
 
+## Known Model Assumptions (revisit if accuracy drifts)
+
+These are deliberate simplifications backed by limited samples. If a new resload disagrees, this is the first place to look.
+
+| Assumption | Where | Confirmed on | Revisit when / switch to |
+|---|---|---|---|
+| **Vaulted ceiling CLTD = 78** (= flat 55 × √2, a fixed 45° roof-slope factor). Salas's schedule *displays* 55 for vaulted but computes with ~78; importer skips populating C2 CLTD from the schedule. | `constants.py` `SPECIAL_CLTD["VAULTED_CEILING"]`; skip in `markdown_import.py` | Finley, Williams (both exactly 77.8) | A resload whose **effective vaulted CLTD ≠ 78** (ratio-to-55 ≠ √2 ≈ 1.414) → roof pitch isn't 45°. **Switch to Option B:** apply a per-project sloped-area factor to vaulted area instead of a fixed CLTD. |
+| **Glass conduction CLTD = 14** (3–4 PM peak) | `constants.py` `GLASS_CLTD` | Finley, Tranquility + ASHRAE HoF | Out-of-region (non-north-GA) latitude. |
+| **SHGF table = north-GA latitude only** | `SCLEFF_BY_DIRECTION` | lat ~34°N | Onboarding a second latitude → source ASHRAE SCL/SHGF for it. |
+| **Townhouse glass = combined direct table** (not SHGF formula) | `TOWNHOUSE_GLASS_LOAD_FACTORS` | Evergreen TH (9/10; NE corrected) | More townhome resloads to re-confirm NE=21 and the rest. |
+
 ## Quick Reference: Which Tool When
 
 | I want to... | Use |
