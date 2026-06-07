@@ -232,7 +232,9 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
     for row in master_rows[1:]:
         if not row or row[0] in {"-", "—"}:
             continue
-        code = row[0].strip()
+        # Normalize R1/R2 -> C1/C2 to match the engine's codes, so Salas ceiling
+        # components line up with VRC in the detail-report match key.
+        code = _normalized_code(row[0])
         if not code:
             continue
         variant = row[1].strip() if len(row) > 1 else ""
@@ -275,9 +277,9 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
             for row in table_rows[1:]:
                 if len(row) < 5:
                     continue
-                code = row[0].strip()
-                if not code or code in {"-", "—"}:
+                if not row[0] or row[0].strip() in {"-", "—"}:
                     continue
+                code = _normalized_code(row[0])
                 variant = row[1].strip() if len(row) > 1 else ""
                 qty = _number(row[2])
                 cool_btuh = _number(row[3]) if row[3] != "-" else None

@@ -18,6 +18,14 @@ Record engine changes here with the snapshot filename so results can be traced b
 
 <!-- Add entries below, newest first -->
 
+## 2026-06-07 — Detail report: Salas ceiling values were dropped (R→C code mismatch)
+
+**Changed:** `markdown_import.py` `_comparison_from_markdown` now normalizes component codes with `_normalized_code` (R1→C1, R2→C2) in both the `_master_specs` keying and the 5-col room-component parse.
+
+**Reason:** The detail report showed `Ceiling total_salas_cool = 0` while VRC had loads. The engine normalizes ceiling codes R1/R2→C1/C2, but the comparison parser kept the raw Salas `R1`/`R2`. `_component_type("R1")` returns `"R1"` (R not in the type map), which fails the `(Glass, Wall, Ceiling, Floor, Door)` filter, so every Salas ceiling row was silently dropped — Salas ceiling read 0 and VRC ceiling had no match. Wall/Glass/Door codes already matched, which is why only Ceiling was affected.
+
+**Result:** Finley detail report Ceiling now Salas 6,716 vs VRC 6,753 (**+0.6%**) instead of 0. Engine + import tests pass (18). Observed separately (not yet fixed): Door shows ~−45% (VRC under-predicts) — partly the D2 garage-door `(code, "Door")` variant collapse where first/second-floor doors carry different CLTDs; small absolute load, flagged for follow-up.
+
 ## 2026-06-07 — Townhouse glass verified against Evergreen TH; application corrected
 
 **Changed:**
