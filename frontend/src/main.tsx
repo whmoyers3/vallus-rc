@@ -138,7 +138,6 @@ type SavedProject = {
 type SaveConflict = {
   conflictProject: SavedProject;   // the existing project that shares this name+description
   payload: Record<string, unknown>; // fully built payload, ready to POST/PUT
-  project: ProjectDraft;           // draft used to calculate the payload
   nextVersionDescription: string;  // pre-computed "Description v.2" (or v.3, etc.)
 };
 
@@ -603,6 +602,9 @@ function App() {
   const [openDialogLoading, setOpenDialogLoading] = useState(false);
   const [openDialogError, setOpenDialogError] = useState<string | null>(null);
   const [saveConflict, setSaveConflict] = useState<SaveConflict | null>(null);
+  const [calculateLoading, setCalculateLoading] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
   const [importFidelity, setImportFidelity] = useState<{ passed: boolean | null; details: Record<string, unknown> | null } | null>(null);
   const [batteryStatus, setBatteryStatus] = useState<"none" | "eligible" | "added" | "loading">("none");
   const [showImportMenu, setShowImportMenu] = useState(false);
@@ -1184,11 +1186,44 @@ function App() {
   }
 
   async function calculatePayload(payloadProject: ProjectDraft): Promise<Loads> {
-    return fetch("/api/calculate", {
+    const response = await fetch("/api/calculate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(buildPayload(payloadProject, assemblies))
-    }).then((response) => response.json());
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail ?? "Calculation failed.");
+    return data;
+  }
+
+  async function exportAirflowSheet() {
+    setExportLoading(true);
+    try {
+      const response = await fetch("/api/export/airflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload(project, assemblies))
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail ?? "Airflow export failed.");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : "Airflow.xlsx";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      setValidationMessage("Exported airflow balancing sheet. Not saved.");
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not export airflow sheet.");
+    } finally {
+      setExportLoading(false);
+    }
   }
 
   async function calculateWorstCase(projectDraft: ProjectDraft = project) {
@@ -1206,12 +1241,82 @@ function App() {
     });
   }
 
-  // ── Core save + calculate (called after conflict is resolved) ────────────────
-  async function commitSaveAndCalculate(
+  function validationErrorFor(projectDraft: ProjectDraft): string | null {
+    const assignmentChoices = projectDraft.units.length > 1 || projectDraft.zones.length > 0;
+    if (assignmentChoices) {
+      const missingRoom = projectDraft.rooms.find((room) => {
+        if (!room.unit_id) return true;
+        const zonesForUnit = projectDraft.zones.filter((zone) => zone.unit_id === room.unit_id);
+        return zonesForUnit.length > 0 && !room.zone_id;
+      });
+      if (missingRoom) {
+        const zonesForRoomUnit = projectDraft.zones.filter((zone) => zone.unit_id === missingRoom.unit_id);
+        return zonesForRoomUnit.length > 0
+          ? `${missingRoom.name} needs a zone before calculating.`
+          : `${missingRoom.name} needs a unit before calculating.`;
+      }
+    }
+
+    const invalidWindow = projectDraft.components.find((component) => {
+      if (component.kind !== "glass") return false;
+      const resolvedDirection = resolveComponentDirection(component.direction, projectDraft.front_door_faces);
+      if (!isCompassDirection(resolvedDirection)) return false;
+      return !projectDraft.components.some((candidate) =>
+        candidate.room_name === component.room_name
+        && candidate.category === "Wall"
+        && candidate.kind === "opaque"
+        && resolveComponentDirection(candidate.direction, projectDraft.front_door_faces) === resolvedDirection
+      );
+    });
+    if (invalidWindow) {
+      return `${invalidWindow.name} needs a matching wall facing in ${invalidWindow.room_name ?? "the same room"}.`;
+    }
+
+    return null;
+  }
+
+  async function calculateCurrentProject() {
+    const error = validationErrorFor(project);
+    if (error) {
+      setValidationMessage(error);
+      return;
+    }
+
+    setCalculateLoading(true);
+    try {
+      const previewLoads = await calculatePayload(project);
+      let raisedUnitCount = 0;
+      const sizedUnits = project.units.map((unit) => {
+        const engineUnit = previewLoads.units.find((candidate) => candidate.id === unit.id);
+        const recommendedTons = engineUnit?.recommended_tons ?? standardTons[0];
+        if (Number(unit.selected_tons ?? 0) >= recommendedTons) return unit;
+        raisedUnitCount += 1;
+        return { ...unit, selected_tons: recommendedTons };
+      });
+      const calculationProject = raisedUnitCount ? { ...project, units: sizedUnits } : project;
+      const freshLoads = raisedUnitCount ? await calculatePayload(calculationProject) : previewLoads;
+      if (raisedUnitCount) {
+        setProject(calculationProject);
+      }
+      setLoads(freshLoads);
+      setWorstCase(await calculateWorstCase(calculationProject));
+      setValidationMessage(
+        raisedUnitCount
+          ? `Calculated current draft and increased selected tons to standard unit sizes for ${raisedUnitCount} unit${raisedUnitCount === 1 ? "" : "s"}. Not saved.`
+          : "Calculated current draft. Not saved."
+      );
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not calculate current draft.");
+    } finally {
+      setCalculateLoading(false);
+    }
+  }
+
+  // ── Core save (called after conflict is resolved) ─────────────────────────
+  async function commitSave(
     payload: Record<string, unknown>,
     targetId: number | null,       // null → POST (create new)
     overrideDescription?: string,  // set when saving as a new version
-    calculationProject: ProjectDraft = project,
   ) {
     // If saving as new version, patch the description inside the payload
     const finalPayload: Record<string, unknown> = overrideDescription
@@ -1220,18 +1325,24 @@ function App() {
 
     let savedId: number;
     if (targetId !== null) {
-      await fetch(`/api/projects/${targetId}`, {
+      const response = await fetch(`/api/projects/${targetId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPayload),
       });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail ?? "Could not update project.");
+      }
       savedId = targetId;
     } else {
-      const created = await fetch("/api/projects", {
+      const response = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalPayload),
-      }).then((r) => r.json());
+      });
+      const created = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(created.detail ?? "Could not save project.");
       savedId = created.id;
     }
 
@@ -1239,8 +1350,7 @@ function App() {
     if (overrideDescription) {
       setProject((cur) => ({ ...cur, description: overrideDescription }));
     }
-    setLoads(await fetch(`/api/projects/${savedId}/loads`).then((r) => r.json()));
-    setWorstCase(await calculateWorstCase(calculationProject));
+    setValidationMessage(`Saved project #${savedId}.`);
 
     // Refresh fidelity + battery status after save
     try {
@@ -1260,16 +1370,30 @@ function App() {
   // ── Conflict resolution handlers ──────────────────────────────────────────
   async function resolveConflictOverwrite() {
     if (!saveConflict) return;
-    const { conflictProject, payload, project: conflictDraft } = saveConflict;
+    const { conflictProject, payload } = saveConflict;
     setSaveConflict(null);
-    await commitSaveAndCalculate(payload, conflictProject.id, undefined, conflictDraft);
+    setSaveLoading(true);
+    try {
+      await commitSave(payload, conflictProject.id);
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not save project.");
+    } finally {
+      setSaveLoading(false);
+    }
   }
 
   async function resolveConflictNewVersion() {
     if (!saveConflict) return;
-    const { payload, project: conflictDraft, nextVersionDescription } = saveConflict;
+    const { payload, nextVersionDescription } = saveConflict;
     setSaveConflict(null);
-    await commitSaveAndCalculate(payload, null, nextVersionDescription, conflictDraft);
+    setSaveLoading(true);
+    try {
+      await commitSave(payload, null, nextVersionDescription);
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not save project.");
+    } finally {
+      setSaveLoading(false);
+    }
   }
 
   function resolveConflictCancel() {
@@ -1277,71 +1401,38 @@ function App() {
   }
 
   // ── Main save entry point ─────────────────────────────────────────────────
-  async function saveAndCalculate() {
-    if (hasAssignmentChoices) {
-      const missingRoom = project.rooms.find((room) => {
-        if (!room.unit_id) return true;
-        const zonesForUnit = project.zones.filter((zone) => zone.unit_id === room.unit_id);
-        return zonesForUnit.length > 0 && !room.zone_id;
-      });
-      if (missingRoom) {
-        const zonesForRoomUnit = project.zones.filter((zone) => zone.unit_id === missingRoom.unit_id);
-        setValidationMessage(zonesForRoomUnit.length > 0
-          ? `${missingRoom.name} needs a zone before calculating.`
-          : `${missingRoom.name} needs a unit before calculating.`
-        );
-        return;
-      }
-    }
-    const invalidWindow = project.components.find((component) => {
-      if (component.kind !== "glass") return false;
-      const resolvedDirection = resolveComponentDirection(component.direction, project.front_door_faces);
-      if (!isCompassDirection(resolvedDirection)) return false;
-      return !project.components.some((candidate) =>
-        candidate.room_name === component.room_name
-        && candidate.category === "Wall"
-        && candidate.kind === "opaque"
-        && resolveComponentDirection(candidate.direction, project.front_door_faces) === resolvedDirection
-      );
-    });
-    if (invalidWindow) {
-      setValidationMessage(`${invalidWindow.name} needs a matching wall facing in ${invalidWindow.room_name ?? "the same room"}.`);
+  async function saveProject() {
+    const error = validationErrorFor(project);
+    if (error) {
+      setValidationMessage(error.replace("calculating", "saving"));
       return;
     }
 
-    const previewLoads = await calculatePayload(project);
-    let raisedUnitCount = 0;
-    const sizedUnits = project.units.map((unit) => {
-      const engineUnit = previewLoads.units.find((candidate) => candidate.id === unit.id);
-      const recommendedTons = engineUnit?.recommended_tons ?? standardTons[0];
-      if (Number(unit.selected_tons ?? 0) >= recommendedTons) return unit;
-      raisedUnitCount += 1;
-      return { ...unit, selected_tons: recommendedTons };
-    });
-    const calculationProject = raisedUnitCount ? { ...project, units: sizedUnits } : project;
-    if (raisedUnitCount) {
-      setProject(calculationProject);
-      setValidationMessage(`Selected tons increased to standard unit sizes for ${raisedUnitCount} unit${raisedUnitCount === 1 ? "" : "s"}.`);
-    }
-    const payload = buildPayload(calculationProject, assemblies) as Record<string, unknown>;
+    setSaveLoading(true);
+    const payload = buildPayload(project, assemblies) as Record<string, unknown>;
 
-    // Check for a name+description collision with any OTHER saved project
-    const allProjects: SavedProject[] = await fetch("/api/projects").then((r) => r.json());
-    const conflict = allProjects.find(
-      (p) => p.name === project.name && p.description === project.description && p.id !== projectId
-    );
-    if (conflict) {
-      setSaveConflict({
-        conflictProject: conflict,
-        payload,
-        project: calculationProject,
-        nextVersionDescription: computeNextVersion(project.description, allProjects),
-      });
-      return; // wait for user to choose
-    }
+    try {
+      // Check for a name+description collision with any OTHER saved project
+      const allProjects: SavedProject[] = await fetch("/api/projects").then((r) => r.json());
+      const conflict = allProjects.find(
+        (p) => p.name === project.name && p.description === project.description && p.id !== projectId
+      );
+      if (conflict) {
+        setSaveConflict({
+          conflictProject: conflict,
+          payload,
+          nextVersionDescription: computeNextVersion(project.description, allProjects),
+        });
+        return; // wait for user to choose
+      }
 
-    // No conflict — save directly (update if already saved, create if new)
-    await commitSaveAndCalculate(payload, projectId, undefined, calculationProject);
+      // No conflict — save directly (update if already saved, create if new)
+      await commitSave(payload, projectId);
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not save project.");
+    } finally {
+      setSaveLoading(false);
+    }
   }
 
   return (
@@ -1375,7 +1466,15 @@ function App() {
             <p>{project.location} · {project.outdoor_cooling_db}/{project.indoor_cooling_db} cooling · ACH50 {project.ach50}</p>
           </div>
           <div className="button-row">
-            <button onClick={saveAndCalculate}>Save / Calculate</button>
+            <button onClick={calculateCurrentProject} disabled={calculateLoading || saveLoading}>
+              {calculateLoading ? "Calculating..." : "Calculate"}
+            </button>
+            <button onClick={saveProject} disabled={saveLoading || calculateLoading}>
+              {saveLoading ? "Saving..." : "Save"}
+            </button>
+            <button onClick={exportAirflowSheet} disabled={exportLoading || calculateLoading || saveLoading}>
+              {exportLoading ? "Exporting..." : "Export Airflow Sheet"}
+            </button>
             <button onClick={openProjectDialog}>Open…</button>
             <button onClick={resetToNew}>New</button>
             <div className="import-menu">
@@ -1459,7 +1558,7 @@ function App() {
           <article>
             <span>Worst Orientation</span>
             <strong>{worstCase ? compassArrows[worstCase.front_door_faces] + " " + worstCase.front_door_faces : "-"}</strong>
-            <small>{worstCase ? `${number(worstCase.loads.whole_house_sensible_cooling)} cool · ${number(worstCase.loads.whole_house_heating)} heat` : "Run Save / Calculate"}</small>
+            <small>{worstCase ? `${number(worstCase.loads.whole_house_sensible_cooling)} cool · ${number(worstCase.loads.whole_house_heating)} heat` : "Run Calculate"}</small>
           </article>
         </section>
         {validationMessage && <div className="validation-message">{validationMessage}</div>}
@@ -1785,7 +1884,7 @@ function App() {
           <section className="panel comparison-panel">
             <div className="panel-head">
               <h3>Salas O'Brien Comparison</h3>
-              <p>{loads ? "Imported reference values compared with the current calculation" : "Imported reference values loaded. Run Save / Calculate to compare current results."}</p>
+              <p>{loads ? "Imported reference values compared with the current calculation" : "Imported reference values loaded. Run Calculate to compare current results."}</p>
             </div>
             <div className="comparison-grid">
               <div className="comparison-card">
@@ -1890,7 +1989,7 @@ function App() {
         <section className="panel">
           <div className="panel-head">
             <h3>Load Summary</h3>
-            <p>{activeLevel ? "Unit loads and selected system capacities" : "Run Save / Calculate"}</p>
+            <p>{activeLevel ? "Unit loads and selected system capacities" : "Run Calculate"}</p>
           </div>
           <div className="load-summary-wrap">
             <table className="load-summary-table">
@@ -1991,7 +2090,7 @@ function App() {
         <section className="panel">
           <div className="panel-head">
             <h3>Calculated Room Results</h3>
-            <p>{activeLevel ? `${number(activeLevel.cooling_subtotal)} cooling subtotal · ${number(activeLevel.heating_subtotal)} heating subtotal` : "Run Save / Calculate"}</p>
+            <p>{activeLevel ? `${number(activeLevel.cooling_subtotal)} cooling subtotal · ${number(activeLevel.heating_subtotal)} heating subtotal` : "Run Calculate"}</p>
           </div>
           <table>
             <thead>
@@ -2081,7 +2180,7 @@ function App() {
             {openDialogLoading && <p className="modal-empty">Loading…</p>}
             {openDialogError && <p className="modal-error">{openDialogError}</p>}
             {!openDialogLoading && !openDialogError && savedProjects.length === 0 && (
-              <p className="modal-empty">No saved projects yet. Use Save / Calculate to save your first project.</p>
+              <p className="modal-empty">No saved projects yet. Use Save to save your first project.</p>
             )}
             {!openDialogLoading && savedProjects.length > 0 && (
               <table className="project-list-table">

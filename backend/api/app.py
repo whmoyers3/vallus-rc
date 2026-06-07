@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
+from backend.api.airflow_export import build_airflow_workbook
 from backend.api.database import Database, ProjectNotFound, BatteryError
 from backend.api.detail_report import build_detail_report
 from backend.api.markdown_import import import_room_cooling_markdown
@@ -182,6 +183,15 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
     def calculate_payload(payload: ProjectPayload) -> dict[str, Any]:
         result = calculate_project(project_from_payload(payload.model_dump()))
         return loads_response(result)
+
+    @api.post("/api/export/airflow")
+    def export_airflow(payload: ProjectPayload) -> Response:
+        xlsx_bytes, filename = build_airflow_workbook(payload.model_dump())
+        return Response(
+            content=xlsx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @api.get("/api/projects/{project_id}/loads")
     def get_project_loads(project_id: int) -> dict[str, Any]:

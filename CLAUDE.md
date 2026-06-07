@@ -13,6 +13,7 @@ VRC is an HVAC load calculation tool that imports Salas O'Brien resload PDFs, ex
 - `backend/engine/formulas.py` — formula primitives (glass load factor, component loads)
 - `backend/engine/models.py` — data structures (Project, Level, Room, LineItem)
 - `backend/api/app.py` — FastAPI routes
+- `backend/api/airflow_export.py` — builds the field airflow balancing spreadsheet (.xlsx) from a calculated draft; served by `POST /api/export/airflow`
 - `backend/api/database.py` — Supabase persistence layer
 - `backend/api/salas_pdf_import.py` — PDF extraction to markdown
 - `backend/api/markdown_import.py` — markdown to engine payload (also extracts Salas comparison data)
