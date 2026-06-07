@@ -358,7 +358,9 @@ def _build_unit_sheet(
     _grid(ws, 2, notes_label + 1, 11, notes_label + 4)
 
     # ── Spacing: column widths + row heights (preserve single-page layout) ──
-    widths = {"A": 14.66, "B": 4.33, "C": 13.0, "D": 13.0, "E": 13.0, "F": 5.33,
+    # Reading columns B-E share the same total span (~43.3) but split evenly so
+    # every cell is wide enough to type into (column B was awkwardly thin).
+    widths = {"A": 14.66, "B": 10.83, "C": 10.83, "D": 10.83, "E": 10.83, "F": 5.33,
               "G": 6.0, "H": 6.33, "I": 7.5, "J": 6.33, "K": 6.5, "L": 7.16}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
