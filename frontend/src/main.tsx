@@ -250,16 +250,18 @@ const initialProject: ProjectDraft = {
   ]
 };
 
-function number(value: number): string {
+function number(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "-";
   return Math.round(value).toLocaleString();
 }
 
-function decimal(value: number, places = 1): string {
+function decimal(value: number | null | undefined, places = 1): string {
+  if (value == null || !Number.isFinite(value)) return "-";
   return value.toFixed(places);
 }
 
-function formatInputNumber(value: number | undefined): string {
-  if (value === undefined) return "";
+function formatInputNumber(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "";
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3)));
 }
 
