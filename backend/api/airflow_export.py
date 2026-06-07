@@ -256,7 +256,8 @@ def _build_unit_sheet(
         ws[f"H{r}"] = f'=IF(OR(G{r}="",$G${total_row}=0),"",G{r}/$G${total_row})'
         ws[f"I{r}"] = f'=IF(OR(F{r}="",H{r}=""),"",$F${total_row}*H{r})'
         ws[f"J{r}"] = f'=IF(OR(G{r}="",F{r}="",I{r}=0),"",F{r}-I{r})'
-        ws[f"K{r}"] = f'=IF(OR(H{r}="",I{r}=""),"",J{r}/I{r})'
+        # % the room must move to reach target, relative to its current reading
+        ws[f"K{r}"] = f'=IF(OR(I{r}="",F{r}="",F{r}=0),"",(F{r}-I{r})/F{r})'
         ws[f"H{r}"].number_format = "0%"   # whole percent
         ws[f"I{r}"].number_format = "0"    # whole CFM
         ws[f"J{r}"].number_format = "0"    # whole CFM (signed)
@@ -302,6 +303,7 @@ def _build_unit_sheet(
     grand = rh + 9
     # Return-air table: A | B:D readings | E total
     ws.merge_cells(f"B{rh}:D{rh}")
+    ws.merge_cells(f"J{rh}:K{rh}")
     ws[f"A{rh}"], ws[f"B{rh}"], ws[f"E{rh}"] = "Room", "Return Actuals", "Total"
     ws[f"J{rh}"], ws[f"L{rh}"] = "Check List", "(y/n)"
     for cell in (f"A{rh}", f"B{rh}", f"E{rh}", f"J{rh}", f"K{rh}", f"L{rh}"):
