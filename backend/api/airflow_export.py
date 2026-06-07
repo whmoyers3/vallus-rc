@@ -257,8 +257,10 @@ def _build_unit_sheet(
         ws[f"I{r}"] = f'=IF(OR(F{r}="",H{r}=""),"",$F${total_row}*H{r})'
         ws[f"J{r}"] = f'=IF(OR(G{r}="",F{r}="",I{r}=0),"",F{r}-I{r})'
         ws[f"K{r}"] = f'=IF(OR(H{r}="",I{r}=""),"",J{r}/I{r})'
-        ws[f"H{r}"].number_format = "0.0%"
-        ws[f"K{r}"].number_format = "0.0%"
+        ws[f"H{r}"].number_format = "0%"   # whole percent
+        ws[f"I{r}"].number_format = "0"    # whole CFM
+        ws[f"J{r}"].number_format = "0"    # whole CFM (signed)
+        ws[f"K{r}"].number_format = "0%"   # whole percent
 
         zone_fill = None
         if offset < len(unit["rooms"]):
@@ -301,7 +303,7 @@ def _build_unit_sheet(
     # Return-air table: A | B:D readings | E total
     ws.merge_cells(f"B{rh}:D{rh}")
     ws[f"A{rh}"], ws[f"B{rh}"], ws[f"E{rh}"] = "Room", "Return Actuals", "Total"
-    ws[f"J{rh}"], ws[f"L{rh}"] = "Check List", "Y/N"
+    ws[f"J{rh}"], ws[f"L{rh}"] = "Check List", "(y/n)"
     for cell in (f"A{rh}", f"B{rh}", f"E{rh}", f"J{rh}", f"K{rh}", f"L{rh}"):
         ws[cell].fill = _green_fill
         ws[cell].font = _header_font
@@ -347,7 +349,9 @@ def _build_unit_sheet(
         r = rh + 1 + i
         ws.merge_cells(f"J{r}:K{r}")
         ws[f"J{r}"] = label
+        ws[f"J{r}"].alignment = _center           # merged + centered labels
         ws[f"L{r}"].fill = _input_fill
+        ws[f"L{r}"].alignment = _center            # centered y/n input
     _grid(ws, 10, rh, 12, rh + len(checklist))  # J..L
 
     # Notes box
