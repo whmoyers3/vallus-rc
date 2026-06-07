@@ -64,12 +64,31 @@ def _grid(ws: Worksheet, c1: int, r1: int, c2: int, r2: int) -> None:
 
 # ── Engine: 8-orientation reference table ─────────────────────────────────────
 
+def _rotate_direction(direction: Any, steps: int) -> Any:
+    """Rotate a compass direction clockwise by `steps` 45-degree increments."""
+    if direction in ORIENTATIONS:
+        return ORIENTATIONS[(ORIENTATIONS.index(direction) + steps) % len(ORIENTATIONS)]
+    return direction
+
+
 def _orientation_table(payload: dict[str, Any]) -> dict[str, dict[str, dict[str, int]]]:
-    """room name -> orientation -> {Cool, Heat, Avg} CFM, across all 8 orientations."""
+    """room name -> orientation -> {Cool, Heat, Avg} CFM, across all 8 orientations.
+
+    The engine does not read front_door_faces; component directions are already
+    resolved to absolute compass headings for the project's *current* orientation.
+    To model rotating the house we rotate every surface direction by the angular
+    delta between the target orientation and the current one, then recalculate.
+    """
+    current = (payload["project"].get("metadata") or {}).get("front_door_faces") or DEFAULT_ORIENTATION
+    base_idx = ORIENTATIONS.index(current) if current in ORIENTATIONS else ORIENTATIONS.index(DEFAULT_ORIENTATION)
     table: dict[str, dict[str, dict[str, int]]] = {}
     for orient in ORIENTATIONS:
+        steps = (ORIENTATIONS.index(orient) - base_idx) % len(ORIENTATIONS)
         variant = copy.deepcopy(payload)
-        variant["project"].setdefault("metadata", {})["front_door_faces"] = orient
+        for level in variant["project"]["levels"]:
+            for item in level.get("line_items", []):
+                if item.get("direction"):
+                    item["direction"] = _rotate_direction(item["direction"], steps)
         result = calculate_project(project_from_payload(variant))
         loads = loads_response(result)
         for level in loads["levels"]:
