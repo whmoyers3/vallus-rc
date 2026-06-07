@@ -426,13 +426,18 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
         if re.search(r"\bbed(?:room)?\b|\bowner suite\b|\bmaster bed\b", room["name"], re.IGNORECASE)
     )
     hierarchy = _parse_hierarchy(salas_description, project_description, plan_name)
+    source_pdf_filename = plan_name if re.search(r"\.pdf$", plan_name, flags=re.IGNORECASE) else ""
+    parsed_plan_name = hierarchy.get("plan_name", "")
+    display_plan_name = source_pdf_filename or parsed_plan_name or plan_name
+    hierarchy_fields = {k: v for k, v in hierarchy.items() if v and k != "plan_name"}
     payload = {
         "project": {
-            "name": plan_name,
+            "name": display_plan_name,
             "location": location,
             "description": project_description,
             # Structured hierarchy fields parsed from Salas Description/Project/filename
-            **{k: v for k, v in hierarchy.items() if v},
+            "plan_name": display_plan_name,
+            **hierarchy_fields,
             "design_conditions": {
                 "outdoor_cooling_db": 95,
                 "outdoor_heating_db": 18,
@@ -448,6 +453,8 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
                 "front_door_faces": front_door_faces,
                 "units": list(units.values()),
                 "zones": list(zones.values()),
+                **({"source_filename": source_pdf_filename} if source_pdf_filename else {}),
+                **({"salas_plan_name": parsed_plan_name} if source_pdf_filename and parsed_plan_name else {}),
                 **({"salas_obrien_comparison": comparison} if comparison else {}),
                 **({"salas_reference_orientation": salas_reference_orientation} if salas_reference_orientation else {}),
             },

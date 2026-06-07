@@ -100,7 +100,7 @@ def _make_auth_middleware(app_password: str):
 
 # ── Application factory ───────────────────────────────────────────────────────
 
-def create_app() -> FastAPI:
+def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
     database = Database()
     api = FastAPI(title="VRC API")
 

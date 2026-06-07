@@ -64,6 +64,26 @@ def test_markdown_import_builds_editable_user_input_payload():
     assert "Front door facing" in warnings[0]
 
 
+def test_pdf_markdown_import_uses_uploaded_pdf_filename_as_plan_name():
+    pdf_markdown = MARKDOWN.replace(
+        "# Example Plan — Cooling Load Data Export",
+        "# Ash B Slab Bed4 Loft Resload.pdf — Cooling Load Data Export",
+    ).replace(
+        "**Location:** Flowery Branch, GA",
+        "**Description:** Ash - B, Slab, Bed4 Loft\n**Location:** Flowery Branch, GA",
+    )
+
+    payload, _warnings = import_room_cooling_markdown(pdf_markdown, "Ash B Slab Bed4 Loft Resload.md")
+    project = payload["project"]
+
+    assert project["name"] == "Ash B Slab Bed4 Loft Resload.pdf"
+    assert project["plan_name"] == "Ash B Slab Bed4 Loft Resload.pdf"
+    assert project["foundation"] == "Slab"
+    assert project["elevation"] == "B"
+    assert project["metadata"]["source_filename"] == "Ash B Slab Bed4 Loft Resload.pdf"
+    assert project["metadata"]["salas_plan_name"] == "Ash"
+
+
 def test_markdown_import_requires_glass_u_value_and_shgc():
     missing = MARKDOWN.replace("| G1 | West (Glass) | — | 0.35 | 0.22 |", "| G1 | West (Glass) | — | — | — |")
     client = TestClient(create_app(":memory:"))

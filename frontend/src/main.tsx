@@ -2076,6 +2076,7 @@ function App() {
 
 interface BatteryRow {
   id: number;
+  name: string;
   plan_name: string;
   builder_name: string;
   foundation: string | null;
@@ -2121,6 +2122,7 @@ interface RecomputeResult {
 
 interface EligibleRow {
   id: number;
+  name: string;
   plan_name: string;
   builder_name: string;
   foundation: string | null;
@@ -2168,6 +2170,16 @@ function roomOutliers(snap: ComparisonSnapshot, tolPct: number, tolBtuh: number)
     const hOver = r.salas_heating != null && (hd > tolBtuh && hd / r.salas_heating * 100 > tolPct);
     return cOver || hOver;
   }).length;
+}
+
+function adminPlanLabel(row: { name?: string | null; plan_name?: string | null; payload_json?: Record<string, unknown> }): string {
+  const sourceFilename = (row.payload_json as any)?.project?.metadata?.source_filename;
+  return (
+    (typeof sourceFilename === "string" && sourceFilename.trim())
+    || row.name?.trim()
+    || row.plan_name?.trim()
+    || ""
+  );
 }
 
 type ChangeDir = "improved" | "regressed" | "unchanged" | null;
@@ -2590,7 +2602,7 @@ function AdminPanel() {
       let bv: string | number = "";
       const aSnap = recomputed.has(a.id) ? recomputed.get(a.id) ?? null : a.comparison_snapshot;
       const bSnap = recomputed.has(b.id) ? recomputed.get(b.id) ?? null : b.comparison_snapshot;
-      if (sortCol === "plan_name") { av = a.plan_name; bv = b.plan_name; }
+      if (sortCol === "plan_name") { av = adminPlanLabel(a); bv = adminPlanLabel(b); }
       else if (sortCol === "foundation") { av = a.foundation ?? ""; bv = b.foundation ?? ""; }
       else if (sortCol === "cooling_delta") {
         av = aSnap ? (coolingDelta(aSnap) ?? 0) : 0;
@@ -2647,6 +2659,7 @@ function AdminPanel() {
     if (!eligibleSearch) return true;
     const q = eligibleSearch.toLowerCase();
     return (
+      adminPlanLabel(e).toLowerCase().includes(q) ||
       e.plan_name.toLowerCase().includes(q) ||
       e.builder_name.toLowerCase().includes(q) ||
       (e.foundation ?? "").toLowerCase().includes(q)
@@ -2807,7 +2820,7 @@ function AdminPanel() {
                           }}
                         />
                       </td>
-                      <td className="plan-cell">{row.plan_name || row.id}</td>
+                      <td className="plan-cell">{adminPlanLabel(row) || row.id}</td>
                       <td>{row.foundation ?? "—"}</td>
                       <td>{sf ? sf.toLocaleString() : "—"}</td>
                       {snap
@@ -2979,7 +2992,7 @@ function AdminPanel() {
                       }}
                       onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}
                     >
-                      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{row.plan_name || row.id}</div>
+                      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{adminPlanLabel(row) || row.id}</div>
                       <div style={{ fontSize: 12, color: "#666", marginBottom: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
                         {row.foundation && <span>{row.foundation}</span>}
                         {sf && <span>{sf.toLocaleString()} SF</span>}
@@ -3239,7 +3252,7 @@ function AdminPanel() {
                 >
                   <input type="checkbox" readOnly checked={eligibleSelected.has(e.id)} style={{ width: 16, height: 16 }} />
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600 }}>{e.plan_name}</div>
+                    <div style={{ fontWeight: 600 }}>{adminPlanLabel(e) || e.plan_name}</div>
                     <div style={{ color: "#666", fontSize: 12, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                       <span>{e.builder_name}{e.foundation ? ` · ${e.foundation}` : ""}</span>
                       <FidelityBadges details={e.import_fidelity_details} />
