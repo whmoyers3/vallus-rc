@@ -140,6 +140,12 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
             natural_ach = ach_match.group(1)
             break
 
+    # Mechanical ventilation (tight / ACH50 homes): page 0 shows "Mechanical Ventilation YES"
+    # and a "House Outside Air CFM" value. The ventilation outside-air drives the air load.
+    mech_vent = bool(re.search(r"Mechan\w*\s+Ventilation\s+YES", p1_text))
+    ov_match = re.search(r"Outside Air CFM\s+(\d+)", p1_text) or re.search(r"Mechanical Ventilation\s+(\d+)\s*CFM", p1_text)
+    outside_air_cfm = ov_match.group(1) if (mech_vent and ov_match) else None
+
     header = extract_header_fields(pdf)
     facing = header.get("facing") or (facing_match.group(1).strip() if facing_match else "")
     # Strip any worst/best-case qualifier the flat-text fallback may carry through.
@@ -160,6 +166,7 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
         "bedrooms": int(bedrooms_match.group(1)) if bedrooms_match else None,
         "volume": f"{volume_str} CF" if volume_str else None,
         "natural_ach": natural_ach,
+        "outside_air_cfm": outside_air_cfm,
     }
 
 
@@ -645,6 +652,7 @@ def render_markdown(
         f"**Description:** {description}  ",
         f"**House Facing:** {unit_info.get('facing', '-')}  ",
         *([f"**Natural ACH:** {unit_info['natural_ach']}  "] if unit_info.get("natural_ach") else []),
+        *([f"**Mechanical Ventilation CFM:** {unit_info['outside_air_cfm']}  "] if unit_info.get("outside_air_cfm") else []),
         "",
         "---",
         "",

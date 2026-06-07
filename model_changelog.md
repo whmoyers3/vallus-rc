@@ -18,6 +18,26 @@ Record engine changes here with the snapshot filename so results can be traced b
 
 <!-- Add entries below, newest first -->
 
+## 2026-06-07 — Mechanical ventilation: editor toggle + bedroom-derived default CFM
+
+**Finding:** Salas's ventilation CFM is `15 × (bedrooms + 1)` (15 CFM per assumed occupant) — exact on all six ACH50 examples (3-bed→60, 4-bed→75, 6-bed→105); floor area does not enter.
+
+**Changed:**
+- `calculator.py` now derives the infiltration scale from `outside_air_cfm` when present (effective ACH = `cfm × 60 / volume`), else `natural_ach` — one formula, in the engine. (Importer passes Salas's CFM as `outside_air_cfm` instead of pre-computing the ACH.)
+- `frontend/main.tsx` adds a **"Mechanical ventilation" checkbox**; when on it reveals a **Ventilation CFM** field pre-filled with `15 × (bedrooms + 1)` and overridable (type 100 for a specific design). Round-trips via `infiltration.outside_air_cfm`; legacy `natural_ach` is preserved as a pass-through.
+
+**Result:** ACH50 imports unchanged (Finley −0.4%, Six Sisters −1.1%); non-ACH50 unchanged; from-scratch projects get an automatic, code-based default they can override. Frontend `tsc` clean; engine + import tests pass (18). Closes the "surface a mech-vent field in the UI" item from the prior entry; latent load remains the open refinement.
+
+## 2026-06-07 — Mechanical ventilation (ACH50 tight homes) modeling
+
+**Methodology (reverse-engineered from ACH50 vs non-ACH50 twins):** Salas's `…ACH50` reports model a home tight enough (lower blower-door ACH50, e.g. 3.0 vs 5.0) to require mechanical ventilation per ASHRAE 62.2. Page 0 shows "Mechanical Ventilation YES" + a "House Outside Air CFM" (e.g. 75). The natural infiltration drops to a blower-door-derived rate (Finley: 58.70 CFM ≈ 0.145 ACH; infiltration cooling = `1.08 × 58.70 × ΔT = 1268`, verified exactly), and the **outside-air ventilation CFM drives the effective air load** — the net air load equals `1.08 × outside_air_cfm × ΔT` (Finley 30,044→29,424 = −620 = `(0.25-ACH − 75-CFM) × 1.1`). So the ventilation requirement supersedes the reduced natural infiltration.
+
+**Changed:** `salas_pdf_import.py` extracts the mech-vent CFM from page 0 and emits `**Mechanical Ventilation CFM:**`. `markdown_import.py` models it as an effective `natural_ach = outside_air_cfm × 60 / volume`, routed through the existing infiltration-scale path (the same machinery as the legacy-ACH override), and records `mechanical_ventilation` + `outside_air_cfm` in metadata.
+
+**Result (6 ACH50 examples):** Finley −0.4%, Tranquility −0.1%, Ash B −0.3%, Belfort −0.1%, Carrington −0.1%, Six Sisters −1.1%. Non-ACH50 set unchanged (Finley/Tranquility/Williams/Dogwood). Engine + import tests pass (18).
+
+**Path / future refinements:** (1) This models ventilation as an effective infiltration ACH — numerically faithful to Salas's *sensible* loads. A fully native model would carry `mode = mechanical_ventilation` + `outside_air_cfm` through the engine's ventilation path (already exists for explicit infiltration line items) and make the auto-infiltration path honor it. (2) **Latent load** from outdoor air isn't modeled (VRC is sensible-only today). (3) Air load currently uses ventilation CFM directly; the stricter rule is `max(natural infiltration, required ventilation)` — matters only if a tight home's infiltration exceeds its 62.2 requirement. (4) Six Sisters (−1.1%, basement) suggests a basement-infiltration nuance worth a look. (5) Surface a mech-vent / outside-air-CFM field in the editor UI.
+
 ## 2026-06-07 — Dogwood: per-unit summary parse + building-type detection fix
 
 **Changed:**

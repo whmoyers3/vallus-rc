@@ -43,6 +43,9 @@ type ProjectDraft = {
   bedrooms: number;
   seer: number;
   building_type: "single_family" | "townhouse";
+  mechanical_ventilation: boolean;
+  ventilation_cfm: number;
+  natural_ach: number | null;
   front_door_faces: CompassDirection;
   selected_system_tons: number;
   selected_system_kw: number;
@@ -203,6 +206,9 @@ const initialProject: ProjectDraft = {
   bedrooms: 1,
   seer: 14,
   building_type: "single_family",
+  mechanical_ventilation: false,
+  ventilation_cfm: 0,
+  natural_ach: null,
   front_door_faces: "S",
   selected_system_tons: 1,
   selected_system_kw: 5,
@@ -397,7 +403,9 @@ function buildPayload(project: ProjectDraft, assemblies: AssemblyRow[]) {
         cooling_safety_factor: project.cooling_safety_factor,
         heating_safety_factor: project.heating_safety_factor,
       },
-      infiltration: { mode: "standard_ach" },
+      infiltration: project.mechanical_ventilation
+        ? { mode: "standard_ach", outside_air_cfm: project.ventilation_cfm }
+        : { mode: "standard_ach", ...(project.natural_ach ? { natural_ach: project.natural_ach } : {}) },
       metadata: {
         ach50: project.ach50,
         bedrooms: project.bedrooms,
@@ -460,6 +468,9 @@ function draftFromPayload(payload: FixturePayload): ProjectDraft {
     bedrooms: Number(metadata.bedrooms ?? 3),
     seer: Number(metadata.seer ?? 14),
     building_type: ((project as any).building_type ?? (metadata as any).building_type ?? "single_family") as "single_family" | "townhouse",
+    mechanical_ventilation: Boolean((project as any).infiltration?.outside_air_cfm),
+    ventilation_cfm: Number((project as any).infiltration?.outside_air_cfm ?? 0),
+    natural_ach: (project as any).infiltration?.natural_ach ?? null,
     front_door_faces: metadata.front_door_faces ?? "S",
     selected_system_tons: project.selected_system_tons,
     selected_system_kw: project.selected_system_kw,
@@ -1475,6 +1486,21 @@ function App() {
               <option value="single_family">Single-family detached</option>
               <option value="townhouse">Townhome</option>
             </select></label>
+            <label className="check-field">Mechanical ventilation<input type="checkbox" checked={project.mechanical_ventilation} onChange={(event) => {
+              const on = event.target.checked;
+              setProject((current) => ({
+                ...current,
+                mechanical_ventilation: on,
+                // Default to ASHRAE 62.2 occupant rate (15 CFM x (bedrooms + 1)) on first enable.
+                ventilation_cfm: on && !current.ventilation_cfm ? 15 * ((current.bedrooms || 0) + 1) : current.ventilation_cfm,
+              }));
+              setLoads(null);
+              setWorstCase(null);
+              setProjectId(null);
+            }} /></label>
+            {project.mechanical_ventilation && (
+              <label>Ventilation CFM<input type="number" step="1" value={project.ventilation_cfm} onChange={(event) => updateProject("ventilation_cfm", Number(event.target.value))} /></label>
+            )}
             <label>Front door faces
               <select value={project.front_door_faces} onChange={(event) => updateProject("front_door_faces", event.target.value as CompassDirection)}>
                 {compassDirections.map((direction) => <option key={direction} value={direction}>{compassArrows[direction]} {direction}</option>)}

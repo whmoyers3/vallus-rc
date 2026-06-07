@@ -437,10 +437,19 @@ def _ventilation_cfm_by_level(project: Project) -> list[float | None]:
 def calculate_project(project: Project) -> ProjectResult:
     ventilation_by_level = _ventilation_cfm_by_level(project)
     combined_glass_factors = combined_glass_factors_for(project.building_type)
-    # Legacy ACH-scaled infiltration (imported old calcs only). The standard factors
-    # correspond to 0.25 ACH, so scale = natural_ach / 0.25. None → scale 1.0 (current model).
-    natural_ach = project.infiltration.natural_ach
-    infiltration_scale = (natural_ach / 0.25) if natural_ach else 1.0
+    # Effective air-change rate drives the infiltration load. The standard factors
+    # correspond to 0.25 ACH, so scale = effective_ach / 0.25 (None → 1.0, current model).
+    #  - Mechanical ventilation (tight/ACH50 homes): outside-air CFM supersedes natural
+    #    infiltration, effective ACH = cfm * 60 / volume. (mode stays "standard_ach" so the
+    #    legacy explicit-line-item ventilation path is not also triggered.)
+    #  - Legacy ACH-scaled imports: natural_ach read straight from the PDF.
+    inf = project.infiltration
+    total_volume = sum(level.volume for level in project.levels)
+    if inf.mode != "mechanical_ventilation" and inf.outside_air_cfm and total_volume:
+        effective_ach = inf.outside_air_cfm * 60 / total_volume
+    else:
+        effective_ach = inf.natural_ach
+    infiltration_scale = (effective_ach / 0.25) if effective_ach else 1.0
     levels = [
         calculate_level(
             level,

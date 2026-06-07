@@ -326,6 +326,8 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
     location = location_match.group(1).strip() if location_match else ""
     natural_ach_match = re.search(r"^\*\*Natural ACH:\*\*\s*([\d.]+)\s*$", text, re.MULTILINE)
     natural_ach = float(natural_ach_match.group(1)) if natural_ach_match else None
+    mech_vent_match = re.search(r"^\*\*Mechanical Ventilation CFM:\*\*\s*([\d.]+)\s*$", text, re.MULTILINE)
+    mech_vent_cfm = float(mech_vent_match.group(1)) if mech_vent_match else None
 
     _FACING_MAP = {
         "N": "N", "NORTH": "N",
@@ -555,12 +557,17 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
                 "indoor_heating_db": 72,
                 "slab_delta_t": 27,
             },
-            "infiltration": {"mode": "standard_ach", **({"natural_ach": natural_ach} if natural_ach else {})},
+            "infiltration": {
+                "mode": "standard_ach",
+                **({"natural_ach": natural_ach} if natural_ach else {}),
+                **({"outside_air_cfm": mech_vent_cfm} if mech_vent_cfm else {}),
+            },
             "metadata": {
                 "ach50": 5,
                 "bedrooms": max(bedrooms, 1),
                 "seer": 14,
                 "front_door_faces": front_door_faces,
+                **({"mechanical_ventilation": True, "outside_air_cfm": mech_vent_cfm} if mech_vent_cfm else {}),
                 "units": list(units.values()),
                 "zones": list(zones.values()),
                 **({"source_filename": source_pdf_filename} if source_pdf_filename else {}),
