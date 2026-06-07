@@ -57,11 +57,18 @@ def heating_component_load(area: float, u_value: float, delta_t: float) -> float
     return area * u_value * delta_t
 
 
-def standard_infiltration_load(volume: float, *, mode: str) -> float:
+def standard_infiltration_load(volume: float, *, mode: str, scale: float = 1.0) -> float:
+    """Infiltration load = volume × standard factor × scale.
+
+    ``scale`` defaults to 1.0 (current model). Legacy imports pass
+    natural_ach / 0.25 to reproduce Salas's pre-code-change ACH-scaled method,
+    since the standard factors (0.09 cooling / 0.24 heating) correspond to 0.25 ACH.
+    """
+
     if mode == "cooling":
-        return volume * STANDARD_INFILTRATION_COOLING_FACTOR
+        return volume * STANDARD_INFILTRATION_COOLING_FACTOR * scale
     if mode == "heating":
-        return volume * STANDARD_INFILTRATION_HEATING_FACTOR
+        return volume * STANDARD_INFILTRATION_HEATING_FACTOR * scale
     raise ValueError("mode must be 'cooling' or 'heating'")
 
 

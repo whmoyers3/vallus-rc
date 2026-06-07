@@ -18,6 +18,16 @@ Record engine changes here with the snapshot filename so results can be traced b
 
 <!-- Add entries below, newest first -->
 
+## 2026-06-07 — Legacy natural-ACH infiltration as a non-destructive import override
+
+**Changed:** `models.py` adds `Infiltration.natural_ach` (default None). `formulas.py` `standard_infiltration_load` takes a `scale` (default 1.0). `calculator.py` computes `infiltration_scale = natural_ach / 0.25` (1.0 when None) and threads it through level/line-item. `salas_pdf_import.py` extracts natural ACH from the cooling-table infiltration row and emits `**Natural ACH:**`; `markdown_import.py` reads it onto `infiltration.natural_ach`.
+
+**Reason:** Williams is a pre-state-code-change calc where Salas scaled infiltration by the natural ACH (0.35 → factor 0.13 = 0.09 × 0.35/0.25), under-counting VRC by ~1,016 BTU/hr (the entire −3.5%). The current 0.09/0.24 model (= 0.25 ACH) is correct for newer calcs and from-scratch, so it must not change. Per Will: keep the current model, apply the old method only when the import carries it.
+
+**Result (non-destructive):** Williams −3.5% → **−0.3%**. The 0.25-ACH imports (Finley −0.4%, Tranquility −0.4%, Evergreen +0.2%) are unchanged because scale = 1.0. From-scratch projects have `natural_ach = None` → current model untouched. **All four test homes now within ±0.4% at the system level, with every component category matching.** Engine + import tests pass (18).
+
+**Note:** This assumes the legacy linear relationship (factor = 0.36 × ACH cooling, 0.96 × ACH heating, baseline 0.25 ACH). Detection is "ACH printed in the infiltration row" — if a *new-method* PDF also prints an ACH but doesn't follow this linear scaling, gate the override on calc date/era instead.
+
 ## 2026-06-07 — Per-room CLTD in SECTION 3 fixes garage-door (D2) variance
 
 **Changed:** `salas_pdf_import.py` adds a per-room **CLTD column** to the SECTION 3 room table (the value is already known per room — `room_data` is keyed by the full component key incl. CLTD). `markdown_import.py` now populates a line item's `cooling_cltd` from that per-room CLTD (non-directional opaque, except vaulted C2), falling back to the schedule; the comparison parser uses it for the match key too.

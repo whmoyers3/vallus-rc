@@ -185,6 +185,7 @@ def calculate_line_item(
     level_volume: float,
     ventilation_cfm: float | None = None,
     combined_glass_factors: dict[str, int] | None = None,
+    infiltration_scale: float = 1.0,
 ) -> LineResult:
     if item.kind == "manual":
         return _line_result(item, item.cooling_btuh or 0.0, item.heating_btuh or 0.0)
@@ -247,8 +248,8 @@ def calculate_line_item(
             )
         return _line_result(
             item,
-            standard_infiltration_load(infiltration_volume, mode="cooling"),
-            standard_infiltration_load(infiltration_volume, mode="heating"),
+            standard_infiltration_load(infiltration_volume, mode="cooling", scale=infiltration_scale),
+            standard_infiltration_load(infiltration_volume, mode="heating", scale=infiltration_scale),
         )
 
     raise ValueError(f"Unsupported line item kind: {item.kind}")
@@ -260,6 +261,7 @@ def calculate_level(
     design_conditions: DesignConditions,
     ventilation_cfm: float | None = None,
     combined_glass_factors: dict[str, int] | None = None,
+    infiltration_scale: float = 1.0,
 ) -> LevelResult:
     line_results = [
         calculate_line_item(
@@ -268,6 +270,7 @@ def calculate_level(
             level_volume=level.volume,
             ventilation_cfm=ventilation_cfm,
             combined_glass_factors=combined_glass_factors,
+            infiltration_scale=infiltration_scale,
         )
         for item in level.line_items
     ]
@@ -287,8 +290,8 @@ def calculate_level(
             line_results.append(
                 LineResult(
                     name=f"Auto infiltration - {room.name}",
-                    cooling_btuh=standard_infiltration_load(room.volume, mode="cooling"),
-                    heating_btuh=standard_infiltration_load(room.volume, mode="heating"),
+                    cooling_btuh=standard_infiltration_load(room.volume, mode="cooling", scale=infiltration_scale),
+                    heating_btuh=standard_infiltration_load(room.volume, mode="heating", scale=infiltration_scale),
                     room_name=room.name,
                 )
             )
@@ -434,12 +437,17 @@ def _ventilation_cfm_by_level(project: Project) -> list[float | None]:
 def calculate_project(project: Project) -> ProjectResult:
     ventilation_by_level = _ventilation_cfm_by_level(project)
     combined_glass_factors = combined_glass_factors_for(project.building_type)
+    # Legacy ACH-scaled infiltration (imported old calcs only). The standard factors
+    # correspond to 0.25 ACH, so scale = natural_ach / 0.25. None → scale 1.0 (current model).
+    natural_ach = project.infiltration.natural_ach
+    infiltration_scale = (natural_ach / 0.25) if natural_ach else 1.0
     levels = [
         calculate_level(
             level,
             design_conditions=project.design_conditions,
             ventilation_cfm=ventilation_by_level[index],
             combined_glass_factors=combined_glass_factors,
+            infiltration_scale=infiltration_scale,
         )
         for index, level in enumerate(project.levels)
     ]

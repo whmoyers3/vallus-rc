@@ -324,6 +324,8 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
     project_description = project_match.group(1).strip() if project_match else "Imported Markdown project"
     salas_description = description_field_match.group(1).strip() if description_field_match else ""
     location = location_match.group(1).strip() if location_match else ""
+    natural_ach_match = re.search(r"^\*\*Natural ACH:\*\*\s*([\d.]+)\s*$", text, re.MULTILINE)
+    natural_ach = float(natural_ach_match.group(1)) if natural_ach_match else None
 
     _FACING_MAP = {
         "N": "N", "NORTH": "N",
@@ -550,7 +552,7 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
                 "indoor_heating_db": 72,
                 "slab_delta_t": 27,
             },
-            "infiltration": {"mode": "standard_ach"},
+            "infiltration": {"mode": "standard_ach", **({"natural_ach": natural_ach} if natural_ach else {})},
             "metadata": {
                 "ach50": 5,
                 "bedrooms": max(bedrooms, 1),

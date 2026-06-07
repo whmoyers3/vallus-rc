@@ -49,6 +49,10 @@ class DesignConditions:
 class Infiltration:
     mode: InfiltrationMode = "standard_ach"
     outside_air_cfm: float | None = None
+    # Legacy imports only: the natural air-change rate Salas printed (e.g. 0.35 ACH).
+    # When set, the engine scales the standard infiltration factors by natural_ach / 0.25
+    # to reproduce the pre-code-change ("old method") calc. None → current model untouched.
+    natural_ach: float | None = None
 
 
 @dataclass(frozen=True)

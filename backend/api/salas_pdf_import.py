@@ -118,6 +118,15 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
     if volume_match:
         volume_str = volume_match.group(1).replace(" ", "").replace(",", "")
 
+    # Natural ACH from the cooling-table infiltration row (legacy ACH-scaled method).
+    # Matches e.g. "0.35 ACH 0.13Btu/hr-cf"; the trailing factor avoids matching "ACH50".
+    natural_ach = None
+    for page in pdf.pages[2:]:
+        ach_match = re.search(r"(\d*\.\d+)\s*ACH\s+\d*\.\d+\s*Btu/hr-(?:cf|sf)", page.extract_text() or "")
+        if ach_match:
+            natural_ach = ach_match.group(1)
+            break
+
     header = extract_header_fields(pdf)
     facing = header.get("facing") or (facing_match.group(1).strip() if facing_match else "")
     # Strip any worst/best-case qualifier the flat-text fallback may carry through.
@@ -137,6 +146,7 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
         "description": header.get("description", ""),
         "bedrooms": int(bedrooms_match.group(1)) if bedrooms_match else None,
         "volume": f"{volume_str} CF" if volume_str else None,
+        "natural_ach": natural_ach,
     }
 
 
@@ -621,6 +631,7 @@ def render_markdown(
         f"**Engineer:** {engineer}  ",
         f"**Description:** {description}  ",
         f"**House Facing:** {unit_info.get('facing', '-')}  ",
+        *([f"**Natural ACH:** {unit_info['natural_ach']}  "] if unit_info.get("natural_ach") else []),
         "",
         "---",
         "",
