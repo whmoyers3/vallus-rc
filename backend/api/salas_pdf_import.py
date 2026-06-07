@@ -469,9 +469,11 @@ def extract_zones(pdf: Any, zone_to_unit: dict[str, str] | None = None) -> tuple
                         if btuh and actual_key in room_data:
                             room_data[actual_key][key] = btuh
                 continue
-            if section != "cooling" or not type_value or type_value in SKIP_ROWS:
+            if not type_value or type_value in SKIP_ROWS:
                 continue
             if type_value in {"People", "Appliances (W)"}:
+                if section != "cooling":
+                    continue
                 for actual_key, col, _ in rooms:
                     if col < len(row):
                         quantity = clean_num(row[col])
@@ -485,18 +487,30 @@ def extract_zones(pdf: Any, zone_to_unit: dict[str, str] | None = None) -> tuple
             cltd_string = str(int(cltd_number)) if cltd_number is not None else "-"
             u_string = str(u_value).strip() if u_number is not None else "-"
             component_key = f"{type_value}|{description_clean}|{cltd_string}|{u_string}|{cooling_factor}"
-            master_components.setdefault(component_key, {
-                "type": type_value,
-                "desc": description_clean,
-                "cltd": cltd_string,
-                "uvalue": u_string,
-                "clf": cooling_factor,
-            })
-            for actual_key, col, _ in rooms:
-                if col < len(row):
-                    quantity = clean_num(row[col])
-                    if quantity:
-                        room_data[actual_key][component_key] = quantity
+            if section == "cooling":
+                master_components.setdefault(component_key, {
+                    "type": type_value,
+                    "desc": description_clean,
+                    "cltd": cltd_string,
+                    "uvalue": u_string,
+                    "clf": cooling_factor,
+                })
+                for actual_key, col, _ in rooms:
+                    if col < len(row):
+                        quantity = clean_num(row[col])
+                        if quantity:
+                            room_data[actual_key][component_key] = quantity
+                            btuh_str = str(row[col + 1] or "").replace(" ", "") if col + 1 < len(row) else ""
+                            btuh = clean_num(btuh_str)
+                            if btuh:
+                                room_data[actual_key][component_key + "|_cool"] = btuh
+            else:
+                for actual_key, col, _ in rooms:
+                    if col + 1 < len(row) and actual_key in room_data:
+                        btuh_str = str(row[col + 1] or "").replace(" ", "")
+                        btuh = clean_num(btuh_str)
+                        if btuh:
+                            room_data[actual_key][component_key + "|_heat"] = btuh
 
     return master_components, room_order, room_meta, room_data
 
@@ -623,11 +637,15 @@ def render_markdown(
             lines.append("  |  ".join(load_parts) + "  ")
         if airflow:
             lines.append(f"**Airflow:** {airflow['cool']} Cool / {airflow['heat']} Heat / {airflow['avg']} Avg CFM  ")
-        lines += ["", "| Type | Description | Qty |", "|------|-------------|----:|"]
+        lines += ["", "| Type | Description | Qty | Cool BTU/hr | Heat BTU/hr |", "|------|-------------|----:|------------:|------------:|"]
         for component_key, component in master_components.items():
             quantity = data.get(component_key)
             if quantity:
-                lines.append(f"| {component['type']} | {component['desc']} | {fmt_qty(quantity)} sf |")
+                cool_btuh = data.get(component_key + "|_cool")
+                heat_btuh = data.get(component_key + "|_heat")
+                cool_str = str(int(cool_btuh)) if cool_btuh else "-"
+                heat_str = str(int(heat_btuh)) if heat_btuh else "-"
+                lines.append(f"| {component['type']} | {component['desc']} | {fmt_qty(quantity)} sf | {cool_str} | {heat_str} |")
         for label, suffix in [("People", "person"), ("Appliances (W)", "W")]:
             value = data.get(label)
             if value:

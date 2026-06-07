@@ -219,6 +219,28 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
             if total_area > 0:
                 comparison.setdefault("house", {})["floor_area"] = total_area
 
+    # Parse SECTION 1 master component reference for u_value/cltd/clf lookups
+    master_match = re.search(r"## SECTION 1.*?(?=## SECTION 2)", text, re.DOTALL)
+    master_rows = _table_rows(master_match.group(0) if master_match else "")
+    master_headers = [h.lower() for h in master_rows[0]] if master_rows else []
+    u_value_col = next((i for i, h in enumerate(master_headers) if "u-value" in h), 3)
+    cltd_col = next((i for i, h in enumerate(master_headers) if "cltd" in h), 2)
+    clf_col = next((i for i, h in enumerate(master_headers) if "cooling load factor" in h), 4)
+    _master_specs: dict[str, dict[str, Any]] = {}
+    for row in master_rows[1:]:
+        if not row or row[0] in {"-", "—"}:
+            continue
+        code = row[0].strip()
+        if not code:
+            continue
+        _master_specs[code] = {
+            "u_value": _number(row[u_value_col]) if len(row) > u_value_col else None,
+            "cltd": _number(row[cltd_col]) if len(row) > cltd_col else None,
+            "clf": _number(row[clf_col]) if len(row) > clf_col else None,
+        }
+
+    _TYPE_MAP = {"G": "Glass", "W": "Wall", "C": "Ceiling", "F": "Floor", "D": "Door"}
+
     rooms: dict[str, dict[str, Any]] = {}
     section_three = text.split("## SECTION 3", 1)[1] if "## SECTION 3" in text else ""
     for block in re.split(r"(?=^###\s+)", section_three, flags=re.MULTILINE):
@@ -242,6 +264,37 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
             room["cfm_cool"] = int(airflow_match.group(1))
             room["cfm_heat"] = int(airflow_match.group(2))
             room["cfm_avg"] = int(airflow_match.group(3))
+
+        # Parse component-level BTU from 5-column table (new format only)
+        table_rows = _table_rows(block)
+        if table_rows and len(table_rows[0]) >= 5 and "cool btu" in table_rows[0][3].lower():
+            components: list[dict[str, Any]] = []
+            for row in table_rows[1:]:
+                if len(row) < 5:
+                    continue
+                code = row[0].strip()
+                if not code or code in {"-", "—"}:
+                    continue
+                qty = _number(row[2])
+                cool_btuh = _number(row[3]) if row[3] != "-" else None
+                heat_btuh = _number(row[4]) if row[4] != "-" else None
+                if qty is None:
+                    continue
+                spec = _master_specs.get(code, {})
+                type_label = _TYPE_MAP.get(code[0].upper(), code[0].upper()) if code else "Unknown"
+                components.append({
+                    "type": type_label,
+                    "type_code": code,
+                    "u_value": spec.get("u_value"),
+                    "cltd": spec.get("cltd"),
+                    "clf": spec.get("clf"),
+                    "qty": qty,
+                    "salas_cool_btuh": cool_btuh,
+                    "salas_heat_btuh": heat_btuh,
+                })
+            if components:
+                room["components"] = components
+
         if any(key in room for key in {"cooling_btuh", "heating_btuh", "cfm_cool", "cfm_heat", "cfm_avg"}):
             rooms[room_name] = room
     if rooms:

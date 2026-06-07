@@ -17,6 +17,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from backend.api.database import Database, ProjectNotFound, BatteryError
+from backend.api.detail_report import build_detail_report
 from backend.api.markdown_import import import_room_cooling_markdown
 from backend.api.salas_pdf_import import import_salas_pdf_to_markdown
 from backend.api.serialization import loads_response, project_from_payload
@@ -314,6 +315,21 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
         except Exception:
             pass
 
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    # ── Detail report ────────────────────────────────────────────────────────
+
+    @api.get("/api/battery/detail-report")
+    def battery_detail_report() -> Response:
+        battery = database.list_battery()
+        report = build_detail_report(battery)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S")
+        filename = f"detail-report-{now}.json"
+        content = json.dumps(report, indent=2, default=str)
         return Response(
             content=content,
             media_type="application/json",

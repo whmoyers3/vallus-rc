@@ -2456,6 +2456,30 @@ function AdminPanel() {
     }
   }
 
+  const [detailReportLoading, setDetailReportLoading] = useState(false);
+  async function exportDetailReport() {
+    setDetailReportLoading(true);
+    try {
+      const res = await fetch("/api/battery/detail-report");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") ?? "";
+      const filenameMatch = disposition.match(/filename="(.+?)"/);
+      const filename = filenameMatch ? filenameMatch[1] : `detail-report-${new Date().toISOString().slice(0, 10)}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatusMsg(`Exported: ${filename}`);
+    } catch (e) {
+      setStatusMsg(e instanceof Error ? e.message : "Detail report export failed");
+    } finally {
+      setDetailReportLoading(false);
+    }
+  }
+
   async function openAddModal() {
     setShowAddModal(true);
     setEligibleSelected(new Set());
@@ -2777,6 +2801,9 @@ function AdminPanel() {
           </button>
           <button className="admin-btn admin-btn-outline" onClick={exportSnapshot} disabled={exportLoading}>
             {exportLoading ? "Exporting…" : "Export Snapshot"}
+          </button>
+          <button className="admin-btn admin-btn-outline" onClick={exportDetailReport} disabled={detailReportLoading}>
+            {detailReportLoading ? "Building…" : "Export Detail Report"}
           </button>
         </div>
       )}
