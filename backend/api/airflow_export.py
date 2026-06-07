@@ -366,10 +366,13 @@ def _build_unit_sheet(
         ws.row_dimensions[r].height = 16.5
     ws.freeze_panes = "B7"
 
-    # ── Fit to a single printed page ──
+    # ── Print: fit to one page WIDE, natural height. fitToHeight is left at 0
+    # (unlimited) so cell sizing stays identical across exports regardless of
+    # room count; only the column-fit scaling (constant, same columns always)
+    # applies. Typical homes still land on a single page.
     ws.page_setup.orientation = "portrait"
     ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 1
+    ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
     ws.page_margins.left = ws.page_margins.right = 0.4
     ws.page_margins.top = ws.page_margins.bottom = 0.5
