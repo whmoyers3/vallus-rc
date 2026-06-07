@@ -107,8 +107,21 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
             "heat_kw": f"{system_match.group(2)} kW" if system_match else "?",
         })
 
-    floor_area_match = re.search(r"Floor Area Served\s+([\d,]+\.?\d*)\s*SF", p1_text)
-    load_match = re.search(r"Sensible Load\s+([\d,]+)\s*Btu/hr\s+([\d,]+)\s*Btu/hr", p1_text)
+    # Per-unit loads/areas: page 0 lists these in unit-column order, two columns per unit
+    # (cooling, heating). Parsing all values and indexing per unit avoids the bug where a
+    # multi-unit building (e.g. Dogwood) had Unit 1's loads mirrored onto every unit.
+    sl_line = re.search(r"Sensible Load\s+(.+)", p1_text)
+    fa_line = re.search(r"Floor Area Served\s+(.+)", p1_text)
+    sensible_nums = [s.replace(",", "") for s in re.findall(r"([\d,]+)\s*Btu/hr", sl_line.group(1))] if sl_line else []
+    area_nums = [s.replace(",", "") for s in re.findall(r"([\d,]+\.?\d*)\s*SF", fa_line.group(1))] if fa_line else []
+    for idx, unit in enumerate(sorted(units, key=lambda u: int(u["num"]))):
+        unit["cool_load"] = f"{sensible_nums[2 * idx]} Btu/hr" if len(sensible_nums) > 2 * idx else "?"
+        unit["heat_load"] = f"{sensible_nums[2 * idx + 1]} Btu/hr" if len(sensible_nums) > 2 * idx + 1 else "?"
+        unit["floor_area"] = f"{area_nums[2 * idx]} SF" if len(area_nums) > 2 * idx else "?"
+    # House totals = sum across units (cool=even indices, heat=odd, area=even).
+    house_cool = sum(int(float(n)) for n in sensible_nums[0::2]) if sensible_nums else None
+    house_heat = sum(int(float(n)) for n in sensible_nums[1::2]) if sensible_nums else None
+    house_area = sum(float(n) for n in area_nums[0::2]) if area_nums else None
     bedrooms_match = re.search(r"^(\d+)\s+Range\s", p1_text, re.MULTILINE)
     volume_match = re.search(r"(?:Volume\s+)?([\d ,]+)\s*ft3", p1_text)
     p2_text = pdf.pages[1].extract_text() or "" if len(pdf.pages) > 1 else ""
@@ -135,9 +148,9 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
     return {
         "units": units,
         "zone_to_unit": zone_to_unit,
-        "floor_area": f"{floor_area_match.group(1).replace(',', '')} SF" if floor_area_match else "?",
-        "cool_load": f"{load_match.group(1).replace(',', '')} Btu/hr" if load_match else "?",
-        "heat_load": f"{load_match.group(2).replace(',', '')} Btu/hr" if load_match else "?",
+        "floor_area": f"{house_area:g} SF" if house_area is not None else "?",
+        "cool_load": f"{house_cool} Btu/hr" if house_cool is not None else "?",
+        "heat_load": f"{house_heat} Btu/hr" if house_heat is not None else "?",
         "facing": facing or "-",
         "location": header.get("location", ""),
         "engineer": header.get("engineer", ""),
@@ -671,9 +684,13 @@ def render_markdown(
     ]
     for unit in unit_info["units"]:
         zone_desc = unit["zone"] if unit["zone"] else "Whole House"
+        # Per-unit values (fall back to house-level for older single-unit extraction).
+        u_area = unit.get("floor_area") or unit_info["floor_area"]
+        u_cool = unit.get("cool_load") or unit_info["cool_load"]
+        u_heat = unit.get("heat_load") or unit_info["heat_load"]
         lines.append(
             f"| {unit['name']} | {zone_desc} | {unit['sys_size']} | {unit['airflow']} | {unit['heat_kw']} | "
-            f"{unit_info['floor_area']} | {unit_info['cool_load']} | {unit_info['heat_load']} |"
+            f"{u_area} | {u_cool} | {u_heat} |"
         )
     extra_lines = [
         "",

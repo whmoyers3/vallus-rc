@@ -18,6 +18,16 @@ Record engine changes here with the snapshot filename so results can be traced b
 
 <!-- Add entries below, newest first -->
 
+## 2026-06-07 — Dogwood: per-unit summary parse + building-type detection fix
+
+**Changed:**
+- `salas_pdf_import.py` `extract_unit_info` now parses **per-unit** floor area / cooling / heating from page 0 (the columns are unit-ordered, 2 cols per unit) and assigns them per unit; `render_markdown`'s Unit Summary uses the per-unit values. House totals are the sums.
+- `markdown_import.py` building-type auto-detect no longer treats **multiple units** as a townhome — it keys on the plan-name keyword only.
+
+**Reason:** Dogwood is a two-unit building (Unit 1 First Floor / Unit 2 Second Floor). (1) The importer extracted only the first unit's load/area and mirrored it onto every unit, so Unit 2 duplicated Unit 1 (1,182 SF / 13,319) — the long-standing import-doubling bug; Dogwood had been *excluded* from accuracy stats because of it. (2) Multi-unit also tripped the townhouse detector, but stacked floor-zoned units are single-family, not townhomes (those import as separate single-unit PDFs).
+
+**Result:** Dogwood Unit Summary now distinct (Unit 1 1,182 SF/13,319/17,811; Unit 2 1,492 SF/14,533/17,803), matching Salas page 0. With correct single-family typing, Dogwood system cooling is **+0.2%** vs Salas (was the +110% doubling artifact). Single-unit projects unchanged (Finley −0.4%, Williams −0.3%); Evergreen still townhouse via name (+0.2%). **All five test homes now within ±0.4%.** Dogwood can be re-included in battery accuracy stats. Engine + import tests pass (18).
+
 ## 2026-06-07 — Legacy natural-ACH infiltration as a non-destructive import override
 
 **Changed:** `models.py` adds `Infiltration.natural_ach` (default None). `formulas.py` `standard_infiltration_load` takes a `scale` (default 1.0). `calculator.py` computes `infiltration_scale = natural_ach / 0.25` (1.0 when None) and threads it through level/line-item. `salas_pdf_import.py` extracts natural ACH from the cooling-table infiltration row and emits `**Natural ACH:**`; `markdown_import.py` reads it onto `infiltration.natural_ach`.

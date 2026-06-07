@@ -530,7 +530,10 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
     # Building type drives which solar (SHGF) table the engine uses. Auto-detect from
     # the plan naming / multi-unit structure; the user can override in the editor.
     _type_text = f"{plan_name} {project_description} {salas_description}".lower()
-    is_townhome = bool(re.search(r"\b(th|townhome|townhouse|town\s?home|town\s?house)\b", _type_text)) or len(units) > 1
+    # Townhomes are imported as separate single-unit PDFs, so unit count is NOT a signal —
+    # multiple units means a single house split into floor-based HVAC zones (e.g. Dogwood:
+    # Unit 1 First Floor / Unit 2 Second Floor), which is single-family. Detect by name only.
+    is_townhome = bool(re.search(r"\b(th|townhome|townhouse|town\s?home|town\s?house)\b", _type_text))
     building_type = "townhouse" if is_townhome else "single_family"
     source_pdf_filename = plan_name if re.search(r"\.pdf$", plan_name, flags=re.IGNORECASE) else ""
     parsed_plan_name = hierarchy.get("plan_name", "")
