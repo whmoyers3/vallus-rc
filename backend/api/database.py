@@ -332,7 +332,7 @@ class Database:
         result = (
             self._client.table("calculations")
             .select(
-                "id, name, plan_name, builder_name, foundation, orientation, "
+                "id, name, plan_name, builder_name, elevation, foundation, orientation, variations, "
                 "salas_reference_orientation, comparison_snapshot, "
                 "import_fidelity_passed, import_fidelity_details, "
                 "parent_id, source, created_at, updated_at, payload_json"
@@ -348,9 +348,9 @@ class Database:
         result = (
             self._client.table("calculations")
             .select(
-                "id, name, plan_name, builder_name, foundation, orientation, "
+                "id, name, plan_name, builder_name, elevation, foundation, orientation, variations, "
                 "salas_reference_orientation, import_fidelity_passed, import_fidelity_details, "
-                "comparison_snapshot, created_at, updated_at"
+                "comparison_snapshot, created_at, updated_at, payload_json"
             )
             .eq("source", "salas_import")
             .not_.is_("comparison_snapshot", "null")
@@ -472,8 +472,15 @@ class Database:
 
         self._client.table("calculations").update(row).eq("id", battery_id).execute()
 
-    def find_existing_import(self, plan_name: str, foundation: str | None, elevation: str | None) -> dict[str, Any] | None:
-        """Find an existing salas_import by plan_name + foundation + elevation."""
+    def find_existing_import(
+        self,
+        plan_name: str,
+        foundation: str | None,
+        elevation: str | None,
+        orientation: str | None,
+        variations: str | None,
+    ) -> dict[str, Any] | None:
+        """Find an existing salas_import by the full structured plan identity."""
         query = (
             self._client.table("calculations")
             .select("id, parent_id, source")
@@ -488,8 +495,17 @@ class Database:
             query = query.eq("elevation", elevation)
         else:
             query = query.is_("elevation", "null")
-        result = query.maybe_single().execute()
-        return result.data
+        if orientation:
+            query = query.eq("orientation", orientation)
+        else:
+            query = query.is_("orientation", "null")
+        if variations:
+            query = query.eq("variations", variations)
+        else:
+            query = query.is_("variations", "null")
+        result = query.limit(1).execute()
+        rows = result.data or []
+        return rows[0] if rows else None
 
     def import_and_add_to_battery(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Full pipeline: save as salas_import, create battery copy, replace if duplicate exists."""
@@ -497,9 +513,11 @@ class Database:
         plan_name = hierarchy.get("plan_name", "")
         foundation = hierarchy.get("foundation")
         elevation = hierarchy.get("elevation")
+        orientation = hierarchy.get("orientation")
+        variations = hierarchy.get("variations")
 
         # Replace existing duplicate if found
-        existing = self.find_existing_import(plan_name, foundation, elevation)
+        existing = self.find_existing_import(plan_name, foundation, elevation, orientation, variations)
         if existing:
             old_id = existing["id"]
             # Delete any battery copies first
@@ -519,6 +537,8 @@ class Database:
             "plan_name": plan_name,
             "foundation": foundation,
             "elevation": elevation,
+            "orientation": orientation,
+            "variations": variations,
             "replaced": existing is not None,
         }
 

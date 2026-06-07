@@ -51,6 +51,8 @@
 
 - **Test battery** — A deliberately curated subset of projects selected for maximum input variance (foundation types, volumes, insulation, window types) used to evaluate model performance. Battery records are frozen copies of eligible projects, stored with `source = 'test_battery'` and a `parent_id` linking to the original. Orientation is locked to match the Salas reference at creation time.
 - **Battery eligibility** — A project is eligible for the test battery only if it has Salas reference data, passing import fidelity, and an orientation match. Enforced at copy-creation time.
+- **Source filename** — The original uploaded Salas PDF filename, stored at `project.metadata.source_filename` when available. Admin labels and detail reports prefer this value so a battery record can be traced back to the exact Salas O'Brien source PDF rather than a normalized generic plan name.
+- **Full plan identity** — The structured duplicate/replacement key for imported Salas records: `plan_name + foundation + elevation + orientation + variations`. Bulk import and backend battery import use this full identity so option/orientation variants do not overwrite each other.
 - **Comparison snapshot** — Precomputed per-room and system-level VRC vs. Salas deltas stored on the calculation record. Enables the admin panel to render cards without re-running the engine. Computed at save time for projects with Salas data.
 - **Recompute** — A batch operation that re-runs every test battery project through the current engine via a single `POST /api/calculate/batch` endpoint. Results are held in browser memory until explicitly saved.
 - **Snapshot export** — A timestamped JSON file written to `snapshots/` in the repo containing the full test battery results at a point in time. Git-tracked alongside engine changes. Used for longitudinal analysis via Claude Code or Cowork.
@@ -60,7 +62,7 @@
 - **Views** — Two toggleable layouts: Table view (scannable rows, sortable columns) and Status Columns view (kanban-style triage by accuracy status). Toggle in the top bar.
 - **Unit toggle** — Switches delta display between percentage and absolute BTU/hr across both views. Segmented control in the top bar.
 - **Battery management** — Add via multi-select modal with search (from admin panel or main editor). Remove via per-card/row action. Refresh battery copy from main editor when parent is updated.
-- **Bulk import** — Upload multiple Salas PDFs at once from the admin panel. Each PDF goes through the full pipeline (extract → import → save as `salas_import` → create `test_battery` copy) sequentially. Warnings are stored on the record, not blocking. If a matching record already exists (by plan_name + foundation + elevation), the old record and its battery copy are replaced. Progress shown per-file.
+- **Bulk import** — Upload multiple Salas PDFs at once from the admin panel. Each PDF goes through the full pipeline (extract → import → save as `salas_import` → create `test_battery` copy) sequentially. Warnings are stored on the record, not blocking. If a matching record already exists by full plan identity, the old record and its battery copy are replaced. Progress shown per-file.
 - **Battery reset** — Delete all `test_battery` records and their `salas_import` parents in one action. Used when the importer has changed and all records need re-importing from scratch. Requires explicit confirmation.
 
 ## Model Development

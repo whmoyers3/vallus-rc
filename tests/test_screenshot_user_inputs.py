@@ -21,12 +21,12 @@ def test_screenshot_fixture_uses_user_inputs_only():
 
     result = loads_response(calculate_project(project_from_payload(payload)))
 
-    assert result["levels"][0]["cooling_subtotal"] == 24792
-    assert result["whole_house_sensible_cooling"] == 27271
+    assert result["levels"][0]["cooling_subtotal"] == 25130
+    assert result["whole_house_sensible_cooling"] == 27643
     assert result["levels"][0]["heating_subtotal"] == 29203
     assert result["whole_house_heating"] == 33583
 
     rooms = {room["name"]: room for room in result["levels"][0]["rooms"]}
     assert rooms["Great Rm"]["cooling_btuh"] == 3658
-    assert rooms["Bonus & Stairs"]["cooling_btuh"] == 5106
+    assert rooms["Bonus & Stairs"]["cooling_btuh"] == 5443
     assert rooms["Kitchen"]["cooling_btuh"] == 2854

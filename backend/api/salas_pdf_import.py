@@ -391,14 +391,14 @@ def _report_details(lines: list[str]) -> tuple[dict[str, dict[str, Any]], list[d
     return rooms, components
 
 
-def _render_markdown_from_report_details(stem: str, pdf: Any) -> str | None:
+def _render_markdown_from_report_details(filename: str, pdf: Any) -> str | None:
     lines = _pdf_text_lines(pdf)
     if not any("DETAILS / TROUBLESHOOTING SHEET" in line for line in lines):
         return None
     all_text = "\n".join(lines)
-    project_name = _header_value(all_text, "Project", "Date") or stem
+    project_name = _header_value(all_text, "Project", "Date") or filename
     location = _header_value(all_text, "Location", "By")
-    description = _header_value(all_text, "Description", "House Faces") or stem
+    description = _header_value(all_text, "Description", "House Faces") or filename
     assemblies = _report_assemblies(lines)
     unit_summaries = _report_unit_summary(lines)
     rooms, components = _report_details(lines)
@@ -407,7 +407,7 @@ def _render_markdown_from_report_details(stem: str, pdf: Any) -> str | None:
 
     units = sorted({room["unit"] for room in rooms.values()})
     lines_out = [
-        f"# {project_name} - Cooling Load Data Export",
+        f"# {filename} - Cooling Load Data Export",
         "",
         f"**Project:** {description}",
         f"**Location:** {location}",
@@ -443,6 +443,8 @@ def _render_markdown_from_report_details(stem: str, pdf: Any) -> str | None:
         lines_out += [
             f"### {room_name}",
             f"**Unit:** {room['unit']} | **Zone:** {room['zone']} | **Ceiling Height:** {fmt_qty(room['height'])} ft  ",
+            f"**Floor Area:** {fmt_qty(room['sf'])} SF  ",
+            f"**Volume:** {fmt_qty(room['volume'])} CF  ",
             "",
             "| Type | Description | Qty |",
             "|------|-------------|----:|",
@@ -575,6 +577,15 @@ def extract_zones(pdf: Any, zone_to_unit: dict[str, str] | None = None) -> tuple
                         btuh = clean_num(str(row[col + 1] or "").replace(" ", ""))
                         if btuh and actual_key in room_data:
                             room_data[actual_key][key] = btuh
+                continue
+            metric_label = type_value or row0
+            if section == "cooling" and metric_label in {"Area", "Volume"}:
+                meta_key = "floor_area" if metric_label == "Area" else "volume"
+                for actual_key, col, _ in rooms:
+                    if col < len(row) and actual_key in room_meta:
+                        value = clean_num(row[col])
+                        if value:
+                            room_meta[actual_key][meta_key] = value
                 continue
             if not type_value or type_value in SKIP_ROWS:
                 continue
@@ -752,6 +763,10 @@ def render_markdown(
             f"### {room_name}",
             f"**Unit:** {meta['unit']} | **Zone:** {meta['zone']} | **Ceiling Height:** {meta['ceiling_ht']} ft  ",
         ]
+        if meta.get("floor_area"):
+            lines.append(f"**Floor Area:** {fmt_qty(float(meta['floor_area']))} SF  ")
+        if meta.get("volume"):
+            lines.append(f"**Volume:** {fmt_qty(float(meta['volume']))} CF  ")
         load_parts = []
         if data.get("_cool_btuh"):
             load_parts.append(f"**Cooling Subtotal:** {int(data['_cool_btuh']):,} Btu/hr")
@@ -786,6 +801,7 @@ def import_salas_pdf_to_markdown(pdf_bytes: bytes, filename: str = "resload.pdf"
     if len(pdf_bytes) > MAX_FILE_SIZE:
         raise ValueError(f"PDF is too large; maximum size is {MAX_FILE_SIZE // 1024 // 1024} MB.")
 
+    display_filename = Path(filename).name or "resload.pdf"
     stem = Path(filename).stem or "resload"
     tmp_path = os.path.join(tempfile.gettempdir(), f"{stem}.pdf")
     with open(tmp_path, "wb") as tmp:
@@ -800,7 +816,7 @@ def import_salas_pdf_to_markdown(pdf_bytes: bytes, filename: str = "resload.pdf"
             airflows = extract_airflows(pdf)
             master_components, room_order, room_meta, room_data = extract_zones(pdf, unit_info["zone_to_unit"])
             if not room_order:
-                fallback = _render_markdown_from_report_details(stem, pdf)
+                fallback = _render_markdown_from_report_details(display_filename, pdf)
                 if fallback:
                     return fallback
         if not room_order:
@@ -809,7 +825,7 @@ def import_salas_pdf_to_markdown(pdf_bytes: bytes, filename: str = "resload.pdf"
                 "or a ResLoad report that includes the Details / Troubleshooting Sheet; output-only "
                 "load summary reports do not contain enough input data to recreate a project."
             )
-        return render_markdown(stem, p1_text, unit_info, master_components, room_order, room_meta, room_data, glass_specs, airflows)
+        return render_markdown(display_filename, p1_text, unit_info, master_components, room_order, room_meta, room_data, glass_specs, airflows)
     finally:
         try:
             os.remove(tmp_path)

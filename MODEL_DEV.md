@@ -151,6 +151,7 @@ These are deliberate simplifications backed by limited samples. If a new resload
 | **Glass conduction CLTD = 14** (3–4 PM peak) | `constants.py` `GLASS_CLTD` | Finley, Tranquility + ASHRAE HoF | Out-of-region (non-north-GA) latitude. |
 | **SHGF table = north-GA latitude only** | `SCLEFF_BY_DIRECTION` | lat ~34°N | Onboarding a second latitude → source ASHRAE SCL/SHGF for it. |
 | **Townhouse glass = combined direct table** (not SHGF formula) | `TOWNHOUSE_GLASS_LOAD_FACTORS` | Evergreen TH (9/10; NE corrected) | More townhome resloads to re-confirm NE=21 and the rest. |
+| **Imported room area/volume overrides component-area inference** | `salas_pdf_import.py` emits room `Floor Area` / `Volume`; `markdown_import.py` consumes them | Mansfield UBsmt, Tranquility UBsmt SW-Facing | Any import fidelity area/volume mismatch, especially basement or garage-adjacent rooms. Fix import fidelity before tuning engine formulas. |
 
 ## Quick Reference: Which Tool When
 

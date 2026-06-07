@@ -33,6 +33,30 @@ _TYPE_FROM_CODE = {
 }
 
 
+def _record_label(record: dict[str, Any], payload: dict[str, Any]) -> str:
+    project = payload.get("project", {})
+    meta = project.get("metadata", {})
+    source_filename = meta.get("source_filename")
+    if isinstance(source_filename, str) and source_filename.strip():
+        return source_filename.strip()
+
+    base = (record.get("plan_name") or record.get("name") or project.get("plan_name") or project.get("name") or "")
+    details = [
+        record.get("elevation") or project.get("elevation"),
+        record.get("foundation") or project.get("foundation"),
+        record.get("orientation") or project.get("orientation"),
+        record.get("variations") or project.get("variations"),
+    ]
+    label_parts = [str(base).strip()] if str(base).strip() else []
+    base_lower = str(base).lower()
+    label_parts.extend(
+        str(part).strip()
+        for part in details
+        if part and str(part).strip().lower() not in base_lower
+    )
+    return " ".join(label_parts)
+
+
 def _component_type(code: str) -> str:
     return _TYPE_FROM_CODE.get(code[0].upper(), code) if code else "Unknown"
 
@@ -194,7 +218,7 @@ def _build_project_entry(
 
     entry: dict[str, Any] = {
         "id": record["id"],
-        "name": record.get("plan_name") or record.get("name", ""),
+        "name": _record_label(record, payload),
         "import_fidelity_passed": record.get("import_fidelity_passed"),
         "system": {
             "salas_cool_btuh": system.get("salas_cooling_btuh"),

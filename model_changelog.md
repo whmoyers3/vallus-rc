@@ -18,6 +18,18 @@ Record engine changes here with the snapshot filename so results can be traced b
 
 <!-- Add entries below, newest first -->
 
+## 2026-06-07 — UBsmt room metrics, source filename identity, and directional wall inference
+
+**Changed:**
+- `salas_pdf_import.py` now preserves the uploaded Salas PDF filename in the generated Markdown title and emits per-room `Floor Area` / `Volume` rows from both the normal room-input tables and the Details / Troubleshooting fallback.
+- `markdown_import.py` now prefers explicit per-room floor area and volume over inferred component-area heuristics.
+- `calculator.py` gives directional W1 walls precedence over garage/partition name matching, so a room named `Garage Entry Hall` does not cause a normal `SouthEast` exterior wall to be treated as a garage boundary.
+- `database.py`, `detail_report.py`, and the admin UI now use/display the full source identity where available. Battery duplicate replacement keys on `plan_name + foundation + elevation + orientation + variations`, and labels prefer `metadata.source_filename`.
+
+**Reason:** The detail report showed the largest misses concentrated in failed-fidelity UBsmt imports. The old importer guessed room area/volume from envelope components, which overcounted basement/garage-adjacent spaces (e.g. Mansfield UBsmt imported as 3,550 sf / 30,564 cf vs Salas 3,326 sf / 28,548 cf). Separately, admin labels collapsed source variants to generic names like `Mansfield`, allowing variant duplicates to overwrite each other, and `Garage Entry Hall SouthEast` was misclassified because name matching saw `Garage`.
+
+**Result:** Fresh import checks now match Salas area/volume exactly for the UBsmt samples. Mansfield P UBsmt improved from report delta `+537 cool / +467 heat` to `-83 cool / -90 heat`. Tranquility UBsmt SW-Facing improved from `-116 cool / -567 heat` to `+16 cool / -77 heat`. Focused import/wall/screenshot tests pass; frontend build passes. Full suite still has unrelated pre-existing report-signature and live-Supabase test failures.
+
 ## 2026-06-07 — Mechanical ventilation: editor toggle + bedroom-derived default CFM
 
 **Finding:** Salas's ventilation CFM is `15 × (bedrooms + 1)` (15 CFM per assumed occupant) — exact on all six ACH50 examples (3-bed→60, 4-bed→75, 6-bed→105); floor area does not enter.

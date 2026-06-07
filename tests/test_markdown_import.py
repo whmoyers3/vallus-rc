@@ -91,6 +91,25 @@ def test_pdf_markdown_import_uses_uploaded_pdf_filename_as_plan_name():
     assert project["metadata"]["salas_plan_name"] == "Ash"
 
 
+def test_markdown_import_prefers_explicit_room_area_and_volume():
+    explicit_metrics = MARKDOWN.replace(
+        "**Unit:** Unit 1 | **Zone:** First Floor | **Ceiling Height:** 9 ft",
+        "**Unit:** Unit 1 | **Zone:** First Floor | **Ceiling Height:** 9 ft\n"
+        "**Floor Area:** 100 SF\n"
+        "**Volume:** 900 CF",
+    ).replace(
+        "| F2 | Slab | 120 sf |",
+        "| F2 | Slab | 160 sf |",
+    )
+
+    payload, _warnings = import_room_cooling_markdown(explicit_metrics, "example.md")
+    room = payload["project"]["levels"][0]["rooms"][0]
+
+    assert room["floor_area"] == 100
+    assert room["lighting_area"] == 100
+    assert room["volume"] == 900
+
+
 def test_markdown_import_requires_glass_u_value_and_shgc():
     missing = MARKDOWN.replace("| G1 | West (Glass) | — | 0.35 | 0.22 |", "| G1 | West (Glass) | — | — | — |")
     client = TestClient(create_app(":memory:"))

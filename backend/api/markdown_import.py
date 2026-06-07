@@ -425,6 +425,10 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
         room_name = room_match.group(1).strip()
         unit_name, zone_name = metadata_match.group(1).strip(), metadata_match.group(2).strip()
         ceiling_height = float(metadata_match.group(3))
+        floor_area_match = re.search(r"^\*\*Floor Area:\*\*\s*(.+?)\s*$", block, re.MULTILINE)
+        volume_match = re.search(r"^\*\*Volume:\*\*\s*(.+?)\s*$", block, re.MULTILINE)
+        explicit_floor_area = _number(floor_area_match.group(1)) if floor_area_match else None
+        explicit_volume = _number(volume_match.group(1)) if volume_match else None
         unit_id = f"unit-{_slug(unit_name)}"
         zone_id = f"zone-{_slug(unit_name)}-{_slug(zone_name)}"
         units.setdefault(unit_name, {"id": unit_id, "name": unit_name, **unit_sizing.get(unit_name, {})})
@@ -488,7 +492,14 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
 
         slab_area = sum(item.get("area", 0) for item in room_components if item.get("assembly") == "F2")
         ceiling_area = sum(item.get("area", 0) for item in room_components if str(item.get("assembly", "")).startswith("C"))
-        if slab_area and ceiling_area and ceiling_area > slab_area:
+        if explicit_floor_area is not None:
+            floor_area = explicit_floor_area
+            lighting_basis = (
+                "Ceiling"
+                if ceiling_area and not slab_area and abs(ceiling_area - explicit_floor_area) <= 2
+                else "Floor"
+            )
+        elif slab_area and ceiling_area and ceiling_area > slab_area:
             # Ceiling footprint is larger — likely open-to-above/stair room; use ceiling area
             lighting_basis = "Ceiling"
             floor_area = ceiling_area
@@ -503,12 +514,13 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
             floor_area = max(
                 [item.get("area", 0) for item in room_components if item.get("kind") == "opaque"] or [0]
             )
+        volume = explicit_volume if explicit_volume is not None else floor_area * ceiling_height
         rooms.append({
             "name": room_name,
             "floor_area": floor_area,
             "lighting_area": floor_area,
             "ceiling_height": ceiling_height,
-            "volume": floor_area * ceiling_height,
+            "volume": volume,
             "lighting_basis": lighting_basis,
             "unit_id": unit_id,
             "zone_id": zone_id,

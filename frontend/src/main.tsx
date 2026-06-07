@@ -2123,7 +2123,10 @@ interface BatteryRow {
   name: string;
   plan_name: string;
   builder_name: string;
+  elevation: string | null;
   foundation: string | null;
+  orientation: string | null;
+  variations: string | null;
   salas_reference_orientation: string | null;
   import_fidelity_passed: boolean | null;
   import_fidelity_details: Record<string, unknown> | null;
@@ -2169,9 +2172,13 @@ interface EligibleRow {
   name: string;
   plan_name: string;
   builder_name: string;
+  elevation: string | null;
   foundation: string | null;
+  orientation: string | null;
+  variations: string | null;
   comparison_snapshot: ComparisonSnapshot | null;
   import_fidelity_details: Record<string, unknown> | null;
+  payload_json?: Record<string, unknown>;
 }
 
 // ── Admin panel helpers ───────────────────────────────────────────────────────
@@ -2216,14 +2223,24 @@ function roomOutliers(snap: ComparisonSnapshot, tolPct: number, tolBtuh: number)
   }).length;
 }
 
-function adminPlanLabel(row: { name?: string | null; plan_name?: string | null; payload_json?: Record<string, unknown> }): string {
+function adminPlanLabel(row: {
+  name?: string | null;
+  plan_name?: string | null;
+  elevation?: string | null;
+  foundation?: string | null;
+  orientation?: string | null;
+  variations?: string | null;
+  payload_json?: Record<string, unknown>;
+}): string {
   const sourceFilename = (row.payload_json as any)?.project?.metadata?.source_filename;
-  return (
-    (typeof sourceFilename === "string" && sourceFilename.trim())
-    || row.name?.trim()
-    || row.plan_name?.trim()
-    || ""
-  );
+  if (typeof sourceFilename === "string" && sourceFilename.trim()) return sourceFilename.trim();
+
+  const base = row.plan_name?.trim() || row.name?.trim() || "";
+  const details = [row.elevation, row.foundation, row.orientation, row.variations]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part));
+  const missingDetails = details.filter((part) => !base.toLowerCase().includes(part.toLowerCase()));
+  return [base, ...missingDetails].filter(Boolean).join(" ").trim();
 }
 
 type ChangeDir = "improved" | "regressed" | "unchanged" | null;
@@ -2587,12 +2604,23 @@ function AdminPanel() {
           const existingList: Array<{ id: number }> = await existingRes.json();
           // Also check non-eligible salas imports
           const allRes = await fetch("/api/projects");
-          const allProjects: Array<{ id: number; plan_name: string; foundation: string | null; elevation: string | null; source: string }> = await allRes.json();
+          const allProjects: Array<{
+            id: number;
+            plan_name: string;
+            foundation: string | null;
+            elevation: string | null;
+            orientation: string | null;
+            variations: string | null;
+            source: string;
+          }> = await allRes.json();
           const pf = payload?.project?.foundation ?? null;
           const pe = payload?.project?.elevation ?? null;
+          const po = payload?.project?.orientation ?? null;
+          const pv = payload?.project?.variations ?? null;
           const dupes = allProjects.filter((p) =>
             p.source === "salas_import" && p.plan_name === planName &&
-            (p.foundation ?? null) === pf && (p.elevation ?? null) === pe
+            (p.foundation ?? null) === pf && (p.elevation ?? null) === pe &&
+            (p.orientation ?? null) === po && (p.variations ?? null) === pv
           );
           for (const dupe of dupes) {
             // Delete any battery copies first
@@ -3156,7 +3184,7 @@ function AdminPanel() {
           >
             <h3 style={{ fontSize: 18, marginBottom: 4 }}>Bulk Import Salas PDFs</h3>
             <p style={{ fontSize: 13, color: "#666", marginBottom: 16 }}>
-              Upload Salas O'Brien PDFs to import, save, and add to the test battery. Existing records with the same plan/foundation/elevation will be replaced.
+              Upload Salas O'Brien PDFs to import, save, and add to the test battery. Existing records with the same full plan identity will be replaced.
             </p>
 
             {!bulkImporting && bulkProgress.results.length === 0 && (

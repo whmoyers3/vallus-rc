@@ -142,8 +142,8 @@ POST   /api/battery/{id}/refresh     — re-copy from parent, re-verify eligibil
 GET    /api/battery/eligible         — list projects eligible for battery
          Filters: source='salas_import', has comparison data,
                   import fidelity passed, no existing battery copy
-         Supports: ?search=query (searches plan_name, description,
-                   builder_name, foundation, location)
+         Supports: ?search=query (searches plan/source filename,
+                   builder_name, foundation, orientation/variation when present)
 POST   /api/battery/snapshot/export  — write timestamped JSON to snapshots/
 ```
 
@@ -238,9 +238,15 @@ Each card shows: plan name, foundation, square footage, room conformance badge, 
 
 - Search box: free-text, filters across plan_name, description, builder_name, foundation, location
 - Multi-select list of eligible projects (from `GET /api/battery/eligible?search=...`)
-- Each item shows: plan name, builder, foundation, square footage
+- Each item shows: full plan/source filename when available, builder, foundation, square footage
 - "Add Selected (n)" button: calls `POST /api/battery` for each selected project
 - Eligibility is enforced server-side: Salas data present, import fidelity passed, orientation matchable
+
+### 3.7.1 — Source identity and duplicate replacement
+
+- Admin labels prefer `project.metadata.source_filename`; fallback labels rebuild the structured name from `plan_name`, `elevation`, `foundation`, `orientation`, and `variations`.
+- Bulk import and backend import replacement use full structured plan identity (`plan_name + foundation + elevation + orientation + variations`) instead of only plan/foundation/elevation. This prevents orientation or option variants from overwriting each other during large batch imports.
+- Detail-report exports use the same display identity so each variance row can be traced back to the original Salas PDF.
 
 ### 3.8 — Per-card/row actions
 

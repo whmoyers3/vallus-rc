@@ -100,12 +100,12 @@ def infer_cooling_cltd(item: LineItem) -> float:
     name = item.name.upper()
     direction = item.direction.upper() if item.direction else None
 
+    if assembly_code == "W1" and direction in WALL_CLTD_BY_DIRECTION:
+        return WALL_CLTD_BY_DIRECTION[direction]
     if assembly_code == "W1" and "GARAGE" in name:
         return SPECIAL_CLTD["GARAGE_WALL"]
     if assembly_code == "W1" and "PARTITION" in name:
         return SPECIAL_CLTD["PARTITION"]
-    if assembly_code == "W1" and direction in WALL_CLTD_BY_DIRECTION:
-        return WALL_CLTD_BY_DIRECTION[direction]
     if assembly_code in {"W2"}:
         return 0.0
     if assembly_code in {"W3"}:
@@ -139,7 +139,7 @@ def infer_heating_delta_t(item: LineItem, design_conditions: DesignConditions) -
         return design_conditions.slab_delta_t
     if assembly_code == "W2":
         return design_conditions.slab_delta_t
-    if assembly_code == "W1" and ("GARAGE" in name or "PARTITION" in name):
+    if assembly_code == "W1" and not item.direction and ("GARAGE" in name or "PARTITION" in name):
         return design_conditions.slab_delta_t
     return design_conditions.heating_delta_t
 
