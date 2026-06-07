@@ -7,8 +7,6 @@ from dataclasses import dataclass, replace
 from .constants import (
     BTUH_PER_KW,
     CFM_PER_TON,
-    COOLING_SAFETY_FACTOR,
-    HEATING_SAFETY_FACTOR,
     PEOPLE_SENSIBLE_BTUH,
     SENSIBLE_BTUH_PER_NOMINAL_TON,
     SPECIAL_CLTD,
@@ -272,8 +270,8 @@ def calculate_level(
     raw_heating_subtotal = sum(result.heating_btuh for result in line_results)
     cooling_subtotal = round_half_up(raw_cooling_subtotal)
     heating_subtotal = round_half_up(raw_heating_subtotal)
-    cooling_load = round_half_up(raw_cooling_subtotal * COOLING_SAFETY_FACTOR)
-    heat_loss = round_half_up(raw_heating_subtotal * HEATING_SAFETY_FACTOR)
+    cooling_load = round_half_up(raw_cooling_subtotal * design_conditions.cooling_safety_factor)
+    heat_loss = round_half_up(raw_heating_subtotal * design_conditions.heating_safety_factor)
     assigned_room_loads: dict[str, list[float]] = {}
     for result in line_results:
         if result.room_name:
@@ -418,11 +416,12 @@ def calculate_project(project: Project) -> ProjectResult:
         for index, level in enumerate(project.levels)
     ]
     levels = _allocate_unit_room_airflows(project, levels)
+    dc = project.design_conditions
     sensible_cooling = round_half_up(
-        sum(level.raw_cooling_subtotal for level in levels) * COOLING_SAFETY_FACTOR
+        sum(level.raw_cooling_subtotal for level in levels) * dc.cooling_safety_factor
     )
     heating = round_half_up(
-        sum(level.raw_heating_subtotal for level in levels) * HEATING_SAFETY_FACTOR
+        sum(level.raw_heating_subtotal for level in levels) * dc.heating_safety_factor
     )
     system_tons = (
         project.selected_system_tons
@@ -460,15 +459,15 @@ def calculate_project(project: Project) -> ProjectResult:
             name=unit["name"],
             cooling_subtotal=round_half_up(raw_unit_loads.get(unit["id"], [0.0, 0.0])[0]),
             heating_subtotal=round_half_up(raw_unit_loads.get(unit["id"], [0.0, 0.0])[1]),
-            sensible_cooling=round_half_up(raw_unit_loads.get(unit["id"], [0.0, 0.0])[0] * COOLING_SAFETY_FACTOR),
-            heating=round_half_up(raw_unit_loads.get(unit["id"], [0.0, 0.0])[1] * HEATING_SAFETY_FACTOR),
-            tons_min=raw_unit_loads.get(unit["id"], [0.0, 0.0])[0] * COOLING_SAFETY_FACTOR / SENSIBLE_BTUH_PER_NOMINAL_TON,
+            sensible_cooling=round_half_up(raw_unit_loads.get(unit["id"], [0.0, 0.0])[0] * dc.cooling_safety_factor),
+            heating=round_half_up(raw_unit_loads.get(unit["id"], [0.0, 0.0])[1] * dc.heating_safety_factor),
+            tons_min=raw_unit_loads.get(unit["id"], [0.0, 0.0])[0] * dc.cooling_safety_factor / SENSIBLE_BTUH_PER_NOMINAL_TON,
             recommended_tons=recommended_standard_tons(
                 raw_unit_loads.get(unit["id"], [0.0, 0.0])[0]
-                * COOLING_SAFETY_FACTOR
+                * dc.cooling_safety_factor
                 / SENSIBLE_BTUH_PER_NOMINAL_TON
             ),
-            kw_min=raw_unit_loads.get(unit["id"], [0.0, 0.0])[1] * HEATING_SAFETY_FACTOR / BTUH_PER_KW,
+            kw_min=raw_unit_loads.get(unit["id"], [0.0, 0.0])[1] * dc.heating_safety_factor / BTUH_PER_KW,
         )
         for unit in units
     ]

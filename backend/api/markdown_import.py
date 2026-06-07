@@ -169,11 +169,16 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
             house["volume"] = value
     if house_facing:
         raw = house_facing.group(1).strip().rstrip(" ").strip()
-        # Extract just the compass direction (e.g. "Worst S" → "S", "N" → "N")
         worst = re.search(r"Worst\s+(\w+)", raw, re.IGNORECASE)
         facing = worst.group(1).upper() if worst else raw.upper()
-        if facing in {"N", "NE", "E", "SE", "S", "SW", "W", "NW"}:
-            house["orientation"] = facing
+        _FULL_TO_ABBREV = {
+            "NORTH": "N", "NORTHEAST": "NE", "EAST": "E", "SOUTHEAST": "SE",
+            "SOUTH": "S", "SOUTHWEST": "SW", "WEST": "W", "NORTHWEST": "NW",
+        }
+        _ABBREVS = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
+        resolved = _FULL_TO_ABBREV.get(facing, facing)
+        if resolved in _ABBREVS:
+            house["orientation"] = resolved
     if house:
         comparison["house"] = house
 
@@ -396,10 +401,21 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
 
         slab_area = sum(item.get("area", 0) for item in room_components if item.get("assembly") == "F2")
         ceiling_area = sum(item.get("area", 0) for item in room_components if str(item.get("assembly", "")).startswith("C"))
-        floor_area = slab_area or ceiling_area or max(
-            [item.get("area", 0) for item in room_components if item.get("kind") == "opaque"] or [0]
-        )
-        lighting_basis = "Floor" if slab_area else "Ceiling" if ceiling_area else "Floor"
+        if slab_area and ceiling_area and ceiling_area > slab_area:
+            # Ceiling footprint is larger — likely open-to-above/stair room; use ceiling area
+            lighting_basis = "Ceiling"
+            floor_area = ceiling_area
+        elif slab_area:
+            lighting_basis = "Floor"
+            floor_area = slab_area
+        elif ceiling_area:
+            lighting_basis = "Ceiling"
+            floor_area = ceiling_area
+        else:
+            lighting_basis = "Floor"
+            floor_area = max(
+                [item.get("area", 0) for item in room_components if item.get("kind") == "opaque"] or [0]
+            )
         rooms.append({
             "name": room_name,
             "floor_area": floor_area,

@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS calculations (
   -- Source tracking for comparison
   source        TEXT NOT NULL DEFAULT 'vrc',
 
+  -- Optional exclusion flag for battery records with known-broken Salas reference data
+  reference_valid  BOOLEAN,
+  notes            TEXT,
+
   -- Full engine payload
   payload_json  JSONB NOT NULL,
 

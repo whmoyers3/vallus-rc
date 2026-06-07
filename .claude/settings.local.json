@@ -34,7 +34,13 @@
       "Bash(npx tsc *)",
       "Bash(python3 -m pytest tests/test_phase1_hickory_c.py tests/test_phase2_hickory_c.py -q)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python3 -m pytest tests/ -v)",
+      "Bash(python3 -m pytest backend/tests/ -v)",
+      "Bash(python3 -m pytest tests/ -v --ignore=tests/test_phase3_api.py)",
+      "Bash(python3 -m pytest tests/test_phase1_hickory_c.py tests/test_phase2_hickory_c.py tests/test_screenshot_user_inputs.py -v)",
+      "Bash(python3 -m pytest tests/test_phase1_hickory_c.py tests/test_phase2_hickory_c.py -v)"
     ]
   }
 }

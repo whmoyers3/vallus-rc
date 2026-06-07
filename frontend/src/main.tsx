@@ -37,6 +37,8 @@ type ProjectDraft = {
   outdoor_heating_db: number;
   indoor_cooling_db: number;
   indoor_heating_db: number;
+  cooling_safety_factor: number;
+  heating_safety_factor: number;
   ach50: number;
   bedrooms: number;
   seer: number;
@@ -194,6 +196,8 @@ const initialProject: ProjectDraft = {
   outdoor_heating_db: 18,
   indoor_cooling_db: 75,
   indoor_heating_db: 72,
+  cooling_safety_factor: 1.10,
+  heating_safety_factor: 1.15,
   ach50: 5,
   bedrooms: 1,
   seer: 14,
@@ -386,7 +390,9 @@ function buildPayload(project: ProjectDraft, assemblies: AssemblyRow[]) {
         outdoor_heating_db: project.outdoor_heating_db,
         indoor_cooling_db: project.indoor_cooling_db,
         indoor_heating_db: project.indoor_heating_db,
-        slab_delta_t: 27
+        slab_delta_t: 27,
+        cooling_safety_factor: project.cooling_safety_factor,
+        heating_safety_factor: project.heating_safety_factor,
       },
       infiltration: { mode: "standard_ach" },
       metadata: {
@@ -445,6 +451,8 @@ function draftFromPayload(payload: FixturePayload): ProjectDraft {
     outdoor_heating_db: project.design_conditions.outdoor_heating_db,
     indoor_cooling_db: project.design_conditions.indoor_cooling_db,
     indoor_heating_db: project.design_conditions.indoor_heating_db,
+    cooling_safety_factor: (project.design_conditions as any).cooling_safety_factor ?? 1.10,
+    heating_safety_factor: (project.design_conditions as any).heating_safety_factor ?? 1.15,
     ach50: Number(metadata.ach50 ?? 5),
     bedrooms: Number(metadata.bedrooms ?? 3),
     seer: Number(metadata.seer ?? 14),
@@ -1454,6 +1462,8 @@ function App() {
             <label>Cooling indoor<input type="number" step="0.001" value={project.indoor_cooling_db} onChange={(event) => updateProject("indoor_cooling_db", Number(event.target.value))} /></label>
             <label>Heating outdoor<input type="number" step="0.001" value={project.outdoor_heating_db} onChange={(event) => updateProject("outdoor_heating_db", Number(event.target.value))} /></label>
             <label>Heating indoor<input type="number" step="0.001" value={project.indoor_heating_db} onChange={(event) => updateProject("indoor_heating_db", Number(event.target.value))} /></label>
+            <label>Cooling safety factor<input type="number" step="0.01" value={project.cooling_safety_factor} onChange={(event) => updateProject("cooling_safety_factor", Number(event.target.value))} /></label>
+            <label>Heating safety factor<input type="number" step="0.01" value={project.heating_safety_factor} onChange={(event) => updateProject("heating_safety_factor", Number(event.target.value))} /></label>
             <label>ACH50<input type="number" step="0.001" value={project.ach50} onChange={(event) => updateProject("ach50", Number(event.target.value))} /></label>
             <label>Bedrooms<input type="number" step="0.001" value={project.bedrooms} onChange={(event) => updateProject("bedrooms", Number(event.target.value))} /></label>
             <label>SEER<input type="number" step="0.001" value={project.seer} onChange={(event) => updateProject("seer", Number(event.target.value))} /></label>

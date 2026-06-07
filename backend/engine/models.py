@@ -33,6 +33,8 @@ class DesignConditions:
     indoor_cooling_db: float = 75.0
     indoor_heating_db: float = 72.0
     slab_delta_t: float = 27.0
+    cooling_safety_factor: float = 1.10
+    heating_safety_factor: float = 1.15
 
     @property
     def cooling_delta_t(self) -> float:
