@@ -226,14 +226,17 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
     u_value_col = next((i for i, h in enumerate(master_headers) if "u-value" in h), 3)
     cltd_col = next((i for i, h in enumerate(master_headers) if "cltd" in h), 2)
     clf_col = next((i for i, h in enumerate(master_headers) if "cooling load factor" in h), 4)
-    _master_specs: dict[str, dict[str, Any]] = {}
+    # Key by (code, variant) so per-direction / per-boundary factors survive instead
+    # of collapsing to the last row per code (which corrupts the detail-report match key).
+    _master_specs: dict[tuple[str, str], dict[str, Any]] = {}
     for row in master_rows[1:]:
         if not row or row[0] in {"-", "—"}:
             continue
         code = row[0].strip()
         if not code:
             continue
-        _master_specs[code] = {
+        variant = row[1].strip() if len(row) > 1 else ""
+        _master_specs[(code, variant)] = {
             "u_value": _number(row[u_value_col]) if len(row) > u_value_col else None,
             "cltd": _number(row[cltd_col]) if len(row) > cltd_col else None,
             "clf": _number(row[clf_col]) if len(row) > clf_col else None,
@@ -275,12 +278,13 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
                 code = row[0].strip()
                 if not code or code in {"-", "—"}:
                     continue
+                variant = row[1].strip() if len(row) > 1 else ""
                 qty = _number(row[2])
                 cool_btuh = _number(row[3]) if row[3] != "-" else None
                 heat_btuh = _number(row[4]) if row[4] != "-" else None
                 if qty is None:
                     continue
-                spec = _master_specs.get(code, {})
+                spec = _master_specs.get((code, variant)) or _master_specs.get((code, ""), {})
                 type_label = _TYPE_MAP.get(code[0].upper(), code[0].upper()) if code else "Unknown"
                 components.append({
                     "type": type_label,
@@ -355,14 +359,20 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
     master_match = re.search(r"## SECTION 1.*?(?=## SECTION 2)", text, re.DOTALL)
     master_rows = _table_rows(master_match.group(0) if master_match else "")
     assemblies: dict[str, dict[str, Any]] = {}
+    # Per-(code, variant) factors from the schedule. Keyed by (code, variant label)
+    # so per-direction / per-boundary CLTDs survive instead of collapsing to one row.
+    variant_specs: dict[tuple[str, str], dict[str, Any]] = {}
     master_headers = [header.lower() for header in master_rows[0]] if master_rows else []
     u_value_index = next((index for index, header in enumerate(master_headers) if "u-value" in header), 3)
+    cltd_index = next((index for index, header in enumerate(master_headers) if "cltd" in header), 2)
     shgc_index = next((index for index, header in enumerate(master_headers) if "shgc" in header), None)
     for row in master_rows[1:]:
         if len(row) < 5 or row[0] in {"—", "-"}:
             continue
         code = _normalized_code(row[0])
         description = row[1]
+        cltd = _number(row[cltd_index]) if len(row) > cltd_index else None
+        variant_specs[(code, description.strip())] = {"cltd": cltd}
         u_value = _number(row[u_value_index]) if len(row) > u_value_index else None
         shgc_match = re.search(r"\bSHGC\b\s*[:=]?\s*(0?\.\d+)", " ".join(row), re.IGNORECASE)
         shgc = _number(row[shgc_index]) if shgc_index is not None and len(row) > shgc_index else None
@@ -449,6 +459,14 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
                 }
                 if direction:
                     component["direction"] = direction
+                elif component["kind"] == "opaque":
+                    # Boundary condition (non-directional): the CLTD is a per-project
+                    # input read straight from the Salas schedule, not a climate-derived
+                    # value. Populating it lets the engine use e.g. a conditioned-attic
+                    # W3 = 15 instead of the hardcoded vented-attic default of 55.
+                    spec = variant_specs.get((code, description.strip()))
+                    if spec and spec.get("cltd") is not None:
+                        component["cooling_cltd"] = spec["cltd"]
             room_components.append(component)
             line_items.append(component)
 
@@ -495,6 +513,11 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
         if re.search(r"\bbed(?:room)?\b|\bowner suite\b|\bmaster bed\b", room["name"], re.IGNORECASE)
     )
     hierarchy = _parse_hierarchy(salas_description, project_description, plan_name)
+    # Building type drives which solar (SHGF) table the engine uses. Auto-detect from
+    # the plan naming / multi-unit structure; the user can override in the editor.
+    _type_text = f"{plan_name} {project_description} {salas_description}".lower()
+    is_townhome = bool(re.search(r"\b(th|townhome|townhouse|town\s?home|town\s?house)\b", _type_text)) or len(units) > 1
+    building_type = "townhouse" if is_townhome else "single_family"
     source_pdf_filename = plan_name if re.search(r"\.pdf$", plan_name, flags=re.IGNORECASE) else ""
     parsed_plan_name = hierarchy.get("plan_name", "")
     display_plan_name = source_pdf_filename or parsed_plan_name or plan_name
@@ -504,6 +527,7 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
             "name": display_plan_name,
             "location": location,
             "description": project_description,
+            "building_type": building_type,
             # Structured hierarchy fields parsed from Salas Description/Project/filename
             "plan_name": display_plan_name,
             **hierarchy_fields,

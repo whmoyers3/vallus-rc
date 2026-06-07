@@ -17,9 +17,13 @@ SCLEFF_BY_DIRECTION: dict[str, int] = {
     "SKYLIGHT": 187,
 }
 
+# Combined glass cooling factors (Btu/hr-sf) for townhouses, applied DIRECTLY per
+# orientation (not via the SHGF formula used for single-family). Verified against the
+# Evergreen TH resload (9/10 exact). NE corrected 26 -> 21 to match Salas; based on a
+# single townhouse sample — re-confirm when more townhome resloads are available.
 TOWNHOUSE_GLASS_LOAD_FACTORS: dict[str, int] = {
     "N": 7,
-    "NE": 26,
+    "NE": 21,
     "E": 32,
     "SE": 26,
     "S": 19,

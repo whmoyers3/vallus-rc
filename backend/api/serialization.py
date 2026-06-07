@@ -86,6 +86,11 @@ def project_from_payload(payload: dict[str, Any]) -> Project:
         levels=levels,
         selected_system_tons=project_data.get("selected_system_tons"),
         selected_system_kw=project_data.get("selected_system_kw"),
+        building_type=(
+            project_data.get("building_type")
+            or project_data.get("metadata", {}).get("building_type")
+            or "single_family"
+        ),
         metadata=project_data.get("metadata", {}),
         assemblies=assemblies,
     )

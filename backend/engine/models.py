@@ -95,6 +95,7 @@ class Project:
     levels: list[Level]
     selected_system_tons: float | None = None
     selected_system_kw: float | None = None
+    building_type: str = "single_family"
     metadata: dict[str, Any] = field(default_factory=dict)
     assemblies: dict[str, "Assembly"] = field(default_factory=dict)
 

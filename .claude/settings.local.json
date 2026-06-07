@@ -40,7 +40,9 @@
       "Bash(python3 -m pytest backend/tests/ -v)",
       "Bash(python3 -m pytest tests/ -v --ignore=tests/test_phase3_api.py)",
       "Bash(python3 -m pytest tests/test_phase1_hickory_c.py tests/test_phase2_hickory_c.py tests/test_screenshot_user_inputs.py -v)",
-      "Bash(python3 -m pytest tests/test_phase1_hickory_c.py tests/test_phase2_hickory_c.py -v)"
+      "Bash(python3 -m pytest tests/test_phase1_hickory_c.py tests/test_phase2_hickory_c.py -v)",
+      "Bash(python -c ' *)",
+      "Bash(python3 -m py_compile \"/Users/will/Documents/Claude/Projects/WEBAPP - Load Calculation Software/backend/api/detail_report.py\")"
     ]
   }
 }

@@ -56,7 +56,14 @@ def test_markdown_import_builds_editable_user_input_payload():
     assert level["rooms"][0]["floor_area"] == 120
     assert level["line_items"][0]["direction"] == "W"
     assert all("cooling_btuh" not in item and "heating_btuh" not in item for item in level["line_items"])
-    assert all("cooling_load_factor" not in item and "cooling_cltd" not in item for item in level["line_items"])
+    # Climate/orientation factors (glass, directional walls) stay formula-driven —
+    # no per-item override. Boundary CLTDs (ceiling, slab) are imported from the
+    # schedule as per-project inputs.
+    climate_items = [i for i in level["line_items"] if i.get("direction") or str(i.get("assembly", "")).startswith("G")]
+    assert all("cooling_load_factor" not in i and "cooling_cltd" not in i for i in climate_items)
+    boundary = {i["assembly"]: i for i in level["line_items"] if not i.get("direction") and i.get("kind") == "opaque"}
+    assert boundary["C1"]["cooling_cltd"] == 55
+    assert boundary["F2"]["cooling_cltd"] == 0
     comparison = project["metadata"]["salas_obrien_comparison"]
     assert comparison["units"][0]["cooling_btuh"] == 99999
     assert comparison["rooms"]["Great Rm"]["cooling_btuh"] == 1234

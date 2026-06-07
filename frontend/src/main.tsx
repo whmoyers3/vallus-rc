@@ -42,6 +42,7 @@ type ProjectDraft = {
   ach50: number;
   bedrooms: number;
   seer: number;
+  building_type: "single_family" | "townhouse";
   front_door_faces: CompassDirection;
   selected_system_tons: number;
   selected_system_kw: number;
@@ -201,6 +202,7 @@ const initialProject: ProjectDraft = {
   ach50: 5,
   bedrooms: 1,
   seer: 14,
+  building_type: "single_family",
   front_door_faces: "S",
   selected_system_tons: 1,
   selected_system_kw: 5,
@@ -385,6 +387,7 @@ function buildPayload(project: ProjectDraft, assemblies: AssemblyRow[]) {
       name: project.name,
       location: project.location,
       description: project.description,
+      building_type: project.building_type,
       design_conditions: {
         outdoor_cooling_db: project.outdoor_cooling_db,
         outdoor_heating_db: project.outdoor_heating_db,
@@ -456,6 +459,7 @@ function draftFromPayload(payload: FixturePayload): ProjectDraft {
     ach50: Number(metadata.ach50 ?? 5),
     bedrooms: Number(metadata.bedrooms ?? 3),
     seer: Number(metadata.seer ?? 14),
+    building_type: ((project as any).building_type ?? (metadata as any).building_type ?? "single_family") as "single_family" | "townhouse",
     front_door_faces: metadata.front_door_faces ?? "S",
     selected_system_tons: project.selected_system_tons,
     selected_system_kw: project.selected_system_kw,
@@ -1467,6 +1471,10 @@ function App() {
             <label>ACH50<input type="number" step="0.001" value={project.ach50} onChange={(event) => updateProject("ach50", Number(event.target.value))} /></label>
             <label>Bedrooms<input type="number" step="0.001" value={project.bedrooms} onChange={(event) => updateProject("bedrooms", Number(event.target.value))} /></label>
             <label>SEER<input type="number" step="0.001" value={project.seer} onChange={(event) => updateProject("seer", Number(event.target.value))} /></label>
+            <label>Building type<select value={project.building_type} onChange={(event) => updateProject("building_type", event.target.value as "single_family" | "townhouse")}>
+              <option value="single_family">Single-family detached</option>
+              <option value="townhouse">Townhome</option>
+            </select></label>
             <label>Front door faces
               <select value={project.front_door_faces} onChange={(event) => updateProject("front_door_faces", event.target.value as CompassDirection)}>
                 {compassDirections.map((direction) => <option key={direction} value={direction}>{compassArrows[direction]} {direction}</option>)}

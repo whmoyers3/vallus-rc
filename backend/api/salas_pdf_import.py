@@ -118,13 +118,23 @@ def extract_unit_info(pdf: Any) -> dict[str, Any]:
     if volume_match:
         volume_str = volume_match.group(1).replace(" ", "").replace(",", "")
 
+    header = extract_header_fields(pdf)
+    facing = header.get("facing") or (facing_match.group(1).strip() if facing_match else "")
+    # Strip any worst/best-case qualifier the flat-text fallback may carry through.
+    facing = re.sub(r"^(worst|best)(\s+case)?\s+", "", facing, flags=re.IGNORECASE).strip()
+
     return {
         "units": units,
         "zone_to_unit": zone_to_unit,
         "floor_area": f"{floor_area_match.group(1).replace(',', '')} SF" if floor_area_match else "?",
         "cool_load": f"{load_match.group(1).replace(',', '')} Btu/hr" if load_match else "?",
         "heat_load": f"{load_match.group(2).replace(',', '')} Btu/hr" if load_match else "?",
-        "facing": facing_match.group(1).strip() if facing_match else "-",
+        "facing": facing or "-",
+        "location": header.get("location", ""),
+        "engineer": header.get("engineer", ""),
+        "project_name": header.get("project_name", ""),
+        "date": header.get("date", ""),
+        "description": header.get("description", ""),
         "bedrooms": int(bedrooms_match.group(1)) if bedrooms_match else None,
         "volume": f"{volume_str} CF" if volume_str else None,
     }
@@ -141,6 +151,58 @@ def _pdf_text_lines(pdf: Any) -> list[str]:
 def _header_value(text: str, label: str, next_label: str) -> str:
     match = re.search(rf"{re.escape(label)}:\s*(.+?)\s+{re.escape(next_label)}:", text, re.DOTALL)
     return " ".join(match.group(1).split()) if match else ""
+
+
+def _cluster_header_lines(page: Any, max_top_frac: float = 0.45) -> list[str]:
+    """Reconstruct header rows by clustering words on their vertical position.
+
+    The Salas cover page puts field values in positioned form cells, so flat
+    ``extract_text`` drops them (Location, House Faces). Grouping words by their
+    ``top`` coordinate rebuilds each label/value row faithfully.
+    """
+
+    try:
+        words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+    except Exception:  # pragma: no cover - defensive
+        return []
+    cutoff = (page.height or 0) * max_top_frac
+    rows: dict[int, list[dict[str, Any]]] = {}
+    for word in words:
+        if cutoff and word["top"] > cutoff:
+            continue
+        rows.setdefault(round(word["top"] / 3), []).append(word)
+    lines: list[str] = []
+    for key in sorted(rows):
+        ordered = sorted(rows[key], key=lambda w: w["x0"])
+        lines.append(" ".join(w["text"] for w in ordered))
+    return lines
+
+
+def extract_header_fields(pdf: Any) -> dict[str, str]:
+    """Pull cover-page header fields positionally (Location, facing, etc.)."""
+
+    text = "\n".join(_cluster_header_lines(pdf.pages[0])) if pdf.pages else ""
+
+    def between(label: str, next_label: str) -> str:
+        match = re.search(rf"{re.escape(label)}:\s*(.+?)\s+{re.escape(next_label)}:", text)
+        return " ".join(match.group(1).split()) if match else ""
+
+    def end_of_line(label: str) -> str:
+        match = re.search(rf"{re.escape(label)}:\s*(.+?)\s*$", text, re.MULTILINE)
+        return " ".join(match.group(1).split()) if match else ""
+
+    facing = end_of_line("House Faces")
+    # Drop the worst/best-case orientation qualifier; keep the compass facing.
+    facing = re.sub(r"^(worst|best)(\s+case)?\s+", "", facing, flags=re.IGNORECASE).strip()
+
+    return {
+        "project_name": between("Project", "Date"),
+        "date": end_of_line("Date"),
+        "location": between("Location", "By"),
+        "engineer": end_of_line("By"),
+        "description": between("Description", "House Faces"),
+        "facing": facing,
+    }
 
 
 def _report_assemblies(lines: list[str]) -> dict[str, dict[str, Any]]:
@@ -529,14 +591,20 @@ def render_markdown(
     project_match = re.search(r"Project:\s*(.+?)\s+Date:\s*(.+)", p1_text)
     location_match = re.search(r"Location:\s*(.+?)\s+By:\s*(.+)", p1_text)
     description_match = re.search(r"Description:\s*(.+?)\s+House Faces", p1_text)
+    # Positional header fields (extract_unit_info) are authoritative; flat-text regex is the fallback.
+    project_name = unit_info.get("project_name") or (project_match.group(1).strip() if project_match else filename)
+    date = unit_info.get("date") or (project_match.group(2).strip() if project_match else "-")
+    location = unit_info.get("location") or (location_match.group(1).strip() if location_match else "-")
+    engineer = unit_info.get("engineer") or (location_match.group(2).strip() if location_match else "-")
+    description = unit_info.get("description") or (description_match.group(1).strip() if description_match else filename)
     lines = [
         f"# {filename} - Cooling Load Data Export",
         "",
-        f"**Project:** {project_match.group(1).strip() if project_match else filename}  ",
-        f"**Date:** {project_match.group(2).strip() if project_match else '-'}  ",
-        f"**Location:** {location_match.group(1).strip() if location_match else '-'}  ",
-        f"**Engineer:** {location_match.group(2).strip() if location_match else '-'}  ",
-        f"**Description:** {description_match.group(1).strip() if description_match else filename}  ",
+        f"**Project:** {project_name}  ",
+        f"**Date:** {date}  ",
+        f"**Location:** {location}  ",
+        f"**Engineer:** {engineer}  ",
+        f"**Description:** {description}  ",
         f"**House Facing:** {unit_info.get('facing', '-')}  ",
         "",
         "---",

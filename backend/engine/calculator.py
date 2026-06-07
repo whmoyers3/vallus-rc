@@ -8,9 +8,11 @@ from .constants import (
     BTUH_PER_KW,
     CFM_PER_TON,
     PEOPLE_SENSIBLE_BTUH,
+    SCLEFF_BY_DIRECTION,
     SENSIBLE_BTUH_PER_NOMINAL_TON,
     SPECIAL_CLTD,
     STANDARD_TON_SIZES,
+    TOWNHOUSE_GLASS_LOAD_FACTORS,
     WALL_CLTD_BY_DIRECTION,
     WATT_TO_BTUH,
 )
@@ -18,6 +20,7 @@ from .formulas import (
     cooling_component_load,
     glass_load_factor,
     heating_component_load,
+    normalize_direction,
     round_half_up,
     standard_infiltration_load,
     ventilation_load,
@@ -161,12 +164,27 @@ def calculate_room(
     )
 
 
+def combined_glass_factors_for(building_type: str | None) -> dict[str, int] | None:
+    """Return a *combined* per-direction glass cooling factor table (Btu/hr-sf), or None.
+
+    Townhouses don't use the single-family SHGF formula (U*14 + SHGC*SCLEFF). Salas
+    applies a separate combined load-factor table directly per orientation
+    (``TOWNHOUSE_GLASS_LOAD_FACTORS``), verified against the Evergreen TH resload.
+    Single-family returns None → the SHGF formula in ``glass_load_factor`` is used.
+    """
+
+    if building_type and building_type.strip().lower() in {"townhouse", "townhome", "town_house", "th"}:
+        return TOWNHOUSE_GLASS_LOAD_FACTORS
+    return None
+
+
 def calculate_line_item(
     item: LineItem,
     *,
     design_conditions: DesignConditions,
     level_volume: float,
     ventilation_cfm: float | None = None,
+    combined_glass_factors: dict[str, int] | None = None,
 ) -> LineResult:
     if item.kind == "manual":
         return _line_result(item, item.cooling_btuh or 0.0, item.heating_btuh or 0.0)
@@ -177,6 +195,12 @@ def calculate_line_item(
         if item.direction is None:
             raise ValueError(f"Glass item {item.name!r} requires direction")
         cooling_factor = item.cooling_load_factor
+        if cooling_factor is None and combined_glass_factors is not None:
+            # Townhouse: combined Btu/hr-sf table applied directly (not the SHGF formula).
+            key = normalize_direction(item.direction)
+            if key not in combined_glass_factors:
+                raise KeyError(f"Unknown glass direction {item.direction!r}")
+            cooling_factor = combined_glass_factors[key]
         if cooling_factor is None:
             cooling_factor = glass_load_factor(
                 item.direction,
@@ -235,6 +259,7 @@ def calculate_level(
     *,
     design_conditions: DesignConditions,
     ventilation_cfm: float | None = None,
+    combined_glass_factors: dict[str, int] | None = None,
 ) -> LevelResult:
     line_results = [
         calculate_line_item(
@@ -242,6 +267,7 @@ def calculate_level(
             design_conditions=design_conditions,
             level_volume=level.volume,
             ventilation_cfm=ventilation_cfm,
+            combined_glass_factors=combined_glass_factors,
         )
         for item in level.line_items
     ]
@@ -407,11 +433,13 @@ def _ventilation_cfm_by_level(project: Project) -> list[float | None]:
 
 def calculate_project(project: Project) -> ProjectResult:
     ventilation_by_level = _ventilation_cfm_by_level(project)
+    combined_glass_factors = combined_glass_factors_for(project.building_type)
     levels = [
         calculate_level(
             level,
             design_conditions=project.design_conditions,
             ventilation_cfm=ventilation_by_level[index],
+            combined_glass_factors=combined_glass_factors,
         )
         for index, level in enumerate(project.levels)
     ]
