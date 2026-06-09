@@ -597,19 +597,35 @@ function App() {
   const [worstCase, setWorstCase] = useState<WorstCaseResult | null>(null);
   const [assemblies, setAssemblies] = useState<AssemblyRow[]>([]);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
-  const [collapsedRooms, setCollapsedRooms] = useState<number[]>([]);
-  const [collapsedPanels, setCollapsedPanels] = useState<Set<string>>(new Set(["component-review"]));
+  const [collapsedRooms, setCollapsedRooms] = useState<number[]>(() =>
+    initialProject.rooms.length === 1 ? [] : initialProject.rooms.map((_, i) => i)
+  );
+  const [addComponentRoom, setAddComponentRoom] = useState<string | null>(null); // room name for open picker
+  const [collapsedPanels, setCollapsedPanels] = useState<Set<string>>(new Set(["component-review", "advanced-settings"]));
+  const [showFieldErrors, setShowFieldErrors] = useState(false);
   const [showOpenDialog, setShowOpenDialog] = useState(false);
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const [openDialogLoading, setOpenDialogLoading] = useState(false);
   const [openDialogError, setOpenDialogError] = useState<string | null>(null);
   const [saveConflict, setSaveConflict] = useState<SaveConflict | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
   const [calculateLoading, setCalculateLoading] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [importFidelity, setImportFidelity] = useState<{ passed: boolean | null; details: Record<string, unknown> | null } | null>(null);
   const [batteryStatus, setBatteryStatus] = useState<"none" | "eligible" | "added" | "loading">("none");
+  const [showOpenMenu, setShowOpenMenu] = useState(false);
+  const [showSaveMenu, setShowSaveMenu] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [showImportMenu, setShowImportMenu] = useState(false);
+  const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
+  const [saveAsOpen, setSaveAsOpen] = useState(false);
+  const [saveAsName, setSaveAsName] = useState("");
+  const [saveAsLoading, setSaveAsLoading] = useState(false);
+  const [saveAsConflict, setSaveAsConflict] = useState<SavedProject | null>(null);
+  const [navPinned, setNavPinned] = useState(false);
+  const [activeSection, setActiveSection] = useState("project-settings");
+  const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const markdownFileInput = useRef<HTMLInputElement>(null);
   const pdfFileInput = useRef<HTMLInputElement>(null);
   const activeLevel = loads?.levels[0];
@@ -685,11 +701,38 @@ function App() {
       .catch(() => setAssemblies([]));
   }, []);
 
+  useEffect(() => {
+    const sectionEls = document.querySelectorAll<HTMLElement>("[data-section]");
+    if (!sectionEls.length) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Pick the entry closest to the top of the viewport among those intersecting
+        const visible = entries.filter((e) => e.isIntersecting);
+        if (!visible.length) return;
+        visible.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        setActiveSection(visible[0].target.getAttribute("data-section") ?? "");
+      },
+      { rootMargin: "-10% 0px -75% 0px", threshold: 0 }
+    );
+    sectionEls.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [project.comparison]); // re-run when comparison panel mounts/unmounts
+
+  function scrollToSection(id: string) {
+    document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function scrollToRoomCard(index: number) {
+    document.getElementById(`room-card-${index}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Also expand the room if it's collapsed
+    if (collapsedRooms.includes(index)) toggleRoomCollapsed(index);
+  }
+
   function updateProject<K extends keyof ProjectDraft>(key: K, value: ProjectDraft[K]) {
     setProject((current) => ({ ...current, [key]: value }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -697,7 +740,7 @@ function App() {
     setProject((current) => ({ ...current, level: { ...current.level, [key]: value } }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -712,7 +755,7 @@ function App() {
     });
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -723,19 +766,22 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
   function addRoom() {
     setProject((current) => {
       const shouldRequireUnitChoice = current.units.length > 1;
+      const newIndex = current.rooms.length;
+      // Collapse all existing rooms, expand the new one only if it's the only room
+      setCollapsedRooms(newIndex === 0 ? [] : current.rooms.map((_, i) => i));
       return {
         ...current,
         rooms: [
           ...current.rooms,
           {
-            name: `Room ${current.rooms.length + 1}`,
+            name: `Room ${newIndex + 1}`,
             floor_area: 0,
             ceiling_height: 9,
             lighting_basis: "Floor",
@@ -747,7 +793,7 @@ function App() {
     });
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -763,7 +809,7 @@ function App() {
     setCollapsedRooms((current) => current.filter((i) => i !== index).map((i) => i > index ? i - 1 : i));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -774,7 +820,7 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -787,7 +833,7 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -798,7 +844,7 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -809,7 +855,7 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(hasRoomData ? "Review room assignments after adding a unit." : null);
   }
 
@@ -820,7 +866,7 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -831,7 +877,7 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -841,27 +887,30 @@ function App() {
     if (!unit) return;
     const assignedRoomCount = project.rooms.filter((room) => room.unit_id === unit.id).length;
     const assignmentWarning = assignedRoomCount
-      ? ` ${assignedRoomCount} assigned room${assignedRoomCount === 1 ? "" : "s"} will be moved to ${project.units[0].name} and will need assignment review.`
+      ? ` ${assignedRoomCount} assigned room${assignedRoomCount === 1 ? "" : "s"} will be moved to ${project.units[0].name}.`
       : "";
-    if (!confirm(`Delete ${unit.name} and its zones?${assignmentWarning}`)) return;
-
-    setProject((current) => {
-      const primaryUnit = current.units[0];
-      return {
-        ...current,
-        units: current.units.filter((_candidate, unitIndex) => unitIndex !== index),
-        zones: current.zones.filter((zone) => zone.unit_id !== unit.id),
-        rooms: current.rooms.map((room) =>
-          room.unit_id === unit.id
-            ? { ...room, unit_id: primaryUnit.id, zone_id: undefined }
-            : room
-        )
-      };
+    setConfirmModal({
+      message: `Delete ${unit.name} and its zones?${assignmentWarning}`,
+      onConfirm: () => {
+        setProject((current) => {
+          const primaryUnit = current.units[0];
+          return {
+            ...current,
+            units: current.units.filter((_candidate, unitIndex) => unitIndex !== index),
+            zones: current.zones.filter((zone) => zone.unit_id !== unit.id),
+            rooms: current.rooms.map((room) =>
+              room.unit_id === unit.id
+                ? { ...room, unit_id: primaryUnit.id, zone_id: undefined }
+                : room
+            )
+          };
+        });
+        setLoads(null);
+        setWorstCase(null);
+        setIsDirty(true);
+        setValidationMessage(assignedRoomCount ? `Review room assignments after deleting ${unit.name}.` : null);
+      }
     });
-    setLoads(null);
-    setWorstCase(null);
-    setProjectId(null);
-    setValidationMessage(assignedRoomCount ? `Review room assignments after deleting ${unit.name}.` : null);
   }
 
   function addZone(unitId: string) {
@@ -882,7 +931,7 @@ function App() {
     });
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(hasRoomData ? "Review room assignments after adding zones." : null);
   }
 
@@ -892,7 +941,7 @@ function App() {
       zones: current.zones.map((zone, zoneIndex) => (zoneIndex === index ? { ...zone, ...patch } : zone))
     }));
     setLoads(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -908,19 +957,22 @@ function App() {
     const assignmentWarning = assignedRoomCount
       ? ` ${assignedRoomCount} assigned room${assignedRoomCount === 1 ? "" : "s"} will need a new zone selection.`
       : "";
-    if (!confirm(`Delete ${zone.name}?${assignmentWarning}`)) return;
-
-    setProject((current) => ({
-      ...current,
-      zones: current.zones.filter((candidate) => candidate.id !== zoneId),
-      rooms: current.rooms.map((room) =>
-        room.zone_id === zoneId ? { ...room, zone_id: undefined } : room
-      )
-    }));
-    setLoads(null);
-    setWorstCase(null);
-    setProjectId(null);
-    setValidationMessage(assignedRoomCount ? `Review room assignments after deleting ${zone.name}.` : null);
+    setConfirmModal({
+      message: `Delete ${zone.name}?${assignmentWarning}`,
+      onConfirm: () => {
+        setProject((current) => ({
+          ...current,
+          zones: current.zones.filter((candidate) => candidate.id !== zoneId),
+          rooms: current.rooms.map((room) =>
+            room.zone_id === zoneId ? { ...room, zone_id: undefined } : room
+          )
+        }));
+        setLoads(null);
+        setWorstCase(null);
+        setIsDirty(true);
+        setValidationMessage(assignedRoomCount ? `Review room assignments after deleting ${zone.name}.` : null);
+      }
+    });
   }
 
   function typeCodesForCategory(category: TypeCategory) {
@@ -969,7 +1021,7 @@ function App() {
     });
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -982,7 +1034,7 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -993,7 +1045,7 @@ function App() {
     }));
     setLoads(null);
     setWorstCase(null);
-    setProjectId(null);
+    setIsDirty(true);
     setValidationMessage(null);
   }
 
@@ -1024,7 +1076,8 @@ function App() {
     setLoads(null);
     setWorstCase(null);
     setProjectId(null);
-    setCollapsedRooms([]);
+    setIsDirty(false);
+    setCollapsedRooms(initialProject.rooms.length === 1 ? [] : initialProject.rooms.map((_, i) => i));
     setValidationMessage(null);
     setImportFidelity(null);
     setBatteryStatus("none");
@@ -1049,7 +1102,8 @@ function App() {
       setLoads(null);
       setWorstCase(null);
       setProjectId(null);
-      setCollapsedRooms([]);
+      setIsDirty(false);
+      setCollapsedRooms(imported.payload.project?.levels?.[0]?.rooms?.length === 1 ? [] : (imported.payload.project?.levels?.[0]?.rooms ?? []).map((_: unknown, i: number) => i));
       setValidationMessage(imported.warnings.length ? imported.warnings.join(" ") : null);
     } catch (error) {
       setValidationMessage(error instanceof Error ? error.message : "Could not import that Markdown file.");
@@ -1076,6 +1130,7 @@ function App() {
       setLoads(null);
       setWorstCase(null);
       setProjectId(null);
+      setIsDirty(false);
       setCollapsedRooms([]);
       setValidationMessage(imported.warnings.length ? imported.warnings.join(" ") : "Imported Salas O'Brien PDF.");
     } catch (error) {
@@ -1101,11 +1156,13 @@ function App() {
   async function loadSavedProject(id: number) {
     try {
       const payload: FixturePayload = await fetch(`/api/projects/${id}`).then((r) => r.json());
-      setProject(draftFromPayload(payload));
+      const loadedDraft = draftFromPayload(payload);
+      setProject(loadedDraft);
       setProjectId(id);
+      setIsDirty(false);
       setLoads(null);
       setWorstCase(null);
-      setCollapsedRooms([]);
+      setCollapsedRooms(loadedDraft.rooms.length === 1 ? [] : loadedDraft.rooms.map((_, i) => i));
       setValidationMessage(null);
       setShowOpenDialog(false);
       setImportFidelity(null);
@@ -1121,15 +1178,19 @@ function App() {
     }
   }
 
-  async function deleteSavedProject(id: number) {
-    if (!confirm("Delete this project? This cannot be undone.")) return;
-    await fetch(`/api/projects/${id}`, { method: "DELETE" });
-    setSavedProjects((current) => current.filter((p) => p.id !== id));
-    if (projectId === id) {
-      setProjectId(null);
-      setBatteryStatus("none");
-      setImportFidelity(null);
-    }
+  function deleteSavedProject(id: number) {
+    setConfirmModal({
+      message: "Delete this project? This cannot be undone.",
+      onConfirm: async () => {
+        await fetch(`/api/projects/${id}`, { method: "DELETE" });
+        setSavedProjects((current) => current.filter((p) => p.id !== id));
+        if (projectId === id) {
+          setProjectId(null);
+          setBatteryStatus("none");
+          setImportFidelity(null);
+        }
+      }
+    });
   }
 
   async function checkBatteryStatus(id: number, savedRow?: SavedProject) {
@@ -1243,6 +1304,18 @@ function App() {
     });
   }
 
+  function requiredFieldErrors(projectDraft: ProjectDraft): string | null {
+    const missing: string[] = [];
+    if (!projectDraft.name?.trim()) missing.push("Name");
+    if (!projectDraft.location?.trim()) missing.push("Location");
+    if (!projectDraft.building_type) missing.push("Building Type");
+    if (!projectDraft.front_door_faces) missing.push("Front Door Faces");
+    if (!projectDraft.bedrooms) missing.push("Bedrooms");
+    if (!projectDraft.ach50) missing.push("ACH50");
+    if (!projectDraft.seer) missing.push("SEER");
+    return missing.length ? `Required before calculating: ${missing.join(", ")}.` : null;
+  }
+
   function validationErrorFor(projectDraft: ProjectDraft): string | null {
     const assignmentChoices = projectDraft.units.length > 1 || projectDraft.zones.length > 0;
     if (assignmentChoices) {
@@ -1278,6 +1351,14 @@ function App() {
   }
 
   async function calculateCurrentProject() {
+    const reqError = requiredFieldErrors(project);
+    if (reqError) {
+      setValidationMessage(reqError);
+      setShowFieldErrors(true);
+      // Expand advanced settings if a required field there is missing (none currently, but future-proof)
+      return;
+    }
+    setShowFieldErrors(false);
     const error = validationErrorFor(project);
     if (error) {
       setValidationMessage(error);
@@ -1349,6 +1430,7 @@ function App() {
     }
 
     setProjectId(savedId);
+    setIsDirty(false);
     if (overrideDescription) {
       setProject((cur) => ({ ...cur, description: overrideDescription }));
     }
@@ -1437,76 +1519,239 @@ function App() {
     }
   }
 
-  return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <h1>ResLoad</h1>
-        <p>{project.description}</p>
-        <nav>
-          <button className="active">{project.level.name}</button>
-              {project.rooms.map((room, index) => (
-            <button key={index}>{room.name}</button>
-          ))}
-        </nav>
-        <section>
-          <h2>Types</h2>
-          <ul>
-            {project.type_definitions.slice(0, 10).map((definition, index) => (
-              <li key={`${definition.code}-${definition.category}-${index}`}>
-                {definition.code || "New"} · {definition.category} · U {definition.u_value ?? "-"}
-                {definition.shgc ? ` · SHGC ${definition.shgc}` : ""}
-              </li>
-            ))}
-          </ul>
-        </section>
-      </aside>
+  async function handleSaveDraft() {
+    setSaveLoading(true);
+    const payload = buildPayload(project, assemblies) as Record<string, unknown>;
+    try {
+      const allProjects: SavedProject[] = await fetch("/api/projects").then((r) => r.json());
+      const conflict = allProjects.find(
+        (p) => p.name === project.name && p.description === project.description && p.id !== projectId
+      );
+      if (conflict) {
+        setSaveConflict({
+          conflictProject: conflict,
+          payload,
+          nextVersionDescription: computeNextVersion(project.description, allProjects),
+        });
+        return;
+      }
+      await commitSave(payload, projectId);
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not save draft.");
+    } finally {
+      setSaveLoading(false);
+    }
+  }
 
-      <section className="workspace">
-        <header className="toolbar">
-          <div>
-            <h2>{project.name}</h2>
-            <p>{project.location} · {project.outdoor_cooling_db}/{project.indoor_cooling_db} cooling · ACH50 {project.ach50}</p>
-          </div>
-          <div className="button-row">
-            <button onClick={calculateCurrentProject} disabled={calculateLoading || saveLoading}>
-              {calculateLoading ? "Calculating..." : "Calculate"}
-            </button>
-            <button onClick={saveProject} disabled={saveLoading || calculateLoading}>
-              {saveLoading ? "Saving..." : "Save"}
-            </button>
-            <button onClick={exportAirflowSheet} disabled={exportLoading || calculateLoading || saveLoading}>
-              {exportLoading ? "Exporting..." : "Export Airflow Sheet"}
-            </button>
-            <button onClick={openProjectDialog}>Open…</button>
-            <button onClick={resetToNew}>New</button>
-            <div className="import-menu">
-              <button onClick={() => setShowImportMenu((current) => !current)}>Import ▾</button>
-              {showImportMenu && (
-                <div className="import-menu-popover">
-                  <button onClick={() => { setShowImportMenu(false); markdownFileInput.current?.click(); }}>Import Markdown</button>
-                  <button onClick={() => { setShowImportMenu(false); pdfFileInput.current?.click(); }}>Import Salas PDF</button>
+  function openSaveAs() {
+    setSaveAsName(project.name);
+    setSaveAsConflict(null);
+    setSaveAsOpen(true);
+  }
+
+  async function commitSaveAs(name: string, overwriteId: number | null) {
+    setSaveAsLoading(true);
+    try {
+      const payload = buildPayload({ ...project, name }, assemblies) as Record<string, unknown>;
+      if (overwriteId !== null) {
+        await commitSave(payload, overwriteId);
+      } else {
+        await commitSave(payload, null);
+      }
+      setProject((cur) => ({ ...cur, name }));
+      setSaveAsOpen(false);
+      setSaveAsConflict(null);
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not save project.");
+    } finally {
+      setSaveAsLoading(false);
+    }
+  }
+
+  async function handleSaveAsConfirm() {
+    const name = saveAsName.trim();
+    if (!name) return;
+    setSaveAsLoading(true);
+    try {
+      const allProjects: SavedProject[] = await fetch("/api/projects").then((r) => r.json());
+      const conflict = allProjects.find((p) => p.name === name && p.id !== projectId);
+      if (conflict) {
+        setSaveAsConflict(conflict);
+        setSaveAsLoading(false);
+        return;
+      }
+      await commitSaveAs(name, null);
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not save project.");
+      setSaveAsLoading(false);
+    }
+  }
+
+  const hasRequiredFieldError = !!requiredFieldErrors(project);
+  const hasRoomAssignmentError = project.rooms.some((room) => {
+    if (!room.unit_id && (project.units.length > 1 || project.zones.length > 0)) return true;
+    const zonesForUnit = project.zones.filter((z) => z.unit_id === room.unit_id);
+    return zonesForUnit.length > 0 && !room.zone_id;
+  });
+
+  const navItems = [
+    { id: "project-settings",    label: "Project Settings",    icon: "⚙", status: hasRequiredFieldError ? "error" : null },
+    { id: "envelope-assemblies", label: "Envelope Assemblies", icon: "▦", status: null },
+    { id: "units-zones",         label: "Units & Zones",       icon: "◫", status: null },
+    { id: "rooms",               label: "Rooms",               icon: "⌂", status: hasRoomAssignmentError ? "error" : null },
+    { id: "load-summary",        label: "Load Summary",        icon: "≡", status: loads ? "ok" : null },
+    ...(project.comparison ? [{ id: "salas-comparison", label: "Salas Comparison", icon: "↔", status: null }] : []),
+  ] as Array<{ id: string; label: string; icon: string; status: "error" | "ok" | null }>;
+
+  return (
+    <main className={`app-shell${navPinned ? " app-shell--nav-pinned" : ""}`}>
+      {/* ── Left nav icon rail ─────────────────────────────────────── */}
+      <aside className="left-nav" onMouseEnter={() => {}} onMouseLeave={() => {}}>
+        <div className="left-nav-header">
+          <span className="left-nav-logo">VRC</span>
+          <button
+            className="left-nav-pin-btn"
+            onClick={() => setNavPinned((v) => !v)}
+            title={navPinned ? "Unpin sidebar" : "Pin sidebar open"}
+          >
+            {navPinned ? "◀" : "▶"}
+          </button>
+        </div>
+        <nav className="left-nav-sections">
+          {navItems.map((item) => (
+            <div key={item.id} className={`nav-item${activeSection === item.id ? " nav-item--active" : ""}`}>
+              <button
+                className="nav-item-btn"
+                onClick={() => { scrollToSection(item.id); setNavDrawerOpen(false); }}
+                title={item.label}
+              >
+                <span className="nav-icon">{item.icon}</span>
+                <span className="nav-label">{item.label}</span>
+                {item.status === "error" && <span className="nav-dot nav-dot--error" />}
+                {item.status === "ok"    && <span className="nav-dot nav-dot--ok" />}
+              </button>
+              {/* Room sub-items — desktop only, when in Rooms section */}
+              {item.id === "rooms" && activeSection === "rooms" && project.rooms.length > 0 && (
+                <div className="nav-sub-items">
+                  {project.rooms.map((room, index) => (
+                    <button
+                      key={index}
+                      className="nav-sub-item"
+                      onClick={() => scrollToRoomCard(index)}
+                    >
+                      {room.name || `Room ${index + 1}`}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
-            <input
-              ref={markdownFileInput}
-              className="file-input"
-              type="file"
-              accept=".md,text/markdown,text/plain"
-              onChange={importMarkdownFile}
-            />
-            <input
-              ref={pdfFileInput}
-              className="file-input"
-              type="file"
-              accept=".pdf,application/pdf"
-              onChange={importSalasPdfFile}
-            />
+          ))}
+        </nav>
+      </aside>
+
+      {/* ── Mobile nav drawer ──────────────────────────────────────── */}
+      <button className="mobile-nav-fab" onClick={() => setNavDrawerOpen((v) => !v)} aria-label="Navigation">
+        ☰
+      </button>
+      {navDrawerOpen && (
+        <div className="mobile-nav-backdrop" onClick={() => setNavDrawerOpen(false)}>
+          <div className="mobile-nav-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="mobile-nav-drawer-head">
+              <span>Navigate</span>
+              <button onClick={() => setNavDrawerOpen(false)}>✕</button>
+            </div>
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                className={`mobile-nav-item${activeSection === item.id ? " mobile-nav-item--active" : ""}`}
+                onClick={() => { scrollToSection(item.id); setNavDrawerOpen(false); }}
+              >
+                <span className="nav-icon">{item.icon}</span>
+                <span>{item.label}</span>
+                {item.status === "error" && <span className="nav-dot nav-dot--error" />}
+                {item.status === "ok"    && <span className="nav-dot nav-dot--ok" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <section className="workspace">
+        <header className="toolbar">
+          <div className="toolbar-title">
+            <h2>{project.name}{isDirty ? " *" : ""}</h2>
+            <p>{project.location} · {project.outdoor_cooling_db}/{project.indoor_cooling_db} cooling · ACH50 {project.ach50}</p>
+          </div>
+          <div className="button-row">
+            {/* Open ▾ */}
+            <div className="toolbar-menu">
+              <button onClick={() => { setShowOpenMenu((v) => !v); setShowSaveMenu(false); setShowExportMenu(false); }}>Open ▾</button>
+              {showOpenMenu && (
+                <div className="toolbar-menu-popover" onMouseLeave={() => setShowOpenMenu(false)}>
+                  <button onClick={() => { setShowOpenMenu(false); resetToNew(); }}>New</button>
+                  <button onClick={() => { setShowOpenMenu(false); openProjectDialog(); }}>Open Saved…</button>
+                  <div className="toolbar-menu-divider" />
+                  <button onClick={() => { setShowOpenMenu(false); setShowImportMenu(false); pdfFileInput.current?.click(); }}>Import Salas PDF</button>
+                </div>
+              )}
+            </div>
+
+            <button
+              className="toolbar-primary"
+              onClick={calculateCurrentProject}
+              disabled={calculateLoading || saveLoading}
+            >
+              {calculateLoading ? "Calculating…" : "Calculate"}
+            </button>
+
+            {/* Save Draft — always visible */}
+            <button onClick={handleSaveDraft} disabled={saveLoading || calculateLoading}>
+              {saveLoading ? "Saving…" : "Save Draft"}
+            </button>
+
+            {/* Save ▾ — only after calculate */}
+            {loads && (
+              <div className="toolbar-menu">
+                <button onClick={() => { setShowSaveMenu((v) => !v); setShowOpenMenu(false); setShowExportMenu(false); }} disabled={saveLoading}>
+                  Save ▾
+                </button>
+                {showSaveMenu && (
+                  <div className="toolbar-menu-popover" onMouseLeave={() => setShowSaveMenu(false)}>
+                    <button onClick={() => { setShowSaveMenu(false); saveProject(); }}>Save</button>
+                    <button onClick={() => { setShowSaveMenu(false); openSaveAs(); }}>Save As…</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Export ▾ — only after calculate */}
+            {loads && (
+              <div className="toolbar-menu">
+                <button onClick={() => { setShowExportMenu((v) => !v); setShowOpenMenu(false); setShowSaveMenu(false); }} disabled={exportLoading}>
+                  Export ▾
+                </button>
+                {showExportMenu && (
+                  <div className="toolbar-menu-popover" onMouseLeave={() => setShowExportMenu(false)}>
+                    <button onClick={() => { setShowExportMenu(false); exportAirflowSheet(); }}>
+                      {exportLoading ? "Exporting…" : "Airflow Sheet"}
+                    </button>
+                    {projectId && (
+                      <a className="button" href={`/api/projects/${projectId}/report`} onClick={() => setShowExportMenu(false)}>PDF Report</a>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <input ref={markdownFileInput} className="file-input" type="file" accept=".md,text/markdown,text/plain" onChange={importMarkdownFile} />
+            <input ref={pdfFileInput} className="file-input" type="file" accept=".pdf,application/pdf" onChange={importSalasPdfFile} />
           </div>
           <div className="toolbar-status">
-            {projectId ? <span className="saved-badge">Saved #{projectId}</span> : <span className="unsaved-badge">Unsaved</span>}
-            {projectId && <a className="button" href={`/api/projects/${projectId}/report`}>PDF</a>}
-            {/* Import fidelity badge */}
+            {projectId && !isDirty
+              ? <span className="saved-badge">Saved #{projectId}</span>
+              : projectId && isDirty
+              ? <span className="unsaved-badge">Unsaved changes</span>
+              : <span className="unsaved-badge">Unsaved</span>}
             {importFidelity != null && (
               <span
                 className={importFidelity.passed ? "fidelity-badge fidelity-pass" : "fidelity-badge fidelity-warn"}
@@ -1515,7 +1760,7 @@ function App() {
                     ? "Import fidelity passed — areas, volume, orientation, and room count match Salas reference."
                     : (() => {
                         const d = importFidelity.details ?? {};
-                        const issues = [];
+                        const issues: string[] = [];
                         if (d.orientation_match === false) issues.push(`Orientation: VRC=${d.vrc_orientation} Salas=${d.salas_orientation}`);
                         if (d.floor_area_match === false) issues.push(`Floor area: VRC=${d.vrc_floor_area} Salas=${d.salas_floor_area}`);
                         if (d.volume_match === false) issues.push(`Volume: VRC=${d.vrc_volume} Salas=${d.salas_volume}`);
@@ -1527,7 +1772,6 @@ function App() {
                 {importFidelity.passed ? "✓ Inputs" : "⚠ Inputs"}
               </span>
             )}
-            {/* Battery button */}
             {batteryStatus === "eligible" && (
               <button className="button battery-btn" onClick={addToTestBattery}>+ Battery</button>
             )}
@@ -1537,7 +1781,7 @@ function App() {
             {batteryStatus === "added" && (
               <button className="button battery-btn battery-btn-added" onClick={refreshBatteryCopy} title="Refresh the test battery copy from this project">↻ Battery</button>
             )}
-            <a className="button" href="/#/admin" style={{ marginLeft: 4 }}>Admin</a>
+            <a className="button" href="/#/admin">Admin</a>
           </div>
         </header>
 
@@ -1565,61 +1809,91 @@ function App() {
         </section>
         {validationMessage && <div className="validation-message">{validationMessage}</div>}
 
-        <section className="panel form-panel">
+        <section id="section-project-settings" data-section="project-settings" className="panel form-panel">
           <div className="panel-head">
-            <h3>First Page / Project Inputs</h3>
-            <p>Conditions, system selection, and house-wide values.</p>
+            <h3>Project Settings</h3>
           </div>
+          {/* Required fields — always visible */}
           <div className="form-grid">
-            <label>Project<input value={project.name} onChange={(event) => updateProject("name", event.target.value)} /></label>
-            <label>Location<input value={project.location} onChange={(event) => updateProject("location", event.target.value)} /></label>
-            <label>Description<input value={project.description} onChange={(event) => updateProject("description", event.target.value)} /></label>
-            <label>Cooling outdoor<input type="number" step="0.001" value={project.outdoor_cooling_db} onChange={(event) => updateProject("outdoor_cooling_db", Number(event.target.value))} /></label>
-            <label>Cooling indoor<input type="number" step="0.001" value={project.indoor_cooling_db} onChange={(event) => updateProject("indoor_cooling_db", Number(event.target.value))} /></label>
-            <label>Heating outdoor<input type="number" step="0.001" value={project.outdoor_heating_db} onChange={(event) => updateProject("outdoor_heating_db", Number(event.target.value))} /></label>
-            <label>Heating indoor<input type="number" step="0.001" value={project.indoor_heating_db} onChange={(event) => updateProject("indoor_heating_db", Number(event.target.value))} /></label>
-            <label>Cooling safety factor %<input type="number" step="1" value={Math.round((project.cooling_safety_factor - 1) * 100)} onChange={(event) => updateProject("cooling_safety_factor", 1 + Number(event.target.value) / 100)} /></label>
-            <label>Heating safety factor %<input type="number" step="1" value={Math.round((project.heating_safety_factor - 1) * 100)} onChange={(event) => updateProject("heating_safety_factor", 1 + Number(event.target.value) / 100)} /></label>
-            <label>ACH50<input type="number" step="0.001" value={project.ach50} onChange={(event) => updateProject("ach50", Number(event.target.value))} /></label>
-            <label>Bedrooms<input type="number" step="0.001" value={project.bedrooms} onChange={(event) => updateProject("bedrooms", Number(event.target.value))} /></label>
-            <label>SEER<input type="number" step="0.001" value={project.seer} onChange={(event) => updateProject("seer", Number(event.target.value))} /></label>
-            <label>Building type<select value={project.building_type} onChange={(event) => updateProject("building_type", event.target.value as "single_family" | "townhouse")}>
-              <option value="single_family">Single-family detached</option>
-              <option value="townhouse">Townhome</option>
-            </select></label>
-            <label className="check-field">Mechanical ventilation<input type="checkbox" checked={project.mechanical_ventilation} onChange={(event) => {
-              const on = event.target.checked;
-              setProject((current) => ({
-                ...current,
-                mechanical_ventilation: on,
-                // Default to ASHRAE 62.2 occupant rate (15 CFM x (bedrooms + 1)) on first enable.
-                ventilation_cfm: on && !current.ventilation_cfm ? 15 * ((current.bedrooms || 0) + 1) : current.ventilation_cfm,
-              }));
-              setLoads(null);
-              setWorstCase(null);
-              setProjectId(null);
-            }} /></label>
-            {project.mechanical_ventilation && (
-              <label>Ventilation CFM<input type="number" step="1" value={project.ventilation_cfm} onChange={(event) => updateProject("ventilation_cfm", Number(event.target.value))} /></label>
-            )}
-            <label>Front door faces
+            <label className={showFieldErrors && !project.name?.trim() ? "field-error" : ""}>
+              Name <span className="required-star">*</span>
+              <input value={project.name} onChange={(event) => updateProject("name", event.target.value)} />
+            </label>
+            <label className={showFieldErrors && !project.location?.trim() ? "field-error" : ""}>
+              Location <span className="required-star">*</span>
+              <input value={project.location} onChange={(event) => updateProject("location", event.target.value)} />
+            </label>
+            <label className={showFieldErrors && !project.building_type ? "field-error" : ""}>
+              Building type <span className="required-star">*</span>
+              <select value={project.building_type} onChange={(event) => updateProject("building_type", event.target.value as "single_family" | "townhouse")}>
+                <option value="single_family">Single-family detached</option>
+                <option value="townhouse">Townhome</option>
+              </select>
+            </label>
+            <label className={showFieldErrors && !project.front_door_faces ? "field-error" : ""}>
+              Front door faces <span className="required-star">*</span>
               <select value={project.front_door_faces} onChange={(event) => updateProject("front_door_faces", event.target.value as CompassDirection)}>
                 {compassDirections.map((direction) => <option key={direction} value={direction}>{compassArrows[direction]} {direction}</option>)}
               </select>
             </label>
-            <label>Total system tons<input type="number" step="0.001" value={selectedSystemTons} readOnly /></label>
-            <label>Total system kW<input type="number" step="0.001" value={selectedSystemKw} readOnly /></label>
-            <label>Floor area<input type="number" step="0.001" value={project.level.floor_area} onChange={(event) => updateLevel("floor_area", Number(event.target.value))} /></label>
-            <label>Calculated volume<input type="number" step="0.001" value={Math.round(calculatedLevelVolume || project.level.volume)} readOnly /></label>
-            <label>Total selected tons<input type="number" step="0.001" value={selectedSystemTons} readOnly /></label>
-            <label>Total selected kW<input type="number" step="0.001" value={selectedSystemKw} readOnly /></label>
-            <label className="check-field">Auto infiltration<input type="checkbox" checked={project.level.auto_infiltration} onChange={(event) => updateLevel("auto_infiltration", event.target.checked)} /></label>
+            <label className={showFieldErrors && !project.bedrooms ? "field-error" : ""}>
+              Bedrooms <span className="required-star">*</span>
+              <input type="number" step="1" value={project.bedrooms} onChange={(event) => updateProject("bedrooms", Number(event.target.value))} />
+            </label>
+            <label className={showFieldErrors && !project.ach50 ? "field-error" : ""}>
+              ACH50 <span className="required-star">*</span>
+              <input type="number" step="0.1" value={project.ach50} onChange={(event) => updateProject("ach50", Number(event.target.value))} />
+            </label>
+            <label className={showFieldErrors && !project.seer ? "field-error" : ""}>
+              SEER <span className="required-star">*</span>
+              <input type="number" step="0.1" value={project.seer} onChange={(event) => updateProject("seer", Number(event.target.value))} />
+            </label>
           </div>
+
+          {/* Advanced settings toggle */}
+          <div className="advanced-settings-toggle">
+            <button className="link-button" onClick={() => togglePanel("advanced-settings")}>
+              {collapsedPanels.has("advanced-settings") ? "▶ Advanced settings" : "▼ Advanced settings"}
+            </button>
+          </div>
+
+          {!collapsedPanels.has("advanced-settings") && (
+            <div className="form-grid advanced-settings-grid">
+              <label>Description<input value={project.description} onChange={(event) => updateProject("description", event.target.value)} /></label>
+              <label>Cooling outdoor DB<input type="number" step="0.1" value={project.outdoor_cooling_db} onChange={(event) => updateProject("outdoor_cooling_db", Number(event.target.value))} /></label>
+              <label>Cooling indoor DB<input type="number" step="0.1" value={project.indoor_cooling_db} onChange={(event) => updateProject("indoor_cooling_db", Number(event.target.value))} /></label>
+              <label>Heating outdoor DB<input type="number" step="0.1" value={project.outdoor_heating_db} onChange={(event) => updateProject("outdoor_heating_db", Number(event.target.value))} /></label>
+              <label>Heating indoor DB<input type="number" step="0.1" value={project.indoor_heating_db} onChange={(event) => updateProject("indoor_heating_db", Number(event.target.value))} /></label>
+              <label>Cooling safety factor %<input type="number" step="1" value={Math.round((project.cooling_safety_factor - 1) * 100)} onChange={(event) => updateProject("cooling_safety_factor", 1 + Number(event.target.value) / 100)} /></label>
+              <label>Heating safety factor %<input type="number" step="1" value={Math.round((project.heating_safety_factor - 1) * 100)} onChange={(event) => updateProject("heating_safety_factor", 1 + Number(event.target.value) / 100)} /></label>
+              <label className="check-field">Mechanical ventilation
+                <input type="checkbox" checked={project.mechanical_ventilation} onChange={(event) => {
+                  const on = event.target.checked;
+                  setProject((current) => ({
+                    ...current,
+                    mechanical_ventilation: on,
+                    ventilation_cfm: on && !current.ventilation_cfm ? 15 * ((current.bedrooms || 0) + 1) : current.ventilation_cfm,
+                  }));
+                  setLoads(null);
+                  setWorstCase(null);
+                  setIsDirty(true);
+                }} />
+              </label>
+              {project.mechanical_ventilation && (
+                <label>Ventilation CFM<input type="number" step="1" value={project.ventilation_cfm} onChange={(event) => updateProject("ventilation_cfm", Number(event.target.value))} /></label>
+              )}
+              <label>Floor area<input type="number" step="0.1" value={project.level.floor_area} onChange={(event) => updateLevel("floor_area", Number(event.target.value))} /></label>
+              <label>Calculated volume<input type="number" value={Math.round(calculatedLevelVolume || project.level.volume)} readOnly /></label>
+              <label>Total selected tons<input type="number" value={selectedSystemTons} readOnly /></label>
+              <label>Total selected kW<input type="number" value={selectedSystemKw} readOnly /></label>
+              <label className="check-field">Auto infiltration<input type="checkbox" checked={project.level.auto_infiltration} onChange={(event) => updateLevel("auto_infiltration", event.target.checked)} /></label>
+            </div>
+          )}
         </section>
 
-        <section className="panel">
+        <section id="section-envelope-assemblies" data-section="envelope-assemblies" className="panel">
           <div className="panel-head">
-            <h3>Type Inputs</h3>
+            <h3>Envelope Assemblies</h3>
             <div className="button-row">
               {!collapsedPanels.has("type-inputs") && <button onClick={addTypeDefinition}>Add Type</button>}
               <button className="panel-toggle" onClick={() => togglePanel("type-inputs")}>{collapsedPanels.has("type-inputs") ? "Show ▾" : "Hide ▴"}</button>
@@ -1657,7 +1931,7 @@ function App() {
           </div>}
         </section>
 
-        <section className="panel">
+        <section id="section-units-zones" data-section="units-zones" className="panel">
           <div className="panel-head">
             <h3>Units & Zones</h3>
             <button onClick={addUnit}>Add Unit</button>
@@ -1705,7 +1979,7 @@ function App() {
           </div>
         </section>
 
-        <section className="panel rooms-panel">
+        <section id="section-rooms" data-section="rooms" className="panel rooms-panel">
           <div className="panel-head">
             <h3>Rooms</h3>
             <div className="button-row">
@@ -1757,7 +2031,7 @@ function App() {
                 ? project.zones.find((zone) => zone.id === room.zone_id)?.name ?? "Zone"
                 : "Unit default zone";
               return (
-              <div className="room-card" key={index}>
+              <div id={`room-card-${index}`} className="room-card" key={index}>
                 <div className="room-card-head">
                   <label className="room-name-field">Room {index + 1}<input value={room.name} onChange={(event) => updateRoom(index, event.target.value)} /></label>
                   {hasAssignmentChoices ? (
@@ -1781,16 +2055,9 @@ function App() {
                     <div className="zone-pill">{unitName}</div>
                   )}
                   <button className="collapse-button" onClick={() => toggleRoomCollapsed(index)}>Collapse</button>
-                  <button className="danger-button" onClick={() => { if (confirm(`Remove ${room.name} and all its components?`)) removeRoom(index); }}>Remove Room</button>
+                  <button className="danger-button" onClick={() => setConfirmModal({ message: `Remove ${room.name} and all its components?`, onConfirm: () => removeRoom(index) })}>Remove Room</button>
                 </div>
                   <div className="room-card-body">
-                    <div className="room-actions structural-actions">
-                      <button onClick={() => addRoomComponent(room.name, "Wall")}>Wall</button>
-                      <button onClick={() => addRoomComponent(room.name, "Glass")}>Glass</button>
-                      <button onClick={() => addRoomComponent(room.name, "Ceiling")}>Ceiling</button>
-                      <button onClick={() => addRoomComponent(room.name, "Floor")}>Floor</button>
-                      <button onClick={() => addRoomComponent(room.name, "Door")}>Door</button>
-                    </div>
                     <div className="room-metrics">
                       <label>Area basis
                         <select value={room.lighting_basis ?? "Floor"} onChange={(event) => updateRoomField(index, { lighting_basis: event.target.value as LightingBasis })}>
@@ -1832,11 +2099,23 @@ function App() {
                           )}
                           <button onClick={() => removeComponent(componentIndex)}>Remove</button>
                         </div>
-                      )) : <p>No room components yet.</p>}
+                      )) : <p className="room-no-components">No components yet.</p>}
                     </div>
-                    <div className="room-actions internal-actions">
-                      <button onClick={() => addRoomComponent(room.name, "Person")}>Person</button>
-                      <button onClick={() => addRoomComponent(room.name, "Appliance")}>Appliance</button>
+                    {/* + Add Component picker */}
+                    <div className="add-component-row">
+                      {addComponentRoom === room.name ? (
+                        <div className="add-component-picker">
+                          <span className="add-component-label">Add:</span>
+                          {(["Wall","Glass","Ceiling","Floor","Door"] as TypeCategory[]).map((cat) => (
+                            <button key={cat} className="add-component-chip" onClick={() => { addRoomComponent(room.name, cat); setAddComponentRoom(null); }}>{cat}</button>
+                          ))}
+                          <button className="add-component-chip" onClick={() => { addRoomComponent(room.name, "Person"); setAddComponentRoom(null); }}>People</button>
+                          <button className="add-component-chip" onClick={() => { addRoomComponent(room.name, "Appliance"); setAddComponentRoom(null); }}>Appliance</button>
+                          <button className="add-component-cancel" onClick={() => setAddComponentRoom(null)}>✕</button>
+                        </div>
+                      ) : (
+                        <button className="add-component-btn" onClick={() => setAddComponentRoom(room.name)}>+ Add Component</button>
+                      )}
                     </div>
                   </div>
               </div>
@@ -1883,7 +2162,7 @@ function App() {
         </section>
 
         {project.comparison && (
-          <section className="panel comparison-panel">
+          <section id="section-salas-comparison" data-section="salas-comparison" className="panel comparison-panel">
             <div className="panel-head">
               <h3>Salas O'Brien Comparison</h3>
               <p>{loads ? "Imported reference values compared with the current calculation" : "Imported reference values loaded. Run Calculate to compare current results."}</p>
@@ -1988,7 +2267,7 @@ function App() {
           </section>
         )}
 
-        <section className="panel">
+        <section id="section-load-summary" data-section="load-summary" className="panel">
           <div className="panel-head">
             <h3>Load Summary</h3>
             <p>{activeLevel ? "Unit loads and selected system capacities" : "Run Calculate"}</p>
@@ -2209,6 +2488,75 @@ function App() {
                   ))}
                 </tbody>
               </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Confirm modal ───────────────────────────────────────────────────── */}
+      {confirmModal && (
+        <div className="modal-backdrop" onClick={() => setConfirmModal(null)}>
+          <div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Confirm</h2>
+              <button className="modal-close" onClick={() => setConfirmModal(null)}>✕</button>
+            </div>
+            <p className="confirm-body">{confirmModal.message}</p>
+            <div className="confirm-actions">
+              <button className="danger-button" onClick={() => { const fn = confirmModal.onConfirm; setConfirmModal(null); fn(); }}>Confirm</button>
+              <button onClick={() => setConfirmModal(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Save As modal ───────────────────────────────────────────────────── */}
+      {saveAsOpen && (
+        <div className="modal-backdrop" onClick={() => { setSaveAsOpen(false); setSaveAsConflict(null); }}>
+          <div className="modal save-as-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Save As</h2>
+              <button className="modal-close" onClick={() => { setSaveAsOpen(false); setSaveAsConflict(null); }}>✕</button>
+            </div>
+            {saveAsConflict ? (
+              <>
+                <p className="conflict-body">
+                  A project named <strong>{saveAsConflict.name}</strong> already exists (last saved {saveAsConflict.updated_at.slice(0, 16).replace("T", " ")}).
+                </p>
+                <div className="conflict-actions">
+                  <div className="conflict-action-card" onClick={() => commitSaveAs(saveAsName.trim(), saveAsConflict.id)}>
+                    <strong>Overwrite</strong>
+                    <span>Replace the existing project with this one.</span>
+                  </div>
+                  <div className="conflict-action-card" onClick={() => { setSaveAsConflict(null); }}>
+                    <strong>Rename</strong>
+                    <span>Go back and choose a different name.</span>
+                  </div>
+                  <div className="conflict-action-card conflict-action-cancel" onClick={() => { setSaveAsOpen(false); setSaveAsConflict(null); }}>
+                    <strong>Cancel</strong>
+                    <span>Return to the project without saving.</span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="save-as-field">
+                  <label>Project name
+                    <input
+                      autoFocus
+                      value={saveAsName}
+                      onChange={(e) => setSaveAsName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleSaveAsConfirm(); }}
+                    />
+                  </label>
+                </div>
+                <div className="confirm-actions">
+                  <button onClick={handleSaveAsConfirm} disabled={saveAsLoading || !saveAsName.trim()}>
+                    {saveAsLoading ? "Saving…" : "Save"}
+                  </button>
+                  <button onClick={() => { setSaveAsOpen(false); setSaveAsConflict(null); }}>Cancel</button>
+                </div>
+              </>
             )}
           </div>
         </div>
