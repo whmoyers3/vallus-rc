@@ -4113,6 +4113,15 @@ function AirflowWizard() {
     setMerges(prev => {
       const um = { ...(prev[uid] ?? {}) };
       if (targetRoom === "") { delete um[roomName]; } else { um[roomName] = targetRoom; }
+      // Auto-advance if the current room was just merged
+      if (targetRoom !== "" && rooms[currentRoom]?.name === roomName) {
+        const newActive = rooms
+          .map((r, i) => ({ name: r.name, index: i }))
+          .filter(r => r.name !== roomName && !um[r.name]);
+        // Go to next active room after current index, or first active room
+        const next = newActive.find(r => r.index > currentRoom) ?? newActive[0];
+        if (next) setTimeout(() => setCurrentRoom(next.index), 0);
+      }
       return { ...prev, [uid]: um };
     });
   }
@@ -4587,7 +4596,7 @@ function AirflowWizard() {
                           const d = s - at;
                           const p = at ? Math.round((d / at) * 100) : 0;
                           return (
-                            <tr key={`s-${i}`} className={i === currentRoom ? "active" : ""} onClick={() => { if (!merged) setCurrentRoom(i); }} style={merged ? { opacity: 0.4 } : undefined}>
+                            <tr key={`s-${i}`} className={i === currentRoom ? "active" : ""} onClick={() => setCurrentRoom(i)} style={merged ? { opacity: 0.5, cursor: "pointer" } : undefined}>
                               <td>{r.name}{isTstat(unitId, r.name) && <b> (T)</b>} {merged ? `→ ${um[r.name]}` : s > 0 ? "✓" : ""}</td>
                               <td>{merged ? "—" : s || "—"}</td>
                               <td>{merged ? "—" : at > 0 ? at : eff}</td>
