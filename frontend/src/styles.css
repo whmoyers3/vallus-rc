@@ -1119,6 +1119,16 @@ label {
   padding: 22px;
 }
 
+/* Project card list — hidden on desktop, shown on mobile */
+.project-card-list {
+  display: none;
+}
+
+/* Mobile room results — hidden on desktop, shown on mobile */
+.mobile-room-results {
+  display: none;
+}
+
 .modal-head {
   align-items: center;
   display: flex;
@@ -1636,3 +1646,151 @@ label {
   }
 }
 .battery-status-label { font-size: 12px; color: #9ca3af; }
+
+/* ── Mobile: Open dialog as bottom sheet ─────────────────────────────────── */
+
+@media (max-width: 767px) {
+  .open-dialog-backdrop {
+    align-items: flex-end;
+  }
+
+  .open-dialog-modal {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: 85vh;
+    border-radius: 16px 16px 0 0;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+  }
+
+  /* Hide desktop table, show cards */
+  .project-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+.project-card {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-card-active {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.project-card-name {
+  background: none;
+  border: none;
+  color: #1d4ed8;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 0;
+  text-align: left;
+}
+
+.project-card-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.project-card-delete {
+  align-self: flex-end;
+  margin-top: 4px;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+/* ── Mobile: Room results airflow view ───────────────────────────────────── */
+
+@media (max-width: 767px) {
+  .mobile-room-results {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 4px 0 8px;
+  }
+}
+
+.mobile-room-results-unit {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.mobile-room-results-unit-head {
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  letter-spacing: 0.3px;
+}
+
+.mobile-room-result-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  gap: 8px;
+}
+
+.mobile-room-result-row:last-child {
+  border-bottom: none;
+}
+
+.mobile-room-result-total {
+  background: #f0f4f8;
+  font-weight: 600;
+}
+
+.mobile-room-result-name {
+  font-size: 13px;
+  color: #1a1a1a;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-room-result-cfm {
+  display: flex;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.mobile-room-result-cfm span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 36px;
+}
+
+.mobile-room-result-cfm label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #9ca3af;
+}
+
+.mobile-room-result-cfm span > :last-child {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #1a1a1a;
+}

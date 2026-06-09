@@ -2452,7 +2452,37 @@ function App() {
             <h3>Calculated Room Results</h3>
             <p>{activeLevel ? `${number(activeLevel.cooling_subtotal)} cooling subtotal · ${number(activeLevel.heating_subtotal)} heating subtotal` : "Run Calculate"}</p>
           </div>
-          <table>
+
+          {/* Mobile airflow view */}
+          {activeLevel && (
+            <div className="mobile-room-results">
+              {unitLoadSummaries.map((summary, unitIndex) => (
+                <div key={summary.unit.id} className="mobile-room-results-unit">
+                  <div className="mobile-room-results-unit-head">Unit {unitIndex + 1} — {summary.unit.name}</div>
+                  {summary.rooms.map(({ result }) => (
+                    <div key={result.name} className="mobile-room-result-row">
+                      <span className="mobile-room-result-name">{result.name}</span>
+                      <div className="mobile-room-result-cfm">
+                        <span><label>Cool</label>{result.cfm_cool || "—"}</span>
+                        <span><label>Heat</label>{result.cfm_heat || "—"}</span>
+                        <span><label>Avg</label>{result.cfm_avg || "—"}</span>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="mobile-room-result-row mobile-room-result-total">
+                    <span className="mobile-room-result-name">Total</span>
+                    <div className="mobile-room-result-cfm">
+                      <span><label>Cool</label>{number(summary.rooms.reduce((s, r) => s + r.result.cfm_cool, 0))}</span>
+                      <span><label>Heat</label>{number(summary.rooms.reduce((s, r) => s + r.result.cfm_heat, 0))}</span>
+                      <span><label>Avg</label>{number(summary.rooms.reduce((s, r) => s + r.result.cfm_avg, 0))}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <table className="desktop-only">
             <thead>
               <tr>
                 <th>Room</th>
@@ -2531,8 +2561,8 @@ function App() {
       )}
 
       {showOpenDialog && (
-        <div className="modal-backdrop" onClick={() => setShowOpenDialog(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-backdrop open-dialog-backdrop" onClick={() => setShowOpenDialog(false)}>
+          <div className="modal open-dialog-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <h2>Open Project</h2>
               <button className="modal-close" onClick={() => setShowOpenDialog(false)}>✕</button>
@@ -2542,8 +2572,9 @@ function App() {
             {!openDialogLoading && !openDialogError && savedProjects.length === 0 && (
               <p className="modal-empty">No saved projects yet. Use Save to save your first project.</p>
             )}
-            {!openDialogLoading && savedProjects.length > 0 && (
-              <table className="project-list-table">
+            {!openDialogLoading && savedProjects.length > 0 && (<>
+              {/* Desktop table */}
+              <table className="project-list-table desktop-only">
                 <thead>
                   <tr>
                     <th>Project</th>
@@ -2567,7 +2598,22 @@ function App() {
                   ))}
                 </tbody>
               </table>
-            )}
+              {/* Mobile card list */}
+              <div className="project-card-list">
+                {savedProjects.map((p) => (
+                  <div key={p.id} className={`project-card${p.id === projectId ? " project-card-active" : ""}`}>
+                    <button className="project-card-name" onClick={() => loadSavedProject(p.id)}>
+                      {p.name}{p.description ? ` – ${p.description}` : ""}
+                    </button>
+                    <div className="project-card-meta">
+                      <span>{p.location}</span>
+                      <span>{p.updated_at.slice(0, 10)}</span>
+                    </div>
+                    <button className="project-card-delete danger-button" onClick={() => deleteSavedProject(p.id)}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            </>)}
           </div>
         </div>
       )}
