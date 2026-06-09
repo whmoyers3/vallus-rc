@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
-from backend.api.airflow_export import build_airflow_workbook
+from backend.api.airflow_export import build_airflow_workbook, _orientation_table, _group_units, _plan_label
 from backend.api.database import Database, ProjectNotFound, BatteryError
 from backend.api.detail_report import build_detail_report
 from backend.api.markdown_import import import_room_cooling_markdown
@@ -192,6 +192,21 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @api.post("/api/airflow/prepare")
+    def prepare_airflow_wizard(payload: ProjectPayload) -> dict[str, Any]:
+        raw = payload.model_dump()
+        table = _orientation_table(raw)
+        units = _group_units(raw)
+        meta = raw["project"].get("metadata") or {}
+        return {
+            "orientation_table": table,
+            "units": units,
+            "plan_label": _plan_label(raw),
+            "address": meta.get("address") or "",
+            "default_orientation": meta.get("front_door_faces") or "S",
+            "payload": raw,
+        }
 
     @api.get("/api/projects/{project_id}/airflow")
     def get_project_airflow(project_id: int) -> Response:

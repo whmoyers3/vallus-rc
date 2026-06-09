@@ -1290,6 +1290,26 @@ function App() {
     }
   }
 
+  async function startAirflowWizard() {
+    setExportLoading(true);
+    try {
+      const response = await fetch("/api/airflow/prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload(project, assemblies))
+      });
+      if (!response.ok) throw new Error("Wizard preparation failed.");
+      const data = await response.json();
+      const key = `vrc-wizard-${Date.now()}`;
+      localStorage.setItem(key, JSON.stringify(data));
+      window.open(`/#/airflow-wizard?session=${key}`, "_blank");
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not start wizard.");
+    } finally {
+      setExportLoading(false);
+    }
+  }
+
   async function calculateWorstCase(projectDraft: ProjectDraft = project) {
     const results = await Promise.all(
       compassDirections.map(async (front) => ({
@@ -1734,11 +1754,14 @@ function App() {
                 </button>
                 {showExportMenu && (
                   <div className="toolbar-menu-popover" onMouseLeave={() => setShowExportMenu(false)}>
+                    <button onClick={() => { setShowExportMenu(false); startAirflowWizard(); }} disabled={exportLoading}>
+                      {exportLoading ? "Preparing…" : "Airflow Wizard…"}
+                    </button>
                     {projectId ? (
-                      <a className="button" href={`/api/projects/${projectId}/airflow`} onClick={() => setShowExportMenu(false)}>Airflow Sheet</a>
+                      <a className="button" href={`/api/projects/${projectId}/airflow`} onClick={() => setShowExportMenu(false)}>Airflow Sheet (direct)</a>
                     ) : (
                       <button onClick={() => { setShowExportMenu(false); exportAirflowSheet(); }}>
-                        {exportLoading ? "Exporting…" : "Airflow Sheet"}
+                        {exportLoading ? "Exporting…" : "Airflow Sheet (direct)"}
                       </button>
                     )}
                     {projectId && (
@@ -1827,6 +1850,7 @@ function App() {
                 <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); saveProject(); }} disabled={saveLoading}>Save</button>
                 <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); openSaveAs(); }}>Save As…</button>
                 <div className="mobile-action-divider" />
+                <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); startAirflowWizard(); }} disabled={exportLoading}>Airflow Wizard…</button>
                 {projectId
                   ? <a className="mobile-action-item" href={`/api/projects/${projectId}/airflow`} onClick={() => setShowMobileMenu(false)}>Airflow Sheet</a>
                   : <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); exportAirflowSheet(); }}>Airflow Sheet</button>
@@ -3951,6 +3975,508 @@ function AdminPanel() {
   );
 }
 
+// ── Airflow Wizard ──────────────────────────────────────────────────────────
+
+type WizardPhase = "supply" | "return" | "static" | "checklist" | "review";
+const WIZARD_PHASES: WizardPhase[] = ["supply", "return", "static", "checklist", "review"];
+const WIZARD_ORIENTATIONS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const WIZARD_BASES = ["Avg", "Cool", "Heat"] as const;
+const CHECKLIST_ITEMS = [
+  { key: "size_match", label: "Size Match" },
+  { key: "total_airflow", label: "Total Airflow" },
+  { key: "room_room", label: "Room-Room" },
+  { key: "strip_check", label: "Strip Check" },
+  { key: "cool_check", label: "Cool Check" },
+  { key: "zone_check", label: "Zone Check" },
+] as const;
+
+function AirflowWizard() {
+  const params = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const key = params.get("session");
+  const [session] = useState(() => {
+    try { return key ? JSON.parse(localStorage.getItem(key) ?? "null") : null; }
+    catch { return null; }
+  });
+
+  const [orientation, setOrientation] = useState(session?.default_orientation ?? "S");
+  const [basis, setBasis] = useState<"Avg"|"Cool"|"Heat">("Avg");
+  const [phase, setPhase] = useState<WizardPhase>("supply");
+  const [currentUnit, setCurrentUnit] = useState(0);
+  const [currentRoom, setCurrentRoom] = useState(0);
+  const [supplyReadings, setSupplyReadings] = useState<Record<string, Record<string, (number|string)[]>>>({});
+  const [returnEntries, setReturnEntries] = useState<Record<string, { name: string; readings: (number|string)[] }[]>>({});
+  const [staticPressure, setStaticPressure] = useState<Record<string, { supply_esp: number|string; return_esp: number|string; before_filter: number|string; filter_type: string }>>({});
+  const [checklist, setChecklist] = useState<Record<string, Record<string, "y"|"n"|"">>>({});
+  const [downloading, setDownloading] = useState(false);
+  const [showTopBar, setShowTopBar] = useState(true);
+
+  if (!session) {
+    return (
+      <div style={{ padding: 40, textAlign: "center", fontFamily: "system-ui" }}>
+        <h2>Session expired</h2>
+        <p>Close this tab and re-open the wizard from the Export menu.</p>
+      </div>
+    );
+  }
+
+  const units: any[] = session.units;
+  const orientTable: Record<string, Record<string, Record<string, number>>> = session.orientation_table;
+  const unit = units[currentUnit];
+  const rooms: { name: string }[] = unit?.rooms ?? [];
+  const unitId = unit?.id;
+
+  function getTarget(roomName: string) {
+    return orientTable[roomName]?.[orientation]?.[basis] ?? 0;
+  }
+
+  function getSupply(uid: string, roomName: string): (number|string)[] {
+    return supplyReadings[uid]?.[roomName] ?? ["", "", "", ""];
+  }
+
+  function setSupply(uid: string, roomName: string, idx: number, val: string) {
+    setSupplyReadings(prev => {
+      const u = { ...prev[uid] };
+      const arr = [...(u[roomName] ?? ["", "", "", ""])];
+      arr[idx] = val === "" ? "" : Number(val);
+      u[roomName] = arr;
+      return { ...prev, [uid]: u };
+    });
+  }
+
+  function supplyTotal(uid: string, roomName: string): number {
+    return getSupply(uid, roomName).reduce((s: number, v) => s + (typeof v === "number" ? v : 0), 0);
+  }
+
+  function getReturn(uid: string): { name: string; readings: (number|string)[] }[] {
+    if (!returnEntries[uid]) {
+      return Array.from({ length: 8 }, () => ({ name: "", readings: ["", "", ""] }));
+    }
+    return returnEntries[uid];
+  }
+
+  function setReturnEntry(uid: string, idx: number, field: "name" | number, val: string) {
+    setReturnEntries(prev => {
+      const entries = [...(prev[uid] ?? Array.from({ length: 8 }, () => ({ name: "", readings: ["", "", ""] })))];
+      if (field === "name") {
+        entries[idx] = { ...entries[idx], name: val };
+      } else {
+        const readings = [...entries[idx].readings];
+        readings[field] = val === "" ? "" : Number(val);
+        entries[idx] = { ...entries[idx], readings };
+      }
+      return { ...prev, [uid]: entries };
+    });
+  }
+
+  function getStatic(uid: string) {
+    return staticPressure[uid] ?? { supply_esp: "", return_esp: "", before_filter: "", filter_type: "" };
+  }
+
+  function setStaticField(uid: string, field: string, val: string) {
+    setStaticPressure(prev => ({
+      ...prev,
+      [uid]: { ...getStatic(uid), [field]: field === "filter_type" ? val : (val === "" ? "" : Number(val)) }
+    }));
+  }
+
+  function getChecklist(uid: string): Record<string, "y"|"n"|""> {
+    return checklist[uid] ?? {};
+  }
+
+  function setChecklistItem(uid: string, key: string, val: "y"|"n") {
+    setChecklist(prev => ({
+      ...prev,
+      [uid]: { ...(prev[uid] ?? {}), [key]: (prev[uid]?.[key] === val ? "" : val) as "y"|"n"|"" }
+    }));
+  }
+
+  // Progress calculation
+  const totalPhases = units.length * WIZARD_PHASES.length;
+  const currentPhaseIdx = currentUnit * WIZARD_PHASES.length + WIZARD_PHASES.indexOf(phase);
+  const progressPct = Math.round(((currentPhaseIdx + 1) / totalPhases) * 100);
+
+  function goNext() {
+    if (phase === "supply" && currentRoom < rooms.length - 1) {
+      setCurrentRoom(currentRoom + 1);
+      return;
+    }
+    const pi = WIZARD_PHASES.indexOf(phase);
+    if (pi < WIZARD_PHASES.length - 1) {
+      setPhase(WIZARD_PHASES[pi + 1]);
+      setCurrentRoom(0);
+    } else if (currentUnit < units.length - 1) {
+      setCurrentUnit(currentUnit + 1);
+      setPhase("supply");
+      setCurrentRoom(0);
+    }
+  }
+
+  function goBack() {
+    if (phase === "supply" && currentRoom > 0) {
+      setCurrentRoom(currentRoom - 1);
+      return;
+    }
+    const pi = WIZARD_PHASES.indexOf(phase);
+    if (pi > 0) {
+      setPhase(WIZARD_PHASES[pi - 1]);
+      if (WIZARD_PHASES[pi - 1] === "supply") setCurrentRoom(rooms.length - 1);
+    } else if (currentUnit > 0) {
+      setCurrentUnit(currentUnit - 1);
+      setPhase("review");
+    }
+  }
+
+  function buildReadingsPayload() {
+    const supply: Record<string, Record<string, number[]>> = {};
+    for (const [uid, rooms] of Object.entries(supplyReadings)) {
+      supply[uid] = {};
+      for (const [rn, vals] of Object.entries(rooms)) {
+        supply[uid][rn] = vals.map(v => typeof v === "number" ? v : 0);
+      }
+    }
+    const ret: Record<string, { name: string; readings: number[] }[]> = {};
+    for (const [uid, entries] of Object.entries(returnEntries)) {
+      ret[uid] = entries.map(e => ({
+        name: e.name,
+        readings: e.readings.map(v => typeof v === "number" ? v : 0),
+      }));
+    }
+    const sp: Record<string, any> = {};
+    for (const [uid, s] of Object.entries(staticPressure)) {
+      sp[uid] = {
+        supply_esp: typeof s.supply_esp === "number" ? s.supply_esp : 0,
+        return_esp: typeof s.return_esp === "number" ? s.return_esp : 0,
+        before_filter: typeof s.before_filter === "number" ? s.before_filter : 0,
+        filter_type: s.filter_type,
+      };
+    }
+    return { supply, return: ret, static_pressure: sp, checklist };
+  }
+
+  async function downloadFile(endpoint: string, mimeType: string, ext: string) {
+    setDownloading(true);
+    try {
+      const payload = { ...session.payload, readings: buildReadingsPayload() };
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) throw new Error("Download failed.");
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `Airflow.${ext}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Download failed.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  const phaseLabel = { supply: "Supply Readings", return: "Return Air", static: "Static Pressure", checklist: "Checklist", review: "Review" };
+
+  return (
+    <>
+      <style>{`
+        .wiz { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 0 auto; padding: 0 16px 100px; color: #1a1a1a; }
+        .wiz-progress { position: sticky; top: 0; z-index: 10; background: #fff; padding: 12px 0 8px; }
+        .wiz-progress-bar { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; }
+        .wiz-progress-fill { height: 100%; background: #2563eb; transition: width 0.3s; border-radius: 3px; }
+        .wiz-progress-label { font-size: 12px; color: #666; margin-top: 4px; display: flex; justify-content: space-between; }
+        .wiz-topbar { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+        .wiz-topbar-toggle { font-size: 13px; color: #2563eb; cursor: pointer; background: none; border: none; padding: 0; margin-bottom: 8px; }
+        .wiz-topbar-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+        .wiz-topbar-row label { font-size: 13px; font-weight: 600; }
+        .wiz-topbar-row select { font-size: 16px; padding: 4px 8px; border-radius: 4px; border: 1px solid #ccc; }
+        .wiz-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+        .wiz-card h3 { margin: 0 0 4px; font-size: 18px; }
+        .wiz-card .target { font-size: 14px; color: #666; margin-bottom: 16px; }
+        .wiz-readings { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+        .wiz-readings label { font-size: 13px; color: #555; display: flex; flex-direction: column; gap: 4px; }
+        .wiz-readings input, .wiz-input { font-size: 16px; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; width: 100%; box-sizing: border-box; }
+        .wiz-readings input:focus, .wiz-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
+        .wiz-total { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f8f9fa; border-radius: 8px; }
+        .wiz-total .delta { font-weight: 600; }
+        .wiz-total .delta.ok { color: #16a34a; }
+        .wiz-total .delta.warn { color: #dc2626; }
+        .wiz-overview { margin-top: 16px; }
+        .wiz-overview table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .wiz-overview th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #e0e0e0; font-size: 12px; color: #666; }
+        .wiz-overview td { padding: 6px 8px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+        .wiz-overview tr:hover td { background: #f0f7ff; }
+        .wiz-overview tr.active td { background: #dbeafe; font-weight: 600; }
+        .wiz-nav { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 1px solid #e0e0e0; padding: 12px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom, 12px)); display: flex; gap: 12px; justify-content: center; z-index: 20; }
+        .wiz-nav button { flex: 1; max-width: 200px; padding: 12px; font-size: 16px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; font-weight: 600; }
+        .wiz-nav button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+        .wiz-nav button:disabled { opacity: 0.5; cursor: default; }
+        .wiz-return-row { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+        .wiz-return-readings { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: center; }
+        .wiz-static-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+        .wiz-static-row label { flex: 0 0 120px; font-size: 14px; font-weight: 600; }
+        .wiz-static-row .unit { font-size: 13px; color: #666; white-space: nowrap; }
+        .wiz-checklist-item { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid #f0f0f0; }
+        .wiz-checklist-item span { font-size: 16px; font-weight: 500; }
+        .wiz-yn { display: flex; gap: 8px; }
+        .wiz-yn button { width: 48px; height: 48px; border-radius: 8px; border: 2px solid #ccc; background: #fff; font-size: 16px; font-weight: 700; cursor: pointer; }
+        .wiz-yn button.sel-y { background: #dcfce7; border-color: #16a34a; color: #16a34a; }
+        .wiz-yn button.sel-n { background: #fef2f2; border-color: #dc2626; color: #dc2626; }
+        .wiz-download { display: flex; gap: 12px; margin-top: 20px; }
+        .wiz-download button { flex: 1; padding: 14px; font-size: 16px; font-weight: 600; border-radius: 8px; border: none; cursor: pointer; }
+        .wiz-download button.xlsx { background: #16a34a; color: #fff; }
+        .wiz-download button.pdf { background: #2563eb; color: #fff; }
+        .wiz-download button:disabled { opacity: 0.5; }
+        .wiz-review-section { margin-bottom: 20px; }
+        .wiz-review-section h4 { margin: 0 0 8px; font-size: 15px; color: #333; }
+      `}</style>
+      <div className="wiz">
+        <div className="wiz-progress">
+          <div className="wiz-progress-bar"><div className="wiz-progress-fill" style={{ width: `${progressPct}%` }} /></div>
+          <div className="wiz-progress-label">
+            <span>{units.length > 1 ? `${unit.name} — ` : ""}{phaseLabel[phase]}</span>
+            <span>{progressPct}%</span>
+          </div>
+        </div>
+
+        {/* Top bar: orientation + basis */}
+        {phase === "supply" && (
+          <div className="wiz-topbar">
+            <button className="wiz-topbar-toggle" onClick={() => setShowTopBar(v => !v)}>
+              {showTopBar ? "▾ Settings" : "▸ Settings"}
+            </button>
+            {showTopBar && (
+              <div className="wiz-topbar-row">
+                <label>Orientation
+                  <select value={orientation} onChange={e => setOrientation(e.target.value)} style={{ fontSize: 16 }}>
+                    {WIZARD_ORIENTATIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </label>
+                <label>CFM Basis
+                  <select value={basis} onChange={e => setBasis(e.target.value as any)} style={{ fontSize: 16 }}>
+                    {WIZARD_BASES.map(b => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                </label>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Phase: Supply */}
+        {phase === "supply" && rooms[currentRoom] && (() => {
+          const room = rooms[currentRoom];
+          const target = getTarget(room.name);
+          const vals = getSupply(unitId, room.name);
+          const total = supplyTotal(unitId, room.name);
+          const delta = total - target;
+          const pct = target ? Math.round((delta / target) * 100) : 0;
+          const isOk = target ? Math.abs(pct) <= 10 : true;
+          return (
+            <>
+              <div className="wiz-card">
+                <h3>{room.name}</h3>
+                <div className="target">Target: {target} CFM</div>
+                <div className="wiz-readings">
+                  {[0, 1, 2, 3].map(i => (
+                    <label key={i}>Reading {i + 1}
+                      <input type="text" inputMode="decimal" autoComplete="off" value={vals[i]} onChange={e => setSupply(unitId, room.name, i, e.target.value)} />
+                    </label>
+                  ))}
+                </div>
+                <div className="wiz-total">
+                  <span>Total: <strong>{total || "—"}</strong> CFM</span>
+                  {total > 0 && <span className={`delta ${isOk ? "ok" : "warn"}`}>Δ {delta > 0 ? "+" : ""}{delta} CFM ({pct > 0 ? "+" : ""}{pct}%)</span>}
+                </div>
+              </div>
+              <div className="wiz-overview">
+                <table>
+                  <thead><tr><th>Room</th><th>Total</th><th>Target</th><th>Δ</th><th>%</th></tr></thead>
+                  <tbody>
+                    {rooms.map((r, i) => {
+                      const t = getTarget(r.name);
+                      const s = supplyTotal(unitId, r.name);
+                      const d = s - t;
+                      const p = t ? Math.round((d / t) * 100) : 0;
+                      return (
+                        <tr key={i} className={i === currentRoom ? "active" : ""} onClick={() => setCurrentRoom(i)}>
+                          <td>{r.name} {s > 0 ? "✓" : ""}</td>
+                          <td>{s || "—"}</td>
+                          <td>{t}</td>
+                          <td style={{ color: (t && s > 0) ? (Math.abs(p) <= 10 ? "#16a34a" : "#dc2626") : undefined }}>{s > 0 ? d : "—"}</td>
+                          <td>{s > 0 ? `${p}%` : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          );
+        })()}
+
+        {/* Phase: Return */}
+        {phase === "return" && (
+          <div className="wiz-card">
+            <h3>Return Air — {unit.name}</h3>
+            {getReturn(unitId).map((entry, i) => {
+              const total = entry.readings.reduce((s: number, v) => s + (typeof v === "number" ? v : 0), 0);
+              return (
+                <div className="wiz-return-row" key={i}>
+                  <input className="wiz-input" placeholder="Room name" autoComplete="off" value={entry.name} onChange={e => setReturnEntry(unitId, i, "name", e.target.value)} />
+                  <div className="wiz-return-readings">
+                    {[0, 1, 2].map(j => (
+                      <input key={j} className="wiz-input" type="text" inputMode="decimal" autoComplete="off" placeholder={`R${j + 1}`} value={entry.readings[j]} onChange={e => setReturnEntry(unitId, i, j, e.target.value)} />
+                    ))}
+                    <span style={{ fontSize: 14, fontWeight: 600, minWidth: 50, textAlign: "right" }}>{total || "—"}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Phase: Static Pressure */}
+        {phase === "static" && (() => {
+          const sp = getStatic(unitId);
+          const supplyVal = typeof sp.supply_esp === "number" ? sp.supply_esp : 0;
+          const returnVal = typeof sp.return_esp === "number" ? sp.return_esp : 0;
+          const beforeVal = typeof sp.before_filter === "number" ? sp.before_filter : 0;
+          const totalEsp = supplyVal || returnVal ? (Math.abs(returnVal) + Math.abs(supplyVal)).toFixed(2) : "—";
+          const filterDrop = beforeVal && returnVal ? (Math.abs(returnVal) - Math.abs(beforeVal)).toFixed(2) : "—";
+          return (
+            <div className="wiz-card">
+              <h3>Static Pressure — {unit.name}</h3>
+              <div className="wiz-static-row">
+                <label>Supply ESP</label>
+                <input className="wiz-input" type="text" inputMode="decimal" autoComplete="off" value={sp.supply_esp} onChange={e => setStaticField(unitId, "supply_esp", e.target.value)} style={{ maxWidth: 120 }} />
+                <span className="unit">in. w.c.</span>
+              </div>
+              <div className="wiz-static-row">
+                <label>Return ESP</label>
+                <input className="wiz-input" type="text" inputMode="decimal" autoComplete="off" value={sp.return_esp} onChange={e => setStaticField(unitId, "return_esp", e.target.value)} style={{ maxWidth: 120 }} />
+                <span className="unit">in. w.c.</span>
+              </div>
+              <div className="wiz-static-row">
+                <label>Before Filter</label>
+                <input className="wiz-input" type="text" inputMode="decimal" autoComplete="off" value={sp.before_filter} onChange={e => setStaticField(unitId, "before_filter", e.target.value)} style={{ maxWidth: 120 }} />
+                <span className="unit">in. w.c.</span>
+              </div>
+              <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid #e0e0e0" }} />
+              <div className="wiz-static-row">
+                <label>Total ESP</label>
+                <span style={{ fontWeight: 600 }}>{totalEsp}</span>
+              </div>
+              <div className="wiz-static-row">
+                <label>Filter Drop</label>
+                <span style={{ fontWeight: 600 }}>{filterDrop}</span>
+              </div>
+              <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid #e0e0e0" }} />
+              <div className="wiz-static-row">
+                <label>Filter Type</label>
+                <input className="wiz-input" type="text" autoComplete="off" value={sp.filter_type} onChange={e => setStaticField(unitId, "filter_type", e.target.value)} />
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Phase: Checklist */}
+        {phase === "checklist" && (
+          <div className="wiz-card">
+            <h3>Go/No-Go Checklist — {unit.name}</h3>
+            {CHECKLIST_ITEMS.map(({ key, label }) => {
+              const val = getChecklist(unitId)[key] ?? "";
+              return (
+                <div className="wiz-checklist-item" key={key}>
+                  <span>{label}</span>
+                  <div className="wiz-yn">
+                    <button className={val === "y" ? "sel-y" : ""} onClick={() => setChecklistItem(unitId, key, "y")}>Y</button>
+                    <button className={val === "n" ? "sel-n" : ""} onClick={() => setChecklistItem(unitId, key, "n")}>N</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Phase: Review */}
+        {phase === "review" && (
+          <>
+            <div className="wiz-card">
+              <h3>Review — {unit.name}</h3>
+              <div className="wiz-review-section">
+                <h4>Supply Readings</h4>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead><tr><th style={{ textAlign: "left", padding: "4px 6px" }}>Room</th><th>Total</th><th>Target</th><th>Δ</th></tr></thead>
+                  <tbody>
+                    {rooms.map((r, i) => {
+                      const t = getTarget(r.name);
+                      const s = supplyTotal(unitId, r.name);
+                      const d = s - t;
+                      return (
+                        <tr key={i}>
+                          <td style={{ padding: "4px 6px" }}>{r.name}</td>
+                          <td style={{ textAlign: "center" }}>{s || "—"}</td>
+                          <td style={{ textAlign: "center" }}>{t}</td>
+                          <td style={{ textAlign: "center", color: (t && s > 0) ? (Math.abs(d / t) <= 0.1 ? "#16a34a" : "#dc2626") : undefined }}>{s > 0 ? d : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="wiz-review-section">
+                <h4>Static Pressure</h4>
+                {(() => {
+                  const sp = getStatic(unitId);
+                  return (
+                    <div style={{ fontSize: 14 }}>
+                      <div>Supply: {sp.supply_esp || "—"} | Return: {sp.return_esp || "—"} | Before Filter: {sp.before_filter || "—"}</div>
+                      {sp.filter_type && <div>Filter: {sp.filter_type}</div>}
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="wiz-review-section">
+                <h4>Checklist</h4>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 14 }}>
+                  {CHECKLIST_ITEMS.map(({ key, label }) => {
+                    const val = getChecklist(unitId)[key];
+                    return <span key={key} style={{ color: val === "y" ? "#16a34a" : val === "n" ? "#dc2626" : "#999" }}>{label}: {val ? val.toUpperCase() : "—"}</span>;
+                  })}
+                </div>
+              </div>
+            </div>
+            <div className="wiz-download">
+              <button className="xlsx" onClick={() => downloadFile("/api/export/airflow", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")} disabled={downloading}>
+                {downloading ? "Downloading…" : "Download .xlsx"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Bottom nav */}
+        <div className="wiz-nav">
+          <button onClick={goBack} disabled={currentUnit === 0 && phase === "supply" && currentRoom === 0}>
+            ← Back
+          </button>
+          {phase !== "review" ? (
+            <button className="primary" onClick={goNext}>
+              {phase === "supply" && currentRoom < rooms.length - 1 ? "Next Room →" : "Next →"}
+            </button>
+          ) : currentUnit < units.length - 1 ? (
+            <button className="primary" onClick={goNext}>Next Unit →</button>
+          ) : null}
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Root: hash-based routing ──────────────────────────────────────────────────
 
 function Root() {
@@ -3961,6 +4487,7 @@ function Root() {
     return () => window.removeEventListener("hashchange", handler);
   }, []);
   if (hash === "#/admin") return <AdminPanel />;
+  if (hash.startsWith("#/airflow-wizard")) return <AirflowWizard />;
   return <App />;
 }
 

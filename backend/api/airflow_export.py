@@ -186,6 +186,7 @@ def _build_unit_sheet(
     address: str,
     plan_label: str,
     default_orientation: str,
+    readings: dict[str, Any] | None = None,
 ) -> None:
     title = re.sub(r"[\/?*\[\]:]", "-", unit["name"])[:31] or "Unit"
     ws = wb.create_sheet(title)
@@ -275,6 +276,11 @@ def _build_unit_sheet(
             ws[f"G{r}"].fill = _blue_fill
             ws[f"G{r}"].font = _load_font
             ws[f"G{r}"].alignment = _center
+            if readings and "supply" in readings:
+                room_readings = readings["supply"].get(unit["id"], {}).get(room["name"], [])
+                for ci, val in enumerate(room_readings[:4]):
+                    if val not in (None, "", 0):
+                        ws.cell(row=r, column=2 + ci, value=val)
             zone_fill = _zone_fill_for(room["zone_id"], unit["zone_order"])
         if zone_fill is not None:
             for col in range(1, 12):  # A..K
@@ -314,6 +320,15 @@ def _build_unit_sheet(
         r = rh + 1 + i
         ws[f"E{r}"] = f'=IF(SUM(B{r}:D{r})=0,"",SUM(B{r}:D{r}))'
         ws[f"E{r}"].fill = _gray_fill
+    if readings and "return" in readings:
+        ret_entries = readings["return"].get(unit["id"], [])
+        for i, entry in enumerate(ret_entries[:8]):
+            r = rh + 1 + i
+            if entry.get("name"):
+                ws[f"A{r}"] = entry["name"]
+            for ci, val in enumerate(entry.get("readings", [])[:3]):
+                if val not in (None, "", 0):
+                    ws.cell(row=r, column=2 + ci, value=val)
     ws[f"E{grand}"] = f'=IF(SUM(E{rh + 1}:E{rh + 8})=0,"",SUM(E{rh + 1}:E{rh + 8}))'
     ws[f"E{grand}"].fill = _gray_fill
     ws[f"E{grand}"].font = _label_font
@@ -335,6 +350,14 @@ def _build_unit_sheet(
         ws[cell].font = _label_font
     for cell in (f"G{rh + 1}", f"G{rh + 3}", f"G{rh + 5}"):  # measured input cells
         ws[cell].fill = _input_fill
+    if readings and "static_pressure" in readings:
+        sp = readings["static_pressure"].get(unit["id"], {})
+        if sp.get("supply_esp") not in (None, "", 0):
+            ws[f"G{rh + 1}"] = sp["supply_esp"]
+        if sp.get("return_esp") not in (None, "", 0):
+            ws[f"G{rh + 3}"] = sp["return_esp"]
+        if sp.get("before_filter") not in (None, "", 0):
+            ws[f"G{rh + 5}"] = sp["before_filter"]
     _grid(ws, 7, rh, 8, gap - 1)
     _grid(ws, 7, gap + 1, 8, rh + 10)
 
@@ -343,18 +366,27 @@ def _build_unit_sheet(
     ws[f"K{rh + 8}"].font = _label_font
     ws.merge_cells(f"K{rh + 9}:L{rh + 9}")
     ws[f"K{rh + 9}"].fill = _input_fill
+    if readings and "static_pressure" in readings:
+        ft = readings["static_pressure"].get(unit["id"], {}).get("filter_type")
+        if ft:
+            ws[f"K{rh + 9}"] = ft
     _grid(ws, 11, rh + 8, 12, rh + 9)
 
     # Go/No-Go checklist: labels merged J:K, Y/N input in L
-    checklist = ["Size Match", "Total Airflow", "Room-Room", "Strip check", "Cool Check", "Zone Check"]
-    for i, label in enumerate(checklist):
+    checklist_labels = ["Size Match", "Total Airflow", "Room-Room", "Strip check", "Cool Check", "Zone Check"]
+    checklist_keys = ["size_match", "total_airflow", "room_room", "strip_check", "cool_check", "zone_check"]
+    cl_data = (readings or {}).get("checklist", {}).get(unit["id"], {})
+    for i, label in enumerate(checklist_labels):
         r = rh + 1 + i
         ws.merge_cells(f"J{r}:K{r}")
         ws[f"J{r}"] = label
-        ws[f"J{r}"].alignment = _center           # merged + centered labels
+        ws[f"J{r}"].alignment = _center
         ws[f"L{r}"].fill = _input_fill
-        ws[f"L{r}"].alignment = _center            # centered y/n input
-    _grid(ws, 10, rh, 12, rh + len(checklist))  # J..L
+        ws[f"L{r}"].alignment = _center
+        val = cl_data.get(checklist_keys[i])
+        if val in ("y", "n"):
+            ws[f"L{r}"] = val
+    _grid(ws, 10, rh, 12, rh + len(checklist_labels))  # J..L
 
     # Notes box
     notes_label = grand + 2
@@ -423,6 +455,7 @@ def _safe_filename(name: str) -> str:
 
 def build_airflow_workbook(payload: dict[str, Any]) -> tuple[bytes, str]:
     """Build the balancing workbook. Returns (xlsx_bytes, filename)."""
+    readings = payload.pop("readings", None)
     meta = payload["project"].get("metadata") or {}
     default_orientation = meta.get("front_door_faces") or DEFAULT_ORIENTATION
     address = meta.get("address") or ""
@@ -435,7 +468,7 @@ def build_airflow_workbook(payload: dict[str, Any]) -> tuple[bytes, str]:
     wb.remove(wb.active)  # drop default sheet
     ref_last_row = _build_ref_sheet(wb, table)
     for unit in units:
-        _build_unit_sheet(wb, unit, ref_last_row, address, plan_label, default_orientation)
+        _build_unit_sheet(wb, unit, ref_last_row, address, plan_label, default_orientation, readings)
     _build_zone_key(wb, units)
     # Ref hidden, so make first unit tab active
     wb.active = 1
