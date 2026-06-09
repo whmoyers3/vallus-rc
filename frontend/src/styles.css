@@ -76,6 +76,15 @@ button.active {
   border-bottom: 1px solid rgba(255,255,255,0.08);
 }
 
+.left-nav-logo-img {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  mix-blend-mode: screen;
+  opacity: 0.9;
+}
+
 .left-nav-logo {
   color: #f6f8fb;
   font-size: 14px;
@@ -84,6 +93,7 @@ button.active {
   opacity: 0;
   transition: opacity 0.15s;
   white-space: nowrap;
+  flex: 1;
 }
 
 .left-nav-pin-btn {
@@ -1419,7 +1429,12 @@ label {
     padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
   }
 
-  .mobile-overflow-btn {
+  /* Hide the standalone nav FAB — nav is now in the toolbar */
+  .mobile-nav-fab {
+    display: none !important;
+  }
+
+  .mobile-toolbar-icon-btn {
     flex: 0 0 auto;
     width: 44px;
     height: 44px;
@@ -1435,12 +1450,13 @@ label {
     color: #1a1a1a;
   }
 
-  .mobile-overflow-btn:active {
+  .mobile-toolbar-icon-btn:active {
     background: #f0f0f0;
   }
 
   .mobile-calculate-pill {
-    flex: 1;
+    flex: 0 0 auto;
+    width: 140px;
     height: 44px;
     background: #2563eb;
     color: #fff;

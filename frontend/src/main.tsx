@@ -1609,6 +1609,7 @@ function App() {
       {/* ── Left nav icon rail ─────────────────────────────────────── */}
       <aside className="left-nav" onMouseEnter={() => {}} onMouseLeave={() => {}}>
         <div className="left-nav-header">
+          <img src="/logo.png" className="left-nav-logo-img" alt="Baseline" />
           <span className="left-nav-logo">VRC</span>
           <button
             className="left-nav-pin-btn"
@@ -1793,7 +1794,12 @@ function App() {
         {/* ── Mobile bottom toolbar ─────────────────────────────────── */}
         <div className="mobile-toolbar">
           <button
-            className="mobile-overflow-btn"
+            className="mobile-toolbar-icon-btn"
+            onClick={() => setNavDrawerOpen((v) => !v)}
+            aria-label="Navigation"
+          >☰</button>
+          <button
+            className="mobile-toolbar-icon-btn"
             onClick={() => setShowMobileMenu((v) => !v)}
             aria-label="More actions"
           >⋯</button>
