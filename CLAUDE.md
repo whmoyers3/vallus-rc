@@ -33,40 +33,15 @@ See `CONTEXT.md` for canonical term definitions. Key terms:
 - **Accuracy threshold** — BTU/hr margin within which a project is "accurate" (default 50)
 - **Tolerance band** — % + BTU/hr floor for room conformance (default 5% + 200 BTU/hr)
 
-## Current Work: Admin Panel
+## Admin Panel — Implemented
 
-The next major feature is a model diagnostics panel at `/admin`. Full plan in `ADMIN_PANEL_PLAN.md`. UI prototype in `frontend/prototype-admin.html`.
+Model diagnostics panel at `/admin`. Full plan in `ADMIN_PANEL_PLAN.md`. All five phases are complete.
 
-### Implementation phases (work in order):
-
-**Phase 1 — Schema migration.** Add columns to `calculations` table: `comparison_snapshot` (JSONB), `salas_reference_orientation` (TEXT), `import_fidelity_passed` (BOOLEAN), `import_fidelity_details` (JSONB), `parent_id` (BIGINT FK). See ADMIN_PANEL_PLAN.md §1.1 for exact SQL.
-
-**Phase 2 — Backend changes.**
-1. Fix `markdown_import.py` to parse `**House Facing:**` instead of hardcoding `front_door_faces: "S"`
-2. Compute comparison snapshot at save time in `database.py` (run engine, diff against `salas_obrien_comparison`)
-3. Compute import fidelity at save time (compare floor area, volume, orientation, room count)
-4. Add `POST /api/calculate/batch` endpoint (array of payloads in, array of results out)
-5. Add battery API: `GET/POST/DELETE /api/battery`, `POST /api/battery/{id}/refresh`, `GET /api/battery/eligible?search=`, `POST /api/battery/snapshot/export`
-
-**Phase 3 — Frontend admin panel.**
-1. Add `/admin` route
-2. Two toggleable views: Table (sortable rows) and Status Columns (kanban by accuracy status)
-3. Unit toggle (% vs BTU/hr) in top bar
-4. Settings drawer with adjustable tolerance band and accuracy threshold — changes dynamically recompute all indicators client-side
-5. Recompute All: calls batch endpoint, holds results in memory, shows change direction indicators (green/red/yellow per-metric)
-6. Save Snapshots: writes recomputed values to DB
-7. Export Snapshot: writes timestamped JSON to `snapshots/`
-8. Add to Battery modal with search and multi-select
-9. Per-card Remove from Battery action
-
-**Phase 4 — Model development workflow.**
-1. Create `MODEL_DEV.md` (local server runbook)
-2. Create `model_changelog.md` (decision log for engine changes)
-3. Set up `snapshots/` directory
-
-**Phase 5 — Main editor integration.**
-1. "Add to Test Battery" / "Refresh Battery Copy" button on saved Salas imports
-2. Import fidelity badge display after import
+- **Schema:** `calculations` table has `comparison_snapshot`, `salas_reference_orientation`, `import_fidelity_passed`, `import_fidelity_details`, `parent_id` columns. See `supabase/schema.sql`.
+- **Backend:** batch calculate endpoint, full battery CRUD + refresh + snapshot export, import fidelity + comparison snapshot computed at save time, `**House Facing:**` parsing fixed.
+- **Admin panel:** `/admin` route, table + kanban views, unit toggle, settings drawer, Recompute All, Save Snapshots, Export Snapshot, Add to Battery modal, Remove from Battery.
+- **Workflow:** `MODEL_DEV.md`, `model_changelog.md`, `snapshots/` directory all present.
+- **Editor integration:** battery buttons (+ Battery / ↻ Battery) and import fidelity badge in main toolbar.
 
 ### Key architectural decisions
 

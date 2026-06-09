@@ -1,6 +1,7 @@
 -- VRC (Vallus Residential Calculator)
 -- Supabase / PostgreSQL schema
 -- Run this in the Supabase SQL editor to initialize the database.
+-- Includes: test battery, comparison snapshots, import fidelity columns.
 
 -- ──────────────────────────────────────────────
 -- CALCULATIONS
@@ -26,8 +27,19 @@ CREATE TABLE IF NOT EXISTS calculations (
   orientation   TEXT,
   variations    TEXT,
 
-  -- Source tracking for comparison
+  -- Source tracking: 'vrc' | 'salas_import' | 'test_battery'
   source        TEXT NOT NULL DEFAULT 'vrc',
+
+  -- Test battery: points back to the salas_import this copy was made from
+  parent_id     BIGINT REFERENCES calculations(id) ON DELETE SET NULL,
+
+  -- Salas comparison snapshot (computed at save time for salas_import rows)
+  comparison_snapshot          JSONB,
+  salas_reference_orientation  TEXT,
+
+  -- Import fidelity (computed at save time for salas_import rows)
+  import_fidelity_passed   BOOLEAN,
+  import_fidelity_details  JSONB,
 
   -- Optional exclusion flag for battery records with known-broken Salas reference data
   reference_valid  BOOLEAN,
@@ -45,6 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_calc_project   ON calculations(project_name);
 CREATE INDEX IF NOT EXISTS idx_calc_plan      ON calculations(plan_name);
 CREATE INDEX IF NOT EXISTS idx_calc_source    ON calculations(source);
 CREATE INDEX IF NOT EXISTS idx_calc_updated   ON calculations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_calc_parent    ON calculations(parent_id);
 
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
