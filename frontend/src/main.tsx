@@ -3990,6 +3990,72 @@ const CHECKLIST_ITEMS = [
   { key: "zone_check", label: "Zone Check" },
 ] as const;
 
+function WizardReturnQuickAdd({ unitId, defaultName, returns, onAdd, onUpdate, onRemove }: {
+  unitId: string;
+  defaultName: string;
+  returns: { name: string; readings: (number|string)[] }[];
+  onAdd: (name: string) => void;
+  onUpdate: (idx: number, field: "name" | number, val: string) => void;
+  onRemove: (idx: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const returnTotal = returns.reduce((s, e) => s + e.readings.reduce((a: number, v) => a + (typeof v === "number" ? v : 0), 0), 0);
+  return (
+    <div style={{ marginTop: 12, borderTop: "1px solid #e0e0e0", paddingTop: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <button
+          onClick={() => setExpanded(v => !v)}
+          style={{ background: "none", border: "none", color: "#2563eb", fontSize: 13, cursor: "pointer", padding: 0, fontWeight: 600 }}
+        >
+          {expanded ? "▾" : "▸"} Returns ({returns.length}){returnTotal > 0 && ` · ${returnTotal} CFM`}
+        </button>
+        <button
+          onClick={() => { onAdd(defaultName); setExpanded(true); }}
+          style={{ background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, padding: "6px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+        >
+          + Return
+        </button>
+      </div>
+      {expanded && returns.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {returns.map((entry, i) => {
+            const t = entry.readings.reduce((a: number, v) => a + (typeof v === "number" ? v : 0), 0);
+            return (
+              <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+                <input
+                  style={{ fontSize: 14, padding: "6px 8px", border: "1px solid #ccc", borderRadius: 6, flex: "1 1 100px", minWidth: 0 }}
+                  value={entry.name}
+                  onChange={e => onUpdate(i, "name", e.target.value)}
+                  placeholder="Name"
+                  autoComplete="off"
+                />
+                <input
+                  style={{ fontSize: 14, padding: "6px 8px", border: "1px solid #ccc", borderRadius: 6, width: 60 }}
+                  type="text" inputMode="decimal" autoComplete="off" placeholder="R1"
+                  value={entry.readings[0]}
+                  onChange={e => onUpdate(i, 0, e.target.value)}
+                />
+                <input
+                  style={{ fontSize: 14, padding: "6px 8px", border: "1px solid #ccc", borderRadius: 6, width: 60 }}
+                  type="text" inputMode="decimal" autoComplete="off" placeholder="R2"
+                  value={entry.readings[1]}
+                  onChange={e => onUpdate(i, 1, e.target.value)}
+                />
+                <span style={{ fontSize: 12, fontWeight: 600, minWidth: 36, textAlign: "right" }}>{t || ""}</span>
+                <button
+                  onClick={() => onRemove(i)}
+                  style={{ background: "none", border: "none", color: "#999", fontSize: 16, cursor: "pointer", padding: "0 4px" }}
+                  title="Remove"
+                >×</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AirflowWizard() {
   const params = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
   const key = params.get("session");
@@ -4008,7 +4074,17 @@ function AirflowWizard() {
   const [staticPressure, setStaticPressure] = useState<Record<string, { supply_esp: number|string; return_esp: number|string; before_filter: number|string; filter_type: string }>>({});
   const [checklist, setChecklist] = useState<Record<string, Record<string, "y"|"n"|"">>>({});
   const [downloading, setDownloading] = useState(false);
-  const [showTopBar, setShowTopBar] = useState(true);
+  const [showTopBar, setShowTopBar] = useState(false);
+  // Room merging: roomName -> targetRoomName (load transfers to target, merged room gets 0 target)
+  const [merges, setMerges] = useState<Record<string, Record<string, string>>>({});
+  // Per-unit thermostat rooms: roomName -> true
+  const [tstatRooms, setTstatRooms] = useState<Record<string, Record<string, boolean>>>({});
+  // Per-unit system size (tons) — defaults from project data
+  const [unitTons, setUnitTons] = useState<Record<string, number>>(() => {
+    const m: Record<string, number> = {};
+    for (const u of session?.units ?? []) m[u.id] = u.selected_tons || 0;
+    return m;
+  });
 
   if (!session) {
     return (
@@ -4027,6 +4103,43 @@ function AirflowWizard() {
 
   function getTarget(roomName: string) {
     return orientTable[roomName]?.[orientation]?.[basis] ?? 0;
+  }
+
+  function getUnitMerges(uid: string): Record<string, string> {
+    return merges[uid] ?? {};
+  }
+
+  function setMerge(uid: string, roomName: string, targetRoom: string | "") {
+    setMerges(prev => {
+      const um = { ...(prev[uid] ?? {}) };
+      if (targetRoom === "") { delete um[roomName]; } else { um[roomName] = targetRoom; }
+      return { ...prev, [uid]: um };
+    });
+  }
+
+  /** Effective load per room after merges: merged rooms → 0, targets absorb merged load */
+  function getEffectiveLoads(uid: string, roomList: { name: string }[]): Record<string, number> {
+    const um = getUnitMerges(uid);
+    const loads: Record<string, number> = {};
+    for (const r of roomList) loads[r.name] = getTarget(r.name);
+    // Transfer merged room loads to their targets
+    for (const [from, to] of Object.entries(um)) {
+      if (loads[to] !== undefined && loads[from] !== undefined) {
+        loads[to] += loads[from];
+        loads[from] = 0;
+      }
+    }
+    return loads;
+  }
+
+  function isMerged(uid: string, roomName: string): boolean {
+    return !!(getUnitMerges(uid)[roomName]);
+  }
+
+  /** Rooms that are not merged away (active rooms the tech enters readings for) */
+  function activeRooms(uid: string, roomList: { name: string }[]): { name: string; index: number }[] {
+    const um = getUnitMerges(uid);
+    return roomList.map((r, i) => ({ name: r.name, index: i })).filter(r => !um[r.name]);
   }
 
   function getSupply(uid: string, roomName: string): (number|string)[] {
@@ -4048,15 +4161,28 @@ function AirflowWizard() {
   }
 
   function getReturn(uid: string): { name: string; readings: (number|string)[] }[] {
-    if (!returnEntries[uid]) {
-      return Array.from({ length: 8 }, () => ({ name: "", readings: ["", "", ""] }));
-    }
-    return returnEntries[uid];
+    return returnEntries[uid] ?? [];
+  }
+
+  function addReturnEntry(uid: string, name: string) {
+    setReturnEntries(prev => ({
+      ...prev,
+      [uid]: [...(prev[uid] ?? []), { name, readings: ["", ""] }],
+    }));
+  }
+
+  function removeReturnEntry(uid: string, idx: number) {
+    setReturnEntries(prev => {
+      const entries = [...(prev[uid] ?? [])];
+      entries.splice(idx, 1);
+      return { ...prev, [uid]: entries };
+    });
   }
 
   function setReturnEntry(uid: string, idx: number, field: "name" | number, val: string) {
     setReturnEntries(prev => {
-      const entries = [...(prev[uid] ?? Array.from({ length: 8 }, () => ({ name: "", readings: ["", "", ""] })))];
+      const entries = [...(prev[uid] ?? [])];
+      if (idx >= entries.length) return prev;
       if (field === "name") {
         entries[idx] = { ...entries[idx], name: val };
       } else {
@@ -4075,7 +4201,7 @@ function AirflowWizard() {
   function setStaticField(uid: string, field: string, val: string) {
     setStaticPressure(prev => ({
       ...prev,
-      [uid]: { ...getStatic(uid), [field]: field === "filter_type" ? val : (val === "" ? "" : Number(val)) }
+      [uid]: { ...getStatic(uid), [field]: field === "filter_type" ? val : val }
     }));
   }
 
@@ -4090,20 +4216,57 @@ function AirflowWizard() {
     }));
   }
 
-  // Progress calculation
-  const totalPhases = units.length * WIZARD_PHASES.length;
-  const currentPhaseIdx = currentUnit * WIZARD_PHASES.length + WIZARD_PHASES.indexOf(phase);
-  const progressPct = Math.round(((currentPhaseIdx + 1) / totalPhases) * 100);
+  function isTstat(uid: string, roomName: string): boolean {
+    return !!(tstatRooms[uid]?.[roomName]);
+  }
+
+  function toggleTstat(uid: string, roomName: string) {
+    setTstatRooms(prev => {
+      const ur = { ...(prev[uid] ?? {}) };
+      if (ur[roomName]) { delete ur[roomName]; } else { ur[roomName] = true; }
+      return { ...prev, [uid]: ur };
+    });
+  }
+
+  /** Count tstats in the same zone as this room */
+  function zoneTstatCount(uid: string, roomName: string, roomList: { name: string; zone_id?: string }[]): number {
+    const room = roomList.find(r => r.name === roomName);
+    if (!room?.zone_id) return 0;
+    return roomList.filter(r => r.zone_id === room.zone_id && tstatRooms[uid]?.[r.name]).length;
+  }
+
+  /** True when every room has a reading or is merged into one that does */
+  function allRoomsCovered(uid: string, roomList: { name: string }[]): boolean {
+    const um = getUnitMerges(uid);
+    return roomList.every(r => um[r.name] || supplyTotal(uid, r.name) > 0);
+  }
+
+  /** 3-tier color: green ≤10%, yellow 11-20%, red >20% */
+  function deltaColor(pct: number): string {
+    const abs = Math.abs(pct);
+    if (abs <= 10) return "#16a34a";
+    if (abs <= 20) return "#ca8a04";
+    return "#dc2626";
+  }
 
   function goNext() {
-    if (phase === "supply" && currentRoom < rooms.length - 1) {
-      setCurrentRoom(currentRoom + 1);
-      return;
+    if (phase === "supply") {
+      const active = activeRooms(unitId, rooms);
+      const curActiveIdx = active.findIndex(r => r.index === currentRoom);
+      if (curActiveIdx < active.length - 1) {
+        setCurrentRoom(active[curActiveIdx + 1].index);
+        return;
+      }
     }
     const pi = WIZARD_PHASES.indexOf(phase);
     if (pi < WIZARD_PHASES.length - 1) {
       setPhase(WIZARD_PHASES[pi + 1]);
-      setCurrentRoom(0);
+      if (WIZARD_PHASES[pi + 1] === "supply") {
+        const active = activeRooms(unitId, rooms);
+        setCurrentRoom(active.length ? active[0].index : 0);
+      } else {
+        setCurrentRoom(0);
+      }
     } else if (currentUnit < units.length - 1) {
       setCurrentUnit(currentUnit + 1);
       setPhase("supply");
@@ -4112,14 +4275,21 @@ function AirflowWizard() {
   }
 
   function goBack() {
-    if (phase === "supply" && currentRoom > 0) {
-      setCurrentRoom(currentRoom - 1);
-      return;
+    if (phase === "supply") {
+      const active = activeRooms(unitId, rooms);
+      const curActiveIdx = active.findIndex(r => r.index === currentRoom);
+      if (curActiveIdx > 0) {
+        setCurrentRoom(active[curActiveIdx - 1].index);
+        return;
+      }
     }
     const pi = WIZARD_PHASES.indexOf(phase);
     if (pi > 0) {
       setPhase(WIZARD_PHASES[pi - 1]);
-      if (WIZARD_PHASES[pi - 1] === "supply") setCurrentRoom(rooms.length - 1);
+      if (WIZARD_PHASES[pi - 1] === "supply") {
+        const active = activeRooms(unitId, rooms);
+        setCurrentRoom(active.length ? active[active.length - 1].index : rooms.length - 1);
+      }
     } else if (currentUnit > 0) {
       setCurrentUnit(currentUnit - 1);
       setPhase("review");
@@ -4142,11 +4312,12 @@ function AirflowWizard() {
       }));
     }
     const sp: Record<string, any> = {};
+    const pn = (v: string | number): number => { const n = parseFloat(String(v)); return isNaN(n) ? 0 : n; };
     for (const [uid, s] of Object.entries(staticPressure)) {
       sp[uid] = {
-        supply_esp: typeof s.supply_esp === "number" ? s.supply_esp : 0,
-        return_esp: typeof s.return_esp === "number" ? s.return_esp : 0,
-        before_filter: typeof s.before_filter === "number" ? s.before_filter : 0,
+        supply_esp: Math.abs(pn(s.supply_esp)),
+        return_esp: -Math.abs(pn(s.return_esp)),
+        before_filter: -Math.abs(pn(s.before_filter)),
         filter_type: s.filter_type,
       };
     }
@@ -4180,16 +4351,19 @@ function AirflowWizard() {
     }
   }
 
-  const phaseLabel = { supply: "Supply Readings", return: "Return Air", static: "Static Pressure", checklist: "Checklist", review: "Review" };
+
 
   return (
     <>
       <style>{`
         .wiz { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 0 auto; padding: 0 16px 100px; color: #1a1a1a; }
-        .wiz-progress { position: sticky; top: 0; z-index: 10; background: #fff; padding: 12px 0 8px; }
-        .wiz-progress-bar { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; }
-        .wiz-progress-fill { height: 100%; background: #2563eb; transition: width 0.3s; border-radius: 3px; }
-        .wiz-progress-label { font-size: 12px; color: #666; margin-top: 4px; display: flex; justify-content: space-between; }
+        .wiz-phase-nav { position: sticky; top: 0; z-index: 10; background: #fff; padding: 10px 0 6px; }
+        .wiz-phase-buttons { display: flex; gap: 4px; }
+        .wiz-phase-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 2px; border: 2px solid #e0e0e0; border-radius: 8px; background: #fff; cursor: pointer; min-width: 0; }
+        .wiz-phase-btn.active { border-color: #2563eb; background: #eff6ff; }
+        .wiz-phase-label { font-size: 10px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+        .wiz-phase-btn.active .wiz-phase-label { color: #2563eb; }
+        .wiz-phase-value { font-size: 13px; font-weight: 700; color: #1a1a1a; white-space: nowrap; }
         .wiz-topbar { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
         .wiz-topbar-toggle { font-size: 13px; color: #2563eb; cursor: pointer; background: none; border: none; padding: 0; margin-bottom: 8px; }
         .wiz-topbar-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
@@ -4204,8 +4378,6 @@ function AirflowWizard() {
         .wiz-readings input:focus, .wiz-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
         .wiz-total { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f8f9fa; border-radius: 8px; }
         .wiz-total .delta { font-weight: 600; }
-        .wiz-total .delta.ok { color: #16a34a; }
-        .wiz-total .delta.warn { color: #dc2626; }
         .wiz-overview { margin-top: 16px; }
         .wiz-overview table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .wiz-overview th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #e0e0e0; font-size: 12px; color: #666; }
@@ -4236,144 +4408,317 @@ function AirflowWizard() {
         .wiz-review-section h4 { margin: 0 0 8px; font-size: 15px; color: #333; }
       `}</style>
       <div className="wiz">
-        <div className="wiz-progress">
-          <div className="wiz-progress-bar"><div className="wiz-progress-fill" style={{ width: `${progressPct}%` }} /></div>
-          <div className="wiz-progress-label">
-            <span>{units.length > 1 ? `${unit.name} — ` : ""}{phaseLabel[phase]}</span>
-            <span>{progressPct}%</span>
-          </div>
-        </div>
-
-        {/* Top bar: orientation + basis */}
-        {phase === "supply" && (
-          <div className="wiz-topbar">
-            <button className="wiz-topbar-toggle" onClick={() => setShowTopBar(v => !v)}>
-              {showTopBar ? "▾ Settings" : "▸ Settings"}
-            </button>
-            {showTopBar && (
-              <div className="wiz-topbar-row">
-                <label>Orientation
-                  <select value={orientation} onChange={e => setOrientation(e.target.value)} style={{ fontSize: 16 }}>
-                    {WIZARD_ORIENTATIONS.map(o => <option key={o} value={o}>{o}</option>)}
-                  </select>
-                </label>
-                <label>CFM Basis
-                  <select value={basis} onChange={e => setBasis(e.target.value as any)} style={{ fontSize: 16 }}>
-                    {WIZARD_BASES.map(b => <option key={b} value={b}>{b}</option>)}
-                  </select>
-                </label>
+        {/* Phase nav buttons — live dashboard */}
+        {(() => {
+          const tons = unitTons[unitId] || 0;
+          const nominal = Math.round(tons * 400);
+          const um = getUnitMerges(unitId);
+          const supTotal = rooms.filter(r => !um[r.name]).reduce((s, r) => s + supplyTotal(unitId, r.name), 0);
+          const retTotal = getReturn(unitId).reduce((s, e) => s + e.readings.reduce((a: number, v) => a + (typeof v === "number" ? v : 0), 0), 0);
+          const sp = getStatic(unitId);
+          const hasStatics = !!(sp.supply_esp || sp.return_esp);
+          const cl = getChecklist(unitId);
+          const clDone = CHECKLIST_ITEMS.filter(c => cl[c.key] === "y" || cl[c.key] === "n").length;
+          const supPct = nominal && supTotal ? Math.round(Math.abs(supTotal - nominal) / nominal * 100) : null;
+          const supColor = supPct !== null ? deltaColor(supPct) : undefined;
+          const retPct = nominal && retTotal ? Math.round(Math.abs(retTotal - nominal) / nominal * 100) : null;
+          const retColor = retPct !== null ? deltaColor(retPct) : undefined;
+          return (
+            <div className="wiz-phase-nav">
+              {units.length > 1 && <div style={{ fontSize: 12, color: "#666", marginBottom: 4, textAlign: "center" }}>{unit.name}</div>}
+              <div className="wiz-phase-buttons">
+                <button className={`wiz-phase-btn ${phase === "supply" ? "active" : ""}`} onClick={() => setPhase("supply")}>
+                  <span className="wiz-phase-label">Supply</span>
+                  <span className="wiz-phase-value" style={{ color: supColor }}>{supTotal || "—"}{nominal ? `/${nominal}` : ""}</span>
+                </button>
+                <button className={`wiz-phase-btn ${phase === "return" ? "active" : ""}`} onClick={() => setPhase("return")}>
+                  <span className="wiz-phase-label">Return</span>
+                  <span className="wiz-phase-value" style={{ color: retColor }}>{retTotal || "—"}{nominal ? `/${nominal}` : ""}</span>
+                </button>
+                <button className={`wiz-phase-btn ${phase === "static" ? "active" : ""}`} onClick={() => setPhase("static")}>
+                  <span className="wiz-phase-label">Statics</span>
+                  <span className="wiz-phase-value">{hasStatics ? "✓" : "—"}</span>
+                </button>
+                <button className={`wiz-phase-btn ${phase === "checklist" ? "active" : ""}`} onClick={() => setPhase("checklist")}>
+                  <span className="wiz-phase-label">Checklist</span>
+                  <span className="wiz-phase-value">{clDone ? `${clDone}/6` : "—"}</span>
+                </button>
+                <button className={`wiz-phase-btn ${phase === "review" ? "active" : ""}`} onClick={() => setPhase("review")}>
+                  <span className="wiz-phase-label">Report</span>
+                  <span className="wiz-phase-value">↓</span>
+                </button>
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          );
+        })()}
+
+        {/* Collapsible settings: orientation, basis, system size */}
+        <div className="wiz-topbar">
+          <button className="wiz-topbar-toggle" onClick={() => setShowTopBar(v => !v)}>
+            {showTopBar ? "▾ Settings" : "▸ Settings"} — {orientation} · {basis} · {unitTons[unitId] || "?"} ton
+          </button>
+          {showTopBar && (
+            <div className="wiz-topbar-row">
+              <label>Orientation
+                <select value={orientation} onChange={e => setOrientation(e.target.value)} style={{ fontSize: 16 }}>
+                  {WIZARD_ORIENTATIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </label>
+              <label>CFM Basis
+                <select value={basis} onChange={e => setBasis(e.target.value as any)} style={{ fontSize: 16 }}>
+                  {WIZARD_BASES.map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </label>
+              <label>System Size
+                <select value={unitTons[unitId] || ""} onChange={e => setUnitTons(prev => ({ ...prev, [unitId]: parseFloat(e.target.value) || 0 }))} style={{ fontSize: 16 }}>
+                  <option value="">—</option>
+                  {[1.5, 2, 2.5, 3, 3.5, 4, 5].map(t => <option key={t} value={t}>{t} ton ({t * 400} CFM)</option>)}
+                </select>
+              </label>
+            </div>
+          )}
+        </div>
 
         {/* Phase: Supply */}
         {phase === "supply" && rooms[currentRoom] && (() => {
           const room = rooms[currentRoom];
-          const target = getTarget(room.name);
+          const effLoads = getEffectiveLoads(unitId, rooms);
+          const effLoad = effLoads[room.name] ?? 0;
           const vals = getSupply(unitId, room.name);
           const total = supplyTotal(unitId, room.name);
-          const delta = total - target;
-          const pct = target ? Math.round((delta / target) * 100) : 0;
-          const isOk = target ? Math.abs(pct) <= 10 : true;
+          const loadTotal = Object.values(effLoads).reduce((a, b) => a + b, 0);
+          const um = getUnitMerges(unitId);
+          const systemTotal = rooms.filter(r => !um[r.name]).reduce((s, r) => s + supplyTotal(unitId, r.name), 0);
+          const covered = allRoomsCovered(unitId, rooms);
+          const loadPct = loadTotal ? effLoad / loadTotal : 0;
+          const adjTarget = covered && systemTotal ? Math.round(systemTotal * loadPct) : 0;
+          const delta = total - adjTarget;
+          const pct = adjTarget ? Math.round((delta / adjTarget) * 100) : 0;
+          const mergedInto = um[room.name];
+          const roomsMergedHere = Object.entries(um).filter(([, to]) => to === room.name).map(([from]) => from);
           return (
             <>
               <div className="wiz-card">
-                <h3>{room.name}</h3>
-                <div className="target">Target: {target} CFM</div>
-                <div className="wiz-readings">
-                  {[0, 1, 2, 3].map(i => (
-                    <label key={i}>Reading {i + 1}
-                      <input type="text" inputMode="decimal" autoComplete="off" value={vals[i]} onChange={e => setSupply(unitId, room.name, i, e.target.value)} />
-                    </label>
-                  ))}
+                <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {room.name}
+                  <button
+                    onClick={() => toggleTstat(unitId, room.name)}
+                    style={{
+                      fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 10,
+                      border: isTstat(unitId, room.name) ? "2px solid #2563eb" : "2px solid #ccc",
+                      background: isTstat(unitId, room.name) ? "#dbeafe" : "#fff",
+                      color: isTstat(unitId, room.name) ? "#2563eb" : "#999",
+                      cursor: "pointer", whiteSpace: "nowrap",
+                    }}
+                  >TSTAT</button>
+                  {isTstat(unitId, room.name) && zoneTstatCount(unitId, room.name, rooms as any) > 1 && (
+                    <span style={{ fontSize: 11, color: "#ca8a04", fontWeight: 600 }}>⚠ Multiple tstats in zone</span>
+                  )}
+                </h3>
+                {mergedInto ? (
+                  <div className="target" style={{ color: "#999" }}>Merged into {mergedInto} — skipped</div>
+                ) : (
+                  <div className="target">
+                    Load: {effLoad} CFM ({loadTotal ? Math.round(loadPct * 100) : 0}%)
+                    {roomsMergedHere.length > 0 && <span style={{ color: "#2563eb", fontSize: 12 }}> (incl. {roomsMergedHere.join(", ")})</span>}
+                    {covered && adjTarget > 0 && <> · Adj Target: {adjTarget} CFM</>}
+                    {!covered && systemTotal > 0 && <span style={{ color: "#999", fontSize: 12 }}> · enter all rooms for adj targets</span>}
+                  </div>
+                )}
+                {/* Merge control */}
+                <div style={{ margin: "8px 0 12px", fontSize: 13 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: "#666", whiteSpace: "nowrap" }}>Merge into:</span>
+                    <select
+                      style={{ fontSize: 16, padding: "4px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+                      value={um[room.name] ?? ""}
+                      onChange={e => setMerge(unitId, room.name, e.target.value)}
+                    >
+                      <option value="">— None (has its own duct)</option>
+                      {rooms.filter(r => r.name !== room.name && !um[r.name]).map(r => (
+                        <option key={r.name} value={r.name}>{r.name}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
-                <div className="wiz-total">
-                  <span>Total: <strong>{total || "—"}</strong> CFM</span>
-                  {total > 0 && <span className={`delta ${isOk ? "ok" : "warn"}`}>Δ {delta > 0 ? "+" : ""}{delta} CFM ({pct > 0 ? "+" : ""}{pct}%)</span>}
-                </div>
+                {!mergedInto && (
+                  <>
+                    <div className="wiz-readings">
+                      {[0, 1, 2, 3].map(i => (
+                        <label key={i}>Reading {i + 1}
+                          <input type="text" inputMode="decimal" autoComplete="off" value={vals[i]} onChange={e => setSupply(unitId, room.name, i, e.target.value)} />
+                        </label>
+                      ))}
+                    </div>
+                    <div className="wiz-total">
+                      <span>Total: <strong>{total || "—"}</strong> CFM</span>
+                      {total > 0 && adjTarget > 0 && <span className="delta" style={{ color: deltaColor(pct) }}>Δ {delta > 0 ? "+" : ""}{delta} CFM ({pct > 0 ? "+" : ""}{pct}%)</span>}
+                    </div>
+                    {/* Inline return quick-add */}
+                    <WizardReturnQuickAdd
+                      unitId={unitId}
+                      defaultName={room.name}
+                      returns={getReturn(unitId)}
+                      onAdd={(name) => addReturnEntry(unitId, name)}
+                      onUpdate={(idx, field, val) => setReturnEntry(unitId, idx, field, val)}
+                      onRemove={(idx) => removeReturnEntry(unitId, idx)}
+                    />
+                  </>
+                )}
               </div>
               <div className="wiz-overview">
-                <table>
-                  <thead><tr><th>Room</th><th>Total</th><th>Target</th><th>Δ</th><th>%</th></tr></thead>
-                  <tbody>
-                    {rooms.map((r, i) => {
-                      const t = getTarget(r.name);
-                      const s = supplyTotal(unitId, r.name);
-                      const d = s - t;
-                      const p = t ? Math.round((d / t) * 100) : 0;
-                      return (
-                        <tr key={i} className={i === currentRoom ? "active" : ""} onClick={() => setCurrentRoom(i)}>
-                          <td>{r.name} {s > 0 ? "✓" : ""}</td>
-                          <td>{s || "—"}</td>
-                          <td>{t}</td>
-                          <td style={{ color: (t && s > 0) ? (Math.abs(p) <= 10 ? "#16a34a" : "#dc2626") : undefined }}>{s > 0 ? d : "—"}</td>
-                          <td>{s > 0 ? `${p}%` : "—"}</td>
+                {(() => {
+                  const retEntries = getReturn(unitId);
+                  const retGrand = retEntries.reduce((s, e) => s + e.readings.reduce((a: number, v) => a + (typeof v === "number" ? v : 0), 0), 0);
+                  const tons = unitTons[unitId] || 0;
+                  const nominal = Math.round(tons * 400);
+                  const supPct = nominal && systemTotal ? Math.round(Math.abs(systemTotal - nominal) / nominal * 100) : null;
+                  const retPct = nominal && retGrand ? Math.round(Math.abs(retGrand - nominal) / nominal * 100) : null;
+                  return (
+                    <table>
+                      <thead><tr><th>Room</th><th>Total</th><th>Adj Target</th><th>CFM +/−</th><th>% +/−</th></tr></thead>
+                      <tbody>
+                        {rooms.map((r, i) => {
+                          const merged = !!um[r.name];
+                          const eff = effLoads[r.name] ?? 0;
+                          const s = merged ? 0 : supplyTotal(unitId, r.name);
+                          const lp = loadTotal ? eff / loadTotal : 0;
+                          const at = covered && systemTotal ? Math.round(systemTotal * lp) : 0;
+                          const d = s - at;
+                          const p = at ? Math.round((d / at) * 100) : 0;
+                          return (
+                            <tr key={`s-${i}`} className={i === currentRoom ? "active" : ""} onClick={() => { if (!merged) setCurrentRoom(i); }} style={merged ? { opacity: 0.4 } : undefined}>
+                              <td>{r.name}{isTstat(unitId, r.name) && <b> (T)</b>} {merged ? `→ ${um[r.name]}` : s > 0 ? "✓" : ""}</td>
+                              <td>{merged ? "—" : s || "—"}</td>
+                              <td>{merged ? "—" : at > 0 ? at : eff}</td>
+                              <td style={{ color: (!merged && at && s > 0) ? deltaColor(p) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
+                              <td>{!merged && s > 0 && at > 0 ? `${p}%` : "—"}</td>
+                            </tr>
+                          );
+                        })}
+                        {/* Supply total */}
+                        <tr style={{ borderTop: "2px solid #333", fontWeight: 700 }}>
+                          <td>Supply Total</td>
+                          <td style={{ color: supPct !== null ? deltaColor(supPct) : undefined }}>{systemTotal || "—"}</td>
+                          <td>{nominal || "—"}</td>
+                          <td colSpan={2} style={{ color: supPct !== null ? deltaColor(supPct) : undefined, fontSize: 12 }}>
+                            {nominal && systemTotal ? `${systemTotal > nominal ? "+" : ""}${systemTotal - nominal} CFM (${supPct! > 0 ? (systemTotal > nominal ? "+" : "-") : ""}${supPct}%)` : ""}
+                          </td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                        {/* Return section */}
+                        {retEntries.length > 0 && (
+                          <>
+                            <tr style={{ borderTop: "2px solid #e0e0e0" }}>
+                              <th colSpan={5} style={{ textAlign: "left", padding: "8px 8px 4px", fontSize: 12, color: "#666", fontWeight: 600 }}>RETURNS</th>
+                            </tr>
+                            {retEntries.map((e, i) => {
+                              const rt = e.readings.reduce((a: number, v) => a + (typeof v === "number" ? v : 0), 0);
+                              return (
+                                <tr key={`r-${i}`} style={{ color: "#555" }} onClick={() => setPhase("return")}>
+                                  <td>{e.name || `Return ${i + 1}`}</td>
+                                  <td>{rt || "—"}</td>
+                                  <td colSpan={3}></td>
+                                </tr>
+                              );
+                            })}
+                            <tr style={{ borderTop: "2px solid #333", fontWeight: 700 }}>
+                              <td>Return Total</td>
+                              <td style={{ color: retPct !== null ? deltaColor(retPct) : undefined }}>{retGrand || "—"}</td>
+                              <td>{nominal || "—"}</td>
+                              <td colSpan={2} style={{ color: retPct !== null ? deltaColor(retPct) : undefined, fontSize: 12 }}>
+                                {nominal && retGrand ? `${retGrand > nominal ? "+" : ""}${retGrand - nominal} CFM (${retPct! > 0 ? (retGrand > nominal ? "+" : "-") : ""}${retPct}%)` : ""}
+                              </td>
+                            </tr>
+                          </>
+                        )}
+                      </tbody>
+                    </table>
+                  );
+                })()}
               </div>
             </>
           );
         })()}
 
         {/* Phase: Return */}
-        {phase === "return" && (
-          <div className="wiz-card">
-            <h3>Return Air — {unit.name}</h3>
-            {getReturn(unitId).map((entry, i) => {
-              const total = entry.readings.reduce((s: number, v) => s + (typeof v === "number" ? v : 0), 0);
-              return (
-                <div className="wiz-return-row" key={i}>
-                  <input className="wiz-input" placeholder="Room name" autoComplete="off" value={entry.name} onChange={e => setReturnEntry(unitId, i, "name", e.target.value)} />
-                  <div className="wiz-return-readings">
-                    {[0, 1, 2].map(j => (
-                      <input key={j} className="wiz-input" type="text" inputMode="decimal" autoComplete="off" placeholder={`R${j + 1}`} value={entry.readings[j]} onChange={e => setReturnEntry(unitId, i, j, e.target.value)} />
-                    ))}
-                    <span style={{ fontSize: 14, fontWeight: 600, minWidth: 50, textAlign: "right" }}>{total || "—"}</span>
+        {phase === "return" && (() => {
+          const entries = getReturn(unitId);
+          const grandTotal = entries.reduce((s, e) => s + e.readings.reduce((a: number, v) => a + (typeof v === "number" ? v : 0), 0), 0);
+          return (
+            <div className="wiz-card">
+              <h3>Return Air — {unit.name}</h3>
+              {entries.length === 0 && <p style={{ color: "#999", fontSize: 14 }}>No returns added yet. Use the button below to add return readings.</p>}
+              {entries.map((entry, i) => {
+                const total = entry.readings.reduce((s: number, v) => s + (typeof v === "number" ? v : 0), 0);
+                return (
+                  <div className="wiz-return-row" key={i}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input className="wiz-input" placeholder="Room / location" autoComplete="off" value={entry.name} onChange={e => setReturnEntry(unitId, i, "name", e.target.value)} style={{ flex: 1 }} />
+                      <button onClick={() => removeReturnEntry(unitId, i)} style={{ background: "none", border: "none", color: "#999", fontSize: 18, cursor: "pointer", padding: "0 4px" }} title="Remove">×</button>
+                    </div>
+                    <div className="wiz-return-readings">
+                      {[0, 1].map(j => (
+                        <input key={j} className="wiz-input" type="text" inputMode="decimal" autoComplete="off" placeholder={`R${j + 1}`} value={entry.readings[j]} onChange={e => setReturnEntry(unitId, i, j, e.target.value)} />
+                      ))}
+                      <span style={{ fontSize: 14, fontWeight: 600, minWidth: 50, textAlign: "right" }}>{total || "—"}</span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, paddingTop: 12, borderTop: "1px solid #e0e0e0" }}>
+                <button
+                  onClick={() => addReturnEntry(unitId, "")}
+                  style={{ background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                >
+                  + Add Return
+                </button>
+                <span style={{ fontSize: 15, fontWeight: 600 }}>Total Return: {grandTotal || "—"} CFM</span>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Phase: Static Pressure */}
         {phase === "static" && (() => {
           const sp = getStatic(unitId);
-          const supplyVal = typeof sp.supply_esp === "number" ? sp.supply_esp : 0;
-          const returnVal = typeof sp.return_esp === "number" ? sp.return_esp : 0;
-          const beforeVal = typeof sp.before_filter === "number" ? sp.before_filter : 0;
-          const totalEsp = supplyVal || returnVal ? (Math.abs(returnVal) + Math.abs(supplyVal)).toFixed(2) : "—";
-          const filterDrop = beforeVal && returnVal ? (Math.abs(returnVal) - Math.abs(beforeVal)).toFixed(2) : "—";
+          const parseNum = (v: string | number): number => { const n = parseFloat(String(v)); return isNaN(n) ? 0 : n; };
+          const fmtSp = (v: number): string => v ? (v < 0 ? "-" : "") + Math.abs(v).toFixed(2).replace(/^0\./, ".") : "—";
+          const supplyVal = Math.abs(parseNum(sp.supply_esp));
+          // Auto-negate: return and before-filter are always negative
+          const returnVal = -Math.abs(parseNum(sp.return_esp));
+          const beforeVal = -Math.abs(parseNum(sp.before_filter));
+          const totalEsp = supplyVal || returnVal ? Math.abs(returnVal) + supplyVal : 0;
+          const filterCoilDrop = beforeVal && returnVal ? Math.abs(returnVal) - Math.abs(beforeVal) : 0;
           return (
             <div className="wiz-card">
               <h3>Static Pressure — {unit.name}</h3>
+              <p style={{ fontSize: 13, color: "#666", margin: "0 0 16px" }}>Enter positive values — return and before-filter are auto-negated.</p>
               <div className="wiz-static-row">
-                <label>Supply ESP</label>
+                <label>Supply</label>
                 <input className="wiz-input" type="text" inputMode="decimal" autoComplete="off" value={sp.supply_esp} onChange={e => setStaticField(unitId, "supply_esp", e.target.value)} style={{ maxWidth: 120 }} />
                 <span className="unit">in. w.c.</span>
+                {supplyVal > 0 && <span style={{ fontSize: 13, color: "#16a34a", fontWeight: 600 }}>+{fmtSp(supplyVal)}</span>}
               </div>
               <div className="wiz-static-row">
-                <label>Return ESP</label>
+                <label>Return</label>
                 <input className="wiz-input" type="text" inputMode="decimal" autoComplete="off" value={sp.return_esp} onChange={e => setStaticField(unitId, "return_esp", e.target.value)} style={{ maxWidth: 120 }} />
                 <span className="unit">in. w.c.</span>
+                {returnVal < 0 && <span style={{ fontSize: 13, color: "#dc2626", fontWeight: 600 }}>{fmtSp(returnVal)}</span>}
               </div>
               <div className="wiz-static-row">
                 <label>Before Filter</label>
                 <input className="wiz-input" type="text" inputMode="decimal" autoComplete="off" value={sp.before_filter} onChange={e => setStaticField(unitId, "before_filter", e.target.value)} style={{ maxWidth: 120 }} />
                 <span className="unit">in. w.c.</span>
+                {beforeVal < 0 && <span style={{ fontSize: 13, color: "#dc2626", fontWeight: 600 }}>{fmtSp(beforeVal)}</span>}
               </div>
               <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid #e0e0e0" }} />
               <div className="wiz-static-row">
                 <label>Total ESP</label>
-                <span style={{ fontWeight: 600 }}>{totalEsp}</span>
+                <span style={{ fontWeight: 600 }}>{totalEsp ? fmtSp(totalEsp) : "—"}</span>
               </div>
               <div className="wiz-static-row">
-                <label>Filter Drop</label>
-                <span style={{ fontWeight: 600 }}>{filterDrop}</span>
+                <label>Filter & Coil Drop</label>
+                <span style={{ fontWeight: 600 }}>{filterCoilDrop ? fmtSp(filterCoilDrop) : "—"}</span>
               </div>
               <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid #e0e0e0" }} />
               <div className="wiz-static-row">
@@ -4410,32 +4755,51 @@ function AirflowWizard() {
               <h3>Review — {unit.name}</h3>
               <div className="wiz-review-section">
                 <h4>Supply Readings</h4>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                  <thead><tr><th style={{ textAlign: "left", padding: "4px 6px" }}>Room</th><th>Total</th><th>Target</th><th>Δ</th></tr></thead>
-                  <tbody>
-                    {rooms.map((r, i) => {
-                      const t = getTarget(r.name);
-                      const s = supplyTotal(unitId, r.name);
-                      const d = s - t;
-                      return (
-                        <tr key={i}>
-                          <td style={{ padding: "4px 6px" }}>{r.name}</td>
-                          <td style={{ textAlign: "center" }}>{s || "—"}</td>
-                          <td style={{ textAlign: "center" }}>{t}</td>
-                          <td style={{ textAlign: "center", color: (t && s > 0) ? (Math.abs(d / t) <= 0.1 ? "#16a34a" : "#dc2626") : undefined }}>{s > 0 ? d : "—"}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                {(() => {
+                  const effLoads = getEffectiveLoads(unitId, rooms);
+                  const loadTotal = Object.values(effLoads).reduce((a, b) => a + b, 0);
+                  const um = getUnitMerges(unitId);
+                  const systemTotal = rooms.filter(r => !um[r.name]).reduce((s, r) => s + supplyTotal(unitId, r.name), 0);
+                  const covered = allRoomsCovered(unitId, rooms);
+                  return (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead><tr><th style={{ textAlign: "left", padding: "4px 6px" }}>Room</th><th>Total</th><th>Adj Target</th><th>CFM +/−</th></tr></thead>
+                      <tbody>
+                        {rooms.map((r, i) => {
+                          const merged = !!um[r.name];
+                          const eff = effLoads[r.name] ?? 0;
+                          const s = merged ? 0 : supplyTotal(unitId, r.name);
+                          const lp = loadTotal ? eff / loadTotal : 0;
+                          const at = covered && systemTotal ? Math.round(systemTotal * lp) : 0;
+                          const d = s - at;
+                          const p = at ? Math.round((d / at) * 100) : 0;
+                          return (
+                            <tr key={i} style={merged ? { opacity: 0.4 } : undefined}>
+                              <td style={{ padding: "4px 6px" }}>{r.name}{isTstat(unitId, r.name) && <b> (T)</b>}{merged ? ` → ${um[r.name]}` : ""}</td>
+                              <td style={{ textAlign: "center" }}>{merged ? "—" : s || "—"}</td>
+                              <td style={{ textAlign: "center" }}>{merged ? "—" : at > 0 ? at : eff}</td>
+                              <td style={{ textAlign: "center", color: (!merged && at && s > 0) ? deltaColor(p) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  );
+                })()}
               </div>
               <div className="wiz-review-section">
                 <h4>Static Pressure</h4>
                 {(() => {
                   const sp = getStatic(unitId);
+                  const pn = (v: string | number): number => { const n = parseFloat(String(v)); return isNaN(n) ? 0 : n; };
+                  const fmt = (v: number): string => v ? (v < 0 ? "-" : "+") + Math.abs(v).toFixed(2).replace(/^0\./, ".") : "—";
+                  const sv = Math.abs(pn(sp.supply_esp));
+                  const rv = -Math.abs(pn(sp.return_esp));
+                  const bv = -Math.abs(pn(sp.before_filter));
                   return (
                     <div style={{ fontSize: 14 }}>
-                      <div>Supply: {sp.supply_esp || "—"} | Return: {sp.return_esp || "—"} | Before Filter: {sp.before_filter || "—"}</div>
+                      <div>Supply: {fmt(sv)} | Return: {fmt(rv)} | Before Filter: {fmt(bv)}</div>
+                      {(sv || rv) && <div>Total ESP: {(Math.abs(rv) + sv).toFixed(2).replace(/^0\./, ".")} | Filter & Coil Drop: {bv && rv ? (Math.abs(rv) - Math.abs(bv)).toFixed(2).replace(/^0\./, ".") : "—"}</div>}
                       {sp.filter_type && <div>Filter: {sp.filter_type}</div>}
                     </div>
                   );
