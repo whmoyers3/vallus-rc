@@ -618,6 +618,7 @@ function App() {
   const [showSaveMenu, setShowSaveMenu] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showImportMenu, setShowImportMenu] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsName, setSaveAsName] = useState("");
@@ -1732,9 +1733,13 @@ function App() {
                 </button>
                 {showExportMenu && (
                   <div className="toolbar-menu-popover" onMouseLeave={() => setShowExportMenu(false)}>
-                    <button onClick={() => { setShowExportMenu(false); exportAirflowSheet(); }}>
-                      {exportLoading ? "Exporting…" : "Airflow Sheet"}
-                    </button>
+                    {projectId ? (
+                      <a className="button" href={`/api/projects/${projectId}/airflow`} onClick={() => setShowExportMenu(false)}>Airflow Sheet</a>
+                    ) : (
+                      <button onClick={() => { setShowExportMenu(false); exportAirflowSheet(); }}>
+                        {exportLoading ? "Exporting…" : "Airflow Sheet"}
+                      </button>
+                    )}
                     {projectId && (
                       <a className="button" href={`/api/projects/${projectId}/report`} onClick={() => setShowExportMenu(false)}>PDF Report</a>
                     )}
@@ -1784,6 +1789,47 @@ function App() {
             <a className="button" href="/#/admin">Admin</a>
           </div>
         </header>
+
+        {/* ── Mobile bottom toolbar ─────────────────────────────────── */}
+        <div className="mobile-toolbar">
+          <button
+            className="mobile-overflow-btn"
+            onClick={() => setShowMobileMenu((v) => !v)}
+            aria-label="More actions"
+          >⋯</button>
+          <button
+            className="mobile-calculate-pill"
+            onClick={calculateCurrentProject}
+            disabled={calculateLoading}
+          >
+            {calculateLoading ? "Calculating…" : "Calculate"}
+          </button>
+        </div>
+
+        {showMobileMenu && (
+          <div className="mobile-action-backdrop" onClick={() => setShowMobileMenu(false)}>
+            <div className="mobile-action-sheet" onClick={(e) => e.stopPropagation()}>
+              <div className="mobile-action-sheet-handle" />
+              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); resetToNew(); }}>New</button>
+              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); openProjectDialog(); }}>Open Saved…</button>
+              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); pdfFileInput.current?.click(); }}>Import Salas PDF</button>
+              <div className="mobile-action-divider" />
+              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); handleSaveDraft(); }} disabled={saveLoading}>
+                Save Draft
+              </button>
+              {loads && <>
+                <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); saveProject(); }} disabled={saveLoading}>Save</button>
+                <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); openSaveAs(); }}>Save As…</button>
+                <div className="mobile-action-divider" />
+                {projectId
+                  ? <a className="mobile-action-item" href={`/api/projects/${projectId}/airflow`} onClick={() => setShowMobileMenu(false)}>Airflow Sheet</a>
+                  : <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); exportAirflowSheet(); }}>Airflow Sheet</button>
+                }
+                {projectId && <a className="mobile-action-item" href={`/api/projects/${projectId}/report`} onClick={() => setShowMobileMenu(false)}>PDF Report</a>}
+              </>}
+            </div>
+          </div>
+        )}
 
         <section className="summary-grid">
           <article>
@@ -2272,7 +2318,34 @@ function App() {
             <h3>Load Summary</h3>
             <p>{activeLevel ? "Unit loads and selected system capacities" : "Run Calculate"}</p>
           </div>
-          <div className="load-summary-wrap">
+
+          {/* Mobile-only summary: tons + CFM per unit */}
+          {loads && (
+            <div className="mobile-load-summary">
+              {unitLoadSummaries.map((summary) => (
+                <div className="mobile-unit-card" key={summary.unit.id}>
+                  <div className="mobile-unit-name">{summary.unit.name}</div>
+                  <div className="mobile-unit-stats">
+                    <div className="mobile-unit-stat">
+                      <span className="mobile-stat-label">Selected</span>
+                      <strong className="mobile-stat-value">{decimal(Number(summary.unit.selected_tons ?? 0), 1)} tons</strong>
+                    </div>
+                    <div className="mobile-unit-stat">
+                      <span className="mobile-stat-label">Min required</span>
+                      <strong className="mobile-stat-value">{decimal(summary.tonsMin, 2)} tons</strong>
+                    </div>
+                    <div className="mobile-unit-stat">
+                      <span className="mobile-stat-label">Airflow</span>
+                      <strong className="mobile-stat-value">{number(summary.cfm)} CFM</strong>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Desktop full table */}
+          <div className="load-summary-wrap desktop-only">
             <table className="load-summary-table">
               <thead>
                 <tr>

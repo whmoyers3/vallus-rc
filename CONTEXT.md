@@ -65,6 +65,13 @@
 - **Bulk import** — Upload multiple Salas PDFs at once from the admin panel. Each PDF goes through the full pipeline (extract → import → save as `salas_import` → create `test_battery` copy) sequentially. Warnings are stored on the record, not blocking. If a matching record already exists by full plan identity, the old record and its battery copy are replaced. Progress shown per-file.
 - **Battery reset** — Delete all `test_battery` records and their `salas_import` parents in one action. Used when the importer has changed and all records need re-importing from scratch. Requires explicit confirmation.
 
+## UI
+
+- **Envelope Assemblies** — The UI label for the panel and nav section that manages construction assembly specifications (`type_definitions` in code): wall, glass, ceiling, floor, and door types with their U-values and SHGC. Replaces the earlier label "Types" throughout the interface.
+- **Save Draft** — Persisting project inputs to the database before a calculation has been run. Always available; does not require any required fields to be filled. Distinct from a full save, which attaches calculated results.
+- **Required fields** — The minimum project inputs that must be present before Calculate can run: Name, Location, Building Type, Front Door Faces, Bedrooms, ACH50, SEER. All other project settings are Advanced (collapsed by default).
+- **Mobile load summary** — A reduced view of the Load Summary section shown on narrow viewports, displaying only tonnage and airflow per unit. Full room-level breakdown is desktop/tablet only.
+
 ## Airflow Balancing Export
 
 - **Airflow balancing sheet** — An exportable spreadsheet that field technicians use to test and balance a home's air distribution against the VRC calculation. Pre-filled with room names and calculated loads; blank reading cells the tech fills on site. Generated from the current calculated draft, before saving (lives in the calculate-but-not-saved realm alongside orientation rotation).

@@ -1382,4 +1382,241 @@ label {
 
 .battery-btn { font-size: 12px !important; padding: 3px 10px !important; }
 .battery-btn-added { background: #dcfce7 !important; color: #16a34a !important; border-color: #86efac !important; }
+
+/* ── Mobile toolbar ───────────────────────────────────────────────────────── */
+
+.mobile-toolbar {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  /* Push workspace content above the fixed toolbar */
+  .workspace {
+    padding-bottom: 80px;
+  }
+
+  /* Hide desktop header toolbar */
+  .toolbar {
+    display: none;
+  }
+
+  /* Hide the summary-grid hero numbers on mobile (redundant with mobile load summary) */
+  .summary-grid {
+    display: none;
+  }
+
+  .mobile-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 200;
+    background: #fff;
+    border-top: 1px solid #e0e0e0;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  }
+
+  .mobile-overflow-btn {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    background: #f9fafb;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #1a1a1a;
+  }
+
+  .mobile-overflow-btn:active {
+    background: #f0f0f0;
+  }
+
+  .mobile-calculate-pill {
+    flex: 1;
+    height: 44px;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .mobile-calculate-pill:active {
+    background: #1d4ed8;
+  }
+
+  .mobile-calculate-pill:disabled {
+    background: #93c5fd;
+    cursor: not-allowed;
+  }
+}
+
+/* ── Mobile action sheet ─────────────────────────────────────────────────── */
+
+.mobile-action-backdrop {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .mobile-action-backdrop {
+    display: flex;
+    align-items: flex-end;
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    background: rgba(0, 0, 0, 0.4);
+  }
+
+  .mobile-action-sheet {
+    width: 100%;
+    background: #fff;
+    border-radius: 16px 16px 0 0;
+    padding: 8px 0 calc(16px + env(safe-area-inset-bottom));
+  }
+
+  .mobile-action-sheet-handle {
+    width: 36px;
+    height: 4px;
+    background: #d1d5db;
+    border-radius: 99px;
+    margin: 8px auto 12px;
+  }
+
+  .mobile-action-item {
+    display: block;
+    width: 100%;
+    padding: 14px 20px;
+    text-align: left;
+    background: none;
+    border: none;
+    font-size: 16px;
+    color: #1a1a1a;
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .mobile-action-item:active {
+    background: #f3f4f6;
+  }
+
+  .mobile-action-item:disabled {
+    color: #9ca3af;
+    cursor: not-allowed;
+  }
+
+  .mobile-action-divider {
+    height: 1px;
+    background: #f0f0f0;
+    margin: 4px 0;
+  }
+}
+
+/* ── Mobile load summary ─────────────────────────────────────────────────── */
+
+.mobile-load-summary {
+  display: none;
+}
+
+.desktop-only {
+  display: block;
+}
+
+@media (max-width: 767px) {
+  /* Component rows become stacked cards */
+  .room-component-row {
+    grid-template-columns: 1fr 1fr;
+    padding: 10px 12px;
+    gap: 8px;
+    border-radius: 8px;
+  }
+
+  /* Name field spans full width */
+  .room-component-row > input:first-child {
+    grid-column: 1 / -1;
+    font-weight: 600;
+  }
+
+  /* Remove button floats to the right of its row */
+  .room-component-row > button:last-child {
+    grid-column: 1 / -1;
+    justify-self: end;
+    padding: 4px 12px;
+    font-size: 12px;
+  }
+
+  .room-component-list {
+    gap: 8px;
+  }
+
+  /* Add-component picker wraps chips */
+  .add-component-picker {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 767px) {
+  .mobile-load-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 4px 0 8px;
+  }
+
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-unit-card {
+    background: #f9fafb;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+
+  .mobile-unit-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin-bottom: 10px;
+  }
+
+  .mobile-unit-stats {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .mobile-unit-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 80px;
+  }
+
+  .mobile-stat-label {
+    font-size: 11px;
+    color: #666;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .mobile-stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1a1a1a;
+    font-variant-numeric: tabular-nums;
+  }
+}
 .battery-status-label { font-size: 12px; color: #9ca3af; }

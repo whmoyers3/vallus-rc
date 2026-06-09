@@ -193,6 +193,19 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @api.get("/api/projects/{project_id}/airflow")
+    def get_project_airflow(project_id: int) -> Response:
+        try:
+            payload = database.get_project_payload(project_id)
+        except ProjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="Project not found") from exc
+        xlsx_bytes, filename = build_airflow_workbook(payload)
+        return Response(
+            content=xlsx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @api.get("/api/projects/{project_id}/loads")
     def get_project_loads(project_id: int) -> dict[str, Any]:
         try:
