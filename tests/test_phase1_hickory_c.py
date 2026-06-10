@@ -124,8 +124,8 @@ def test_component_level_assertions():
         ("SE", 14.36),
         ("S", 15.90),
         ("SW", 26.24),
-        ("W", 29.32),
-        ("NW", 18.32),
+        ("W", 29.43),   # SCLeff 111.5
+        ("NW", 18.43),  # SCLeff 61.5
         ("Shaded", 6.22),  # SCLeff 6
         ("Skylight", 46.04),
     ],

@@ -11,8 +11,8 @@ SCLEFF_BY_DIRECTION: dict[str, float] = {
     "SE": 43,
     "S": 50,
     "SW": 97,
-    "W": 111,
-    "NW": 61,
+    "W": 111.5,
+    "NW": 61.5,
     "SHADED": 6,
     "SKYLIGHT": 187,
 }
