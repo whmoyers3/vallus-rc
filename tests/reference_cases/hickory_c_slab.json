@@ -214,9 +214,9 @@
       "tons_min": 1.53,
       "tons_selected": 1.5,
       "cfm": 600,
-      "heating_subtotal": 14171,
-      "heat_loss": 16297,
-      "kw_min": 4.77,
+      "heating_subtotal": 14202,
+      "heat_loss": 16333,
+      "kw_min": 4.79,
       "kw_selected": 8
     },
     "second_floor": {
@@ -225,14 +225,14 @@
       "tons_min": 1.57,
       "tons_selected": 2.0,
       "cfm": 800,
-      "heating_subtotal": 14070,
-      "heat_loss": 16180,
-      "kw_min": 4.74,
+      "heating_subtotal": 14108,
+      "heat_loss": 16225,
+      "kw_min": 4.76,
       "kw_selected": 8
     },
     "whole_house": {
       "sensible_cooling": 27870,
-      "heating": 32477,
+      "heating": 32557,
       "tons_min": 3.1,
       "system_tons": 3.5,
       "system_kw": 15.0,
