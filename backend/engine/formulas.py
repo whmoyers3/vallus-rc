@@ -51,7 +51,7 @@ def glass_load_factor(
 
 
 def cooling_component_load(area: float, u_value: float, cltd: float) -> float:
-    return area * round_half_up_decimal(u_value * cltd, 2)
+    return area * u_value * cltd
 
 
 def heating_component_load(area: float, u_value: float, delta_t: float) -> float:

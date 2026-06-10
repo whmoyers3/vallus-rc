@@ -106,7 +106,7 @@ def _project_from_fixture(data: dict) -> Project:
 
 
 def test_component_level_assertions():
-    assert round(cooling_component_load(367, 0.077, 16)) == 451
+    assert round(cooling_component_load(367, 0.077, 16)) == 452
     assert round(cooling_component_load(1499, 0.026, 55)) == 2144
     assert round(cooling_component_load(1163, 0.100, 0)) == 0
     assert round(standard_infiltration_load(10467, mode="cooling")) == 942
