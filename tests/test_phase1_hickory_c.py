@@ -118,15 +118,15 @@ def test_component_level_assertions():
     ("direction", "expected"),
     [
         # Fractional factors (u=0.35, shgc=0.22): SCLeff * 0.22 + 0.35 * 14
-        ("N", 6.44),
-        ("NE", 7.8326),  # SCLeff 13.33
-        ("E", 13.26),
+        ("N", 6.22),      # SCLeff 6
+        ("NE", 7.8326),   # SCLeff 13.33
+        ("E", 13.04),     # SCLeff 37
         ("SE", 14.36),
         ("S", 15.90),
         ("SW", 26.24),
         ("W", 29.32),
         ("NW", 18.32),
-        ("Shaded", 6.44),
+        ("Shaded", 6.22),  # SCLeff 6
         ("Skylight", 46.04),
     ],
 )

@@ -5,15 +5,15 @@ from __future__ import annotations
 DIRECTIONS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
 SCLEFF_BY_DIRECTION: dict[str, float] = {
-    "N": 7,
+    "N": 6,
     "NE": 13.33,
-    "E": 38,
+    "E": 37,
     "SE": 43,
     "S": 50,
     "SW": 97,
     "W": 111,
     "NW": 61,
-    "SHADED": 7,
+    "SHADED": 6,
     "SKYLIGHT": 187,
 }
 
