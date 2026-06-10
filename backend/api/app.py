@@ -20,6 +20,7 @@ from backend.api.airflow_export import build_airflow_workbook, _orientation_tabl
 from backend.api.database import Database, ProjectNotFound, BatteryError
 from backend.api.detail_report import build_detail_report
 from backend.api.glass_audit import build_glass_factor_audit
+from backend.api.residual_audit import build_residual_audit
 from backend.api.markdown_import import import_room_cooling_markdown
 from backend.api.salas_pdf_import import import_salas_pdf_to_markdown
 from backend.api.serialization import loads_response, project_from_payload
@@ -381,6 +382,19 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
         audit = build_glass_factor_audit(battery)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S")
         filename = f"glass-factor-audit-{now}.json"
+        content = json.dumps(audit, indent=2, default=str)
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @api.get("/api/battery/residual-audit")
+    def battery_residual_audit() -> Response:
+        battery = database.list_battery()
+        audit = build_residual_audit(battery)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S")
+        filename = f"residual-audit-{now}.json"
         content = json.dumps(audit, indent=2, default=str)
         return Response(
             content=content,
