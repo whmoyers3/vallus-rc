@@ -490,6 +490,11 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
             room_components.append(component)
             line_items.append(component)
 
+        floor_area_from_components = sum(
+            item.get("area", 0)
+            for item in room_components
+            if str(item.get("assembly", "")).startswith("F")
+        )
         slab_area = sum(item.get("area", 0) for item in room_components if item.get("assembly") == "F2")
         ceiling_area = sum(item.get("area", 0) for item in room_components if str(item.get("assembly", "")).startswith("C"))
         if explicit_floor_area is not None:
@@ -499,13 +504,13 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
                 if ceiling_area and not slab_area and abs(ceiling_area - explicit_floor_area) <= 2
                 else "Floor"
             )
-        elif slab_area and ceiling_area and ceiling_area > slab_area:
+        elif floor_area_from_components and ceiling_area and ceiling_area > floor_area_from_components:
             # Ceiling footprint is larger — likely open-to-above/stair room; use ceiling area
             lighting_basis = "Ceiling"
             floor_area = ceiling_area
-        elif slab_area:
+        elif floor_area_from_components:
             lighting_basis = "Floor"
-            floor_area = slab_area
+            floor_area = floor_area_from_components
         elif ceiling_area:
             lighting_basis = "Ceiling"
             floor_area = ceiling_area

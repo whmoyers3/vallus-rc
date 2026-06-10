@@ -104,6 +104,11 @@ def _build_room_variance(
     salas_components: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Build component variance data for a single room."""
+    component_heat_available = any(
+        comp.get("salas_heat_btuh") is not None
+        for comp in salas_components
+        if isinstance(comp, dict)
+    )
 
     # Group VRC lines by assembly spec
     vrc_by_spec: dict[tuple, dict[str, float]] = {}
@@ -133,7 +138,8 @@ def _build_room_variance(
         spec = _assembly_spec_key(type_code, u_val, cltd_or_clf)
         bucket = salas_by_spec.setdefault(spec, {"cool": 0.0, "heat": 0.0, "qty": 0.0})
         bucket["cool"] += comp.get("salas_cool_btuh") or 0.0
-        bucket["heat"] += comp.get("salas_heat_btuh") or 0.0
+        if component_heat_available:
+            bucket["heat"] += comp.get("salas_heat_btuh") or 0.0
         bucket["qty"] += comp.get("qty") or 0.0
 
     # Merge specs from both sides
@@ -164,12 +170,13 @@ def _build_room_variance(
         type_bucket["salas_cool"] += s_cool
         type_bucket["vrc_cool"] += v_cool
         type_bucket["delta_cool"] += d_cool
-        type_bucket["salas_heat"] += s_heat
-        type_bucket["vrc_heat"] += v_heat
-        type_bucket["delta_heat"] += d_heat
+        if component_heat_available:
+            type_bucket["salas_heat"] += s_heat
+            type_bucket["vrc_heat"] += v_heat
+            type_bucket["delta_heat"] += d_heat
 
         # Only include non-zero-delta component rows
-        if d_cool != 0 or d_heat != 0:
+        if d_cool != 0 or (component_heat_available and d_heat != 0):
             row: dict[str, Any] = {
                 "type": comp_type,
                 "type_code": type_code,
@@ -185,13 +192,23 @@ def _build_room_variance(
                 "salas_cool": s_cool,
                 "vrc_cool": v_cool,
                 "delta_cool": d_cool,
-                "salas_heat": s_heat,
-                "vrc_heat": v_heat,
-                "delta_heat": d_heat,
             })
+            if component_heat_available:
+                row.update({
+                    "salas_heat": s_heat,
+                    "vrc_heat": v_heat,
+                    "delta_heat": d_heat,
+                })
             components.append(row)
 
+    if not component_heat_available:
+        for totals in by_type.values():
+            totals["salas_heat"] = None
+            totals["vrc_heat"] = None
+            totals["delta_heat"] = None
+
     return {
+        "component_heat_available": component_heat_available,
         "by_type": by_type,
         "components": components,
     }
@@ -285,6 +302,7 @@ def _build_project_entry(
 
         if salas_components:
             variance = _build_room_variance(room_name, vrc_lines, salas_components)
+            room_entry["component_heat_available"] = variance["component_heat_available"]
             room_entry["by_type"] = variance["by_type"]
             room_entry["components"] = variance["components"]
 
@@ -323,15 +341,16 @@ def build_detail_report(battery_records: list[dict[str, Any]]) -> dict[str, Any]
                     "project_count": 0,
                     "total_salas_cool": 0,
                     "total_vrc_cool": 0,
-                    "total_salas_heat": 0,
-                    "total_vrc_heat": 0,
+                    "total_salas_heat": None,
+                    "total_vrc_heat": None,
                     "_delta_pcts_cool": [],
                     "_delta_pcts_heat": [],
                 })
                 bucket["total_salas_cool"] += totals.get("salas_cool", 0)
                 bucket["total_vrc_cool"] += totals.get("vrc_cool", 0)
-                bucket["total_salas_heat"] += totals.get("salas_heat", 0)
-                bucket["total_vrc_heat"] += totals.get("vrc_heat", 0)
+                if room.get("component_heat_available"):
+                    bucket["total_salas_heat"] = (bucket["total_salas_heat"] or 0) + totals.get("salas_heat", 0)
+                    bucket["total_vrc_heat"] = (bucket["total_vrc_heat"] or 0) + totals.get("vrc_heat", 0)
                 project_types_seen.add(comp_type)
 
         for comp_type in project_types_seen:
@@ -345,6 +364,7 @@ def build_detail_report(battery_records: list[dict[str, Any]]) -> dict[str, Any]
         s_heat = bucket["total_salas_heat"]
         v_heat = bucket["total_vrc_heat"]
         bucket["avg_delta_pct_heat"] = round((v_heat - s_heat) / s_heat * 100, 1) if s_heat else None
+        bucket["component_heat_available"] = s_heat is not None and v_heat is not None
         del bucket["_delta_pcts_cool"]
         del bucket["_delta_pcts_heat"]
 

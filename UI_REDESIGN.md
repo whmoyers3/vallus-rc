@@ -103,6 +103,20 @@ On narrow viewports (mobile), the Load Summary section shows a reduced view:
 
 Full room-level breakdown table is desktop/tablet only.
 
+## 5a. Calculated Room Results — Mobile View
+
+On narrow viewports (mobile), the Calculated Room Results section shows per-room **airflow only** (CFM Cool · CFM Heat · CFM Avg). BTU figures are omitted — field techs need airflow distribution, not heat load numbers.
+
+Desktop shows the full table (BTU + airflow).
+
+## 5b. Open Saved — Mobile-Friendly Project Picker
+
+The dialog for loading a saved project must be designed for mobile from the start:
+- Full-screen modal (or bottom sheet) on narrow viewports rather than a small centered dialog.
+- Projects listed as tappable cards (name + location + last modified date), not a table with small hit targets.
+- Search/filter field at the top for projects by name.
+- Desktop can retain a more compact list layout.
+
 ---
 
 ## 6. File Exports

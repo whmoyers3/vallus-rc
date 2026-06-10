@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from backend.api import create_app
+from backend.api.glass_audit import build_glass_factor_audit
 from backend.api.markdown_import import import_room_cooling_markdown
 
 
@@ -110,6 +111,26 @@ def test_markdown_import_prefers_explicit_room_area_and_volume():
     assert room["volume"] == 900
 
 
+def test_markdown_import_uses_framed_floor_as_room_area_basis():
+    crawl_floor = MARKDOWN.replace(
+        "| R1 | Flat Ceiling | 120 sf |",
+        "| R1 | Flat Ceiling | 9 sf |",
+    ).replace(
+        "| F2 | Slab | 120 sf |",
+        "| F1 | Crawl/Unconditioned Floor | 210 sf |",
+    ).replace(
+        "| F2 | Slab | 0 | 0.10 | — | 0.00 Btu/hr-sf |",
+        "| F1 | Framed Floor | 11 | 0.053 | — | 0.58 Btu/hr-sf |",
+    )
+
+    payload, _warnings = import_room_cooling_markdown(crawl_floor, "crawl.md")
+    room = payload["project"]["levels"][0]["rooms"][0]
+
+    assert room["floor_area"] == 210
+    assert room["lighting_area"] == 210
+    assert room["volume"] == 1890
+
+
 def test_markdown_import_requires_glass_u_value_and_shgc():
     missing = MARKDOWN.replace("| G1 | West (Glass) | — | 0.35 | 0.22 |", "| G1 | West (Glass) | — | — | — |")
     client = TestClient(create_app(":memory:"))
@@ -147,3 +168,38 @@ def test_markdown_import_sums_all_unit_system_sizes():
     assert units[1]["selected_tons"] == 1.5
     assert project["selected_system_tons"] == 3.5
     assert project["selected_system_kw"] == 15
+
+
+def test_glass_factor_audit_reports_effective_factor_rows():
+    audit_markdown = MARKDOWN.replace(
+        "| Type | Description | Qty |\n|------|-------------|----:|\n"
+        "| G1 | West (Glass) | 20 sf |\n"
+        "| W1 | West — Above Grade Wall | 100 sf |\n"
+        "| R1 | Flat Ceiling | 120 sf |\n"
+        "| F2 | Slab | 120 sf |\n"
+        "| — | People | 1 person |",
+        "| Type | Description | Qty | Cool BTU/hr | Heat BTU/hr | CLTD (F) |\n"
+        "|------|-------------|----:|------------:|------------:|:--------:|\n"
+        "| G1 | West (Glass) | 20 sf | 580 | - | - |\n"
+        "| W1 | West — Above Grade Wall | 100 sf | 177 | - | 23 |\n"
+        "| R1 | Flat Ceiling | 120 sf | 172 | - | 55 |\n"
+        "| F2 | Slab | 120 sf | - | - | 0 |\n"
+        "| — | People | 1 person | 255 | - | - |",
+    )
+    payload, _warnings = import_room_cooling_markdown(audit_markdown, "example.md")
+    audit = build_glass_factor_audit([{
+        "id": 1,
+        "plan_name": "Example Plan",
+        "payload_json": payload,
+        "import_fidelity_passed": True,
+    }])
+
+    assert audit["summary"]["row_count"] == 1
+    row = audit["rows"][0]
+    assert row["project_name"] == "Example Plan"
+    assert row["room_name"] == "Great Rm"
+    assert row["type_code"] == "G1"
+    assert row["vrc_direction"] == "W"
+    assert row["salas_effective_factor"] == 29
+    assert row["model_factor"] == 29
+    assert row["classification"] == "exact_load"
