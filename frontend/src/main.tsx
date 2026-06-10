@@ -129,6 +129,11 @@ type SavedProject = {
   name: string;
   location: string;
   description: string;
+  builder_name: string;
+  project_name: string;
+  plan_name: string;
+  elevation: string | null;
+  foundation: string | null;
   source: string;
   import_fidelity_passed: boolean | null;
   import_fidelity_details: Record<string, unknown> | null;
@@ -630,6 +635,13 @@ function App() {
   const markdownFileInput = useRef<HTMLInputElement>(null);
   const pdfFileInput = useRef<HTMLInputElement>(null);
   const activeLevel = loads?.levels[0];
+
+  const [appHash, setAppHash] = useState(window.location.hash);
+  useEffect(() => {
+    const handler = () => setAppHash(window.location.hash);
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
+  }, []);
 
   const directionOptions = useMemo(() => facingDirectionOptions(project.front_door_faces), [project.front_door_faces]);
   const calculatedLevelVolume = useMemo(() => project.rooms.reduce((sum, room) => sum + roomVolume(room), 0), [project.rooms]);
@@ -1154,7 +1166,7 @@ function App() {
     }
   }
 
-  async function loadSavedProject(id: number) {
+  async function loadSavedProject(id: number, row?: SavedProject) {
     try {
       const payload: FixturePayload = await fetch(`/api/projects/${id}`).then((r) => r.json());
       const loadedDraft = draftFromPayload(payload);
@@ -1168,12 +1180,12 @@ function App() {
       setShowOpenDialog(false);
       setImportFidelity(null);
       setBatteryStatus("none");
-      // Find the saved row for fidelity info, then check battery status
-      const row = savedProjects.find((p) => p.id === id);
-      if (row?.import_fidelity_passed != null) {
-        setImportFidelity({ passed: row.import_fidelity_passed, details: row.import_fidelity_details ?? null });
+      const resolvedRow = row ?? savedProjects.find((p) => p.id === id);
+      if (resolvedRow?.import_fidelity_passed != null) {
+        setImportFidelity({ passed: resolvedRow.import_fidelity_passed, details: resolvedRow.import_fidelity_details ?? null });
       }
-      checkBatteryStatus(id, row);
+      checkBatteryStatus(id, resolvedRow);
+      window.location.hash = "";
     } catch {
       setOpenDialogError("Could not load that project.");
     }
@@ -1698,6 +1710,12 @@ function App() {
         </div>
       )}
 
+      {appHash === "#/projects" && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 200, overflowY: "auto", background: "#f7f8fa" }}>
+          <ProjectLibrary onOpen={(id, row) => loadSavedProject(id, row)} />
+        </div>
+      )}
+
       <section className="workspace">
         <header className="toolbar">
           <div className="toolbar-title">
@@ -1711,7 +1729,7 @@ function App() {
               {showOpenMenu && (
                 <div className="toolbar-menu-popover" onMouseLeave={() => setShowOpenMenu(false)}>
                   <button onClick={() => { setShowOpenMenu(false); resetToNew(); }}>New</button>
-                  <button onClick={() => { setShowOpenMenu(false); openProjectDialog(); }}>Open Saved…</button>
+                  <button onClick={() => { setShowOpenMenu(false); window.location.hash = "#/projects"; }}>Open Saved…</button>
                   <div className="toolbar-menu-divider" />
                   <button onClick={() => { setShowOpenMenu(false); setShowImportMenu(false); pdfFileInput.current?.click(); }}>Import Salas PDF</button>
                 </div>
@@ -1840,7 +1858,7 @@ function App() {
             <div className="mobile-action-sheet" onClick={(e) => e.stopPropagation()}>
               <div className="mobile-action-sheet-handle" />
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); resetToNew(); }}>New</button>
-              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); openProjectDialog(); }}>Open Saved…</button>
+              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); window.location.hash = "#/projects"; }}>Open Saved…</button>
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); pdfFileInput.current?.click(); }}>Import Salas PDF</button>
               <div className="mobile-action-divider" />
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); handleSaveDraft(); }} disabled={saveLoading}>
@@ -2709,6 +2727,261 @@ function App() {
             )}
           </div>
         </div>
+      )}
+    </main>
+  );
+}
+
+// ── Project Library ───────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 50;
+
+function ProjectLibrary({ onOpen }: { onOpen: (id: number, row: SavedProject) => void }) {
+  const [rows, setRows] = useState<SavedProject[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filterBuilder, setFilterBuilder] = useState("");
+  const [filterFoundation, setFilterFoundation] = useState("");
+  const [filterSource, setFilterSource] = useState("");
+  const [page, setPage] = useState(1);
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch("/api/projects")
+      .then((r) => r.json())
+      .then((data: SavedProject[]) => { setRows(data); setLoading(false); })
+      .catch(() => { setError("Could not load projects."); setLoading(false); });
+  }, []);
+
+  const builders = useMemo(() => {
+    const s = new Set(rows.map((r) => r.builder_name).filter(Boolean));
+    return Array.from(s).sort();
+  }, [rows]);
+
+  const foundations = useMemo(() => {
+    const s = new Set(rows.map((r) => r.foundation ?? "").filter(Boolean));
+    return Array.from(s).sort();
+  }, [rows]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (filterBuilder && r.builder_name !== filterBuilder) return false;
+      if (filterFoundation && (r.foundation ?? "") !== filterFoundation) return false;
+      if (filterSource && r.source !== filterSource) return false;
+      if (q) {
+        const hay = `${r.builder_name} ${r.plan_name} ${r.project_name} ${r.name}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [rows, search, filterBuilder, filterFoundation, filterSource]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  useEffect(() => { setPage(1); }, [search, filterBuilder, filterFoundation, filterSource]);
+
+  function clearFilters() {
+    setSearch("");
+    setFilterBuilder("");
+    setFilterFoundation("");
+    setFilterSource("");
+  }
+
+  async function handleDelete(id: number) {
+    setDeleting(true);
+    try {
+      await fetch(`/api/projects/${id}`, { method: "DELETE" });
+      setRows((current) => current.filter((r) => r.id !== id));
+    } finally {
+      setDeleting(false);
+      setDeleteConfirm(null);
+    }
+  }
+
+  function sourceLabel(source: string) {
+    if (source === "salas_import") return "Salas Import";
+    if (source === "test_battery") return "Test Battery";
+    return "VRC";
+  }
+
+  function planLabel(row: SavedProject) {
+    const parts = [row.plan_name || row.name, row.elevation, row.foundation].filter(Boolean);
+    return parts.join(" · ");
+  }
+
+  const hasFilters = search || filterBuilder || filterFoundation || filterSource;
+
+  return (
+    <main className="admin-root">
+      <div className="admin-topbar">
+        <div className="admin-topbar-row">
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <a href="#" className="admin-btn admin-btn-outline" style={{ textDecoration: "none" }}>← Back</a>
+            <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Projects</h1>
+          </div>
+        </div>
+        <div className="admin-topbar-row" style={{ flexWrap: "wrap", gap: 8 }}>
+          <input
+            className="admin-setting-input"
+            type="search"
+            placeholder="Search builder, plan, project…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ width: 260, flexShrink: 0 }}
+          />
+          <select
+            className="admin-setting-input"
+            value={filterBuilder}
+            onChange={(e) => setFilterBuilder(e.target.value)}
+            style={{ width: 180, flexShrink: 0 }}
+          >
+            <option value="">All builders</option>
+            {builders.map((b) => <option key={b} value={b}>{b}</option>)}
+          </select>
+          <select
+            className="admin-setting-input"
+            value={filterFoundation}
+            onChange={(e) => setFilterFoundation(e.target.value)}
+            style={{ width: 150, flexShrink: 0 }}
+          >
+            <option value="">All foundations</option>
+            {foundations.map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+          <select
+            className="admin-setting-input"
+            value={filterSource}
+            onChange={(e) => setFilterSource(e.target.value)}
+            style={{ width: 160, flexShrink: 0 }}
+          >
+            <option value="">All sources</option>
+            <option value="vrc">VRC</option>
+            <option value="salas_import">Salas Import</option>
+            <option value="test_battery">Test Battery</option>
+          </select>
+          {hasFilters && (
+            <button className="admin-btn admin-btn-outline" onClick={clearFilters}>Clear</button>
+          )}
+        </div>
+      </div>
+
+      {loading && <p style={{ padding: "32px 24px", color: "#888" }}>Loading…</p>}
+      {error && <p style={{ padding: "32px 24px", color: "#c0392b" }}>{error}</p>}
+
+      {!loading && !error && (
+        <>
+          <div style={{ padding: "8px 24px", fontSize: 13, color: "#888" }}>
+            {filtered.length === rows.length
+              ? `${rows.length} project${rows.length !== 1 ? "s" : ""}`
+              : `${filtered.length} of ${rows.length} projects`}
+          </div>
+
+          <div style={{ overflowX: "auto", padding: "0 24px 24px" }}>
+            {filtered.length === 0 ? (
+              <p style={{ color: "#888", marginTop: 32 }}>
+                {hasFilters ? "No projects match the current filters." : "No saved projects yet."}
+              </p>
+            ) : (
+              <table className="battery-table" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left" }}>Plan</th>
+                    <th style={{ textAlign: "left" }}>Builder</th>
+                    <th style={{ textAlign: "left" }}>Foundation</th>
+                    <th style={{ textAlign: "left" }}>Source</th>
+                    <th style={{ textAlign: "left" }}>Last Saved</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageRows.map((row) => (
+                    <tr key={row.id} style={{ cursor: "pointer" }}>
+                      <td>
+                        <button
+                          className="link-button"
+                          style={{ fontWeight: 600, textAlign: "left" }}
+                          onClick={() => onOpen(row.id, row)}
+                        >
+                          {planLabel(row) || `Project #${row.id}`}
+                        </button>
+                      </td>
+                      <td style={{ color: "#555" }}>{row.builder_name || "—"}</td>
+                      <td style={{ color: "#555" }}>{row.foundation || "—"}</td>
+                      <td>
+                        <span style={{
+                          display: "inline-block",
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          background: row.source === "salas_import" ? "#e8f4fd" : row.source === "test_battery" ? "#fdf3e8" : "#f0f0f0",
+                          color: row.source === "salas_import" ? "#2980b9" : row.source === "test_battery" ? "#d68910" : "#555",
+                        }}>
+                          {sourceLabel(row.source)}
+                        </span>
+                      </td>
+                      <td style={{ color: "#888", fontSize: 13 }}>
+                        {row.updated_at.slice(0, 10)}
+                      </td>
+                      <td>
+                        {deleteConfirm === row.id ? (
+                          <span style={{ display: "flex", gap: 6 }}>
+                            <button
+                              className="admin-btn admin-btn-danger"
+                              onClick={() => handleDelete(row.id)}
+                              disabled={deleting}
+                            >
+                              {deleting ? "Deleting…" : "Confirm"}
+                            </button>
+                            <button
+                              className="admin-btn admin-btn-outline"
+                              onClick={() => setDeleteConfirm(null)}
+                              disabled={deleting}
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            className="admin-btn admin-btn-danger"
+                            onClick={() => setDeleteConfirm(row.id)}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {totalPages > 1 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 24px 32px", fontSize: 13 }}>
+              <button
+                className="admin-btn admin-btn-outline"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={safePage === 1}
+              >
+                ←
+              </button>
+              <span style={{ color: "#555" }}>Page {safePage} of {totalPages}</span>
+              <button
+                className="admin-btn admin-btn-outline"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={safePage === totalPages}
+              >
+                →
+              </button>
+            </div>
+          )}
+        </>
       )}
     </main>
   );
