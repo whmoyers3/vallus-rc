@@ -117,20 +117,21 @@ def test_component_level_assertions():
 @pytest.mark.parametrize(
     ("direction", "expected"),
     [
-        ("N", 6),
-        ("NE", 8),
-        ("E", 13),
-        ("SE", 14),
-        ("S", 16),
-        ("SW", 26),
-        ("W", 29),
-        ("NW", 18),
-        ("Shaded", 6),
-        ("Skylight", 46),
+        # Fractional factors (u=0.35, shgc=0.22): SCLeff * 0.22 + 0.35 * 14
+        ("N", 6.44),
+        ("NE", 7.8326),  # SCLeff 13.33
+        ("E", 13.26),
+        ("SE", 14.36),
+        ("S", 15.90),
+        ("SW", 26.24),
+        ("W", 29.32),
+        ("NW", 18.32),
+        ("Shaded", 6.44),
+        ("Skylight", 46.04),
     ],
 )
-def test_hickory_glass_load_factors(direction: str, expected: int):
-    assert glass_load_factor(direction, u_value=0.35, shgc=0.22) == expected
+def test_hickory_glass_load_factors(direction: str, expected: float):
+    assert glass_load_factor(direction, u_value=0.35, shgc=0.22) == pytest.approx(expected, abs=0.01)
 
 
 def test_floor_level_hickory_reference_case():

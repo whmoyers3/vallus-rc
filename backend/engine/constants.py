@@ -4,9 +4,9 @@ from __future__ import annotations
 
 DIRECTIONS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
-SCLEFF_BY_DIRECTION: dict[str, int] = {
+SCLEFF_BY_DIRECTION: dict[str, float] = {
     "N": 7,
-    "NE": 14,
+    "NE": 13.33,
     "E": 38,
     "SE": 43,
     "S": 50,
@@ -21,14 +21,15 @@ SCLEFF_BY_DIRECTION: dict[str, int] = {
 # orientation (not via the SHGF formula used for single-family). Verified against the
 # Evergreen TH resload (9/10 exact). NE corrected 26 -> 21 to match Salas; based on a
 # single townhouse sample — re-confirm when more townhome resloads are available.
-TOWNHOUSE_GLASS_LOAD_FACTORS: dict[str, int] = {
+# S calibrated 19 -> 18.6, W calibrated 37 -> 36.5 from glass factor audit 2026-06-10.
+TOWNHOUSE_GLASS_LOAD_FACTORS: dict[str, float] = {
     "N": 7,
     "NE": 21,
     "E": 32,
     "SE": 26,
-    "S": 19,
+    "S": 18.6,
     "SW": 29,
-    "W": 37,
+    "W": 36.5,
     "NW": 26,
     "SHADED": 7,
     "SKYLIGHT": 52,

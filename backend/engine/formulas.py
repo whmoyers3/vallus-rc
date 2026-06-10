@@ -34,19 +34,20 @@ def glass_load_factor(
     *,
     u_value: float,
     shgc: float,
-    scleff_by_direction: dict[str, int] | None = None,
-) -> int:
+    scleff_by_direction: dict[str, float] | None = None,
+) -> float:
     """Return combined glass cooling factor in BTU/hr-sf.
 
-    Confirmed formula:
-        GLF = round(SCLeff_direction * SHGC + U_glass * 14)
+    Formula: SCLeff_direction * SHGC + U_glass * 14
+
+    Not rounded — Salas computes loads with the fractional factor directly.
     """
 
     factors = scleff_by_direction or SCLEFF_BY_DIRECTION
     key = normalize_direction(direction)
     if key not in factors:
         raise KeyError(f"Unknown glass direction {direction!r}")
-    return round_half_up(factors[key] * shgc + u_value * GLASS_CLTD)
+    return factors[key] * shgc + u_value * GLASS_CLTD
 
 
 def cooling_component_load(area: float, u_value: float, cltd: float) -> float:
