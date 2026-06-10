@@ -632,6 +632,9 @@ function App() {
   const [navPinned, setNavPinned] = useState(false);
   const [activeSection, setActiveSection] = useState("project-settings");
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
+  const [bulkPdfModal, setBulkPdfModal] = useState(false);
+  const [bulkPdfImporting, setBulkPdfImporting] = useState(false);
+  const [bulkPdfProgress, setBulkPdfProgress] = useState<{ done: number; total: number; results: Array<{ filename: string; ok: boolean; plan_name?: string; error?: string; warnings?: string[] }> }>({ done: 0, total: 0, results: [] });
   const markdownFileInput = useRef<HTMLInputElement>(null);
   const pdfFileInput = useRef<HTMLInputElement>(null);
   const activeLevel = loads?.levels[0];
@@ -1124,9 +1127,16 @@ function App() {
   }
 
   async function importSalasPdfFile(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!file) return;
+    if (files.length === 0) return;
+
+    if (files.length > 1) {
+      bulkImportPdfs(files);
+      return;
+    }
+
+    const file = files[0];
     try {
       setValidationMessage("Importing Salas O'Brien PDF...");
       const response = await fetch("/api/import/salas-pdf", {
@@ -1149,6 +1159,47 @@ function App() {
     } catch (error) {
       setValidationMessage(error instanceof Error ? error.message : "Could not import that PDF.");
     }
+  }
+
+  async function bulkImportPdfs(files: File[]) {
+    setBulkPdfProgress({ done: 0, total: files.length, results: [] });
+    setBulkPdfImporting(true);
+    setBulkPdfModal(true);
+    const results: typeof bulkPdfProgress.results = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        const importRes = await fetch("/api/import/salas-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, data_base64: await fileToBase64(file) }),
+        });
+        const importData = await importRes.json();
+        if (!importRes.ok) {
+          results.push({ filename: file.name, ok: false, error: importData.detail ?? "Import failed" });
+          setBulkPdfProgress({ done: i + 1, total: files.length, results: [...results] });
+          continue;
+        }
+        const payload = importData.payload;
+        const warnings: string[] = importData.warnings ?? [];
+        const planName: string = payload?.project?.plan_name ?? file.name;
+        const saveRes = await fetch("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const saveData = await saveRes.json();
+        if (!saveRes.ok) {
+          results.push({ filename: file.name, ok: false, error: saveData.detail ?? "Save failed" });
+        } else {
+          results.push({ filename: file.name, ok: true, plan_name: planName, warnings });
+        }
+      } catch (e) {
+        results.push({ filename: file.name, ok: false, error: e instanceof Error ? e.message : "Network error" });
+      }
+      setBulkPdfProgress({ done: i + 1, total: files.length, results: [...results] });
+    }
+    setBulkPdfImporting(false);
   }
 
   async function openProjectDialog() {
@@ -1791,7 +1842,7 @@ function App() {
             )}
 
             <input ref={markdownFileInput} className="file-input" type="file" accept=".md,text/markdown,text/plain" onChange={importMarkdownFile} />
-            <input ref={pdfFileInput} className="file-input" type="file" accept=".pdf,application/pdf" onChange={importSalasPdfFile} />
+            <input ref={pdfFileInput} className="file-input" type="file" accept=".pdf,application/pdf" multiple onChange={importSalasPdfFile} />
           </div>
           <div className="toolbar-status">
             {projectId && !isDirty
@@ -2724,6 +2775,51 @@ function App() {
                   <button onClick={() => { setSaveAsOpen(false); setSaveAsConflict(null); }}>Cancel</button>
                 </div>
               </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Bulk PDF import modal ──────────────────────────────────────────── */}
+      {bulkPdfModal && (
+        <div className="modal-backdrop" onClick={() => { if (!bulkPdfImporting) setBulkPdfModal(false); }}>
+          <div className="modal" style={{ maxWidth: 540, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Bulk Import</h2>
+              {!bulkPdfImporting && (
+                <button className="modal-close" onClick={() => setBulkPdfModal(false)}>✕</button>
+              )}
+            </div>
+            {bulkPdfImporting && (
+              <div style={{ padding: "16px 0" }}>
+                <div style={{ marginBottom: 8, fontSize: 14, color: "#555" }}>
+                  Importing {bulkPdfProgress.done} of {bulkPdfProgress.total}…
+                </div>
+                <div style={{ height: 6, background: "#e5e7eb", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", background: "#2563eb", borderRadius: 3, width: `${(bulkPdfProgress.done / bulkPdfProgress.total) * 100}%`, transition: "width 0.2s" }} />
+                </div>
+              </div>
+            )}
+            {!bulkPdfImporting && bulkPdfProgress.results.length > 0 && (
+              <div style={{ marginTop: 8, maxHeight: 360, overflowY: "auto" }}>
+                {bulkPdfProgress.results.map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderBottom: "1px solid #f0f0f0", fontSize: 13 }}>
+                    <span style={{ fontSize: 15, flexShrink: 0 }}>{r.ok ? "✓" : "✗"}</span>
+                    <div>
+                      <div style={{ fontWeight: 600, color: r.ok ? "#16a34a" : "#dc2626" }}>
+                        {r.plan_name ?? r.filename}
+                      </div>
+                      {r.error && <div style={{ color: "#dc2626" }}>{r.error}</div>}
+                      {r.warnings?.map((w, j) => <div key={j} style={{ color: "#b45309" }}>{w}</div>)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!bulkPdfImporting && (
+              <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <button onClick={() => setBulkPdfModal(false)}>Close</button>
+              </div>
             )}
           </div>
         </div>
