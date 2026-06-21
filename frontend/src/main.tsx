@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { TakeoffApp } from "./takeoff/TakeoffApp";
 
 type AssemblyRow = { code: string; u_value: number; shgc: number | null; label: string };
 type TypeCategory = "Wall" | "Glass" | "Ceiling" | "Floor" | "Door";
@@ -1879,6 +1880,7 @@ function App() {
             {batteryStatus === "added" && (
               <button className="button battery-btn battery-btn-added" onClick={refreshBatteryCopy} title="Refresh the test battery copy from this project">↻ Battery</button>
             )}
+            <a className="button" href="/#/takeoff">Takeoff</a>
             <a className="button" href="/#/admin">Admin</a>
           </div>
         </header>
@@ -1910,6 +1912,7 @@ function App() {
               <div className="mobile-action-sheet-handle" />
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); resetToNew(); }}>New</button>
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); window.location.hash = "#/projects"; }}>Open Saved…</button>
+              <a className="mobile-action-item" href="/#/takeoff" onClick={() => setShowMobileMenu(false)}>Takeoff</a>
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); pdfFileInput.current?.click(); }}>Import Salas PDF</button>
               <div className="mobile-action-divider" />
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); handleSaveDraft(); }} disabled={saveLoading}>
@@ -5283,6 +5286,7 @@ function Root() {
     return () => window.removeEventListener("hashchange", handler);
   }, []);
   if (hash === "#/admin") return <AdminPanel />;
+  if (hash === "#/takeoff") return <TakeoffApp />;
   if (hash.startsWith("#/airflow-wizard")) return <AirflowWizard />;
   return <App />;
 }

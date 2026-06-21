@@ -488,6 +488,253 @@ button.toolbar-primary:hover {
   margin: 5px 0 3px;
 }
 
+/* ── Takeoff v1 ───────────────────────────────────────────────── */
+.takeoff-root {
+  background: #e8edf1;
+  min-height: 100vh;
+  padding: 16px 20px 24px;
+}
+
+.takeoff-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.takeoff-toolbar h1 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.takeoff-toolbar p {
+  color: #66727e;
+  font-size: 12px;
+  margin: 3px 0 0;
+}
+
+.takeoff-toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.takeoff-layout {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 280px) minmax(520px, 1fr) minmax(260px, 340px);
+  align-items: start;
+}
+
+.takeoff-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.takeoff-panel,
+.takeoff-stage-panel {
+  background: #ffffff;
+  border: 1px solid #d9e0e6;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.takeoff-panel {
+  padding: 12px;
+}
+
+.takeoff-panel-head,
+.takeoff-stage-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.takeoff-panel-head {
+  margin-bottom: 10px;
+}
+
+.takeoff-panel h2,
+.takeoff-stage-head h2 {
+  font-size: 13px;
+  margin: 0;
+}
+
+.takeoff-stage-head {
+  border-bottom: 1px solid #e8edf1;
+  padding: 12px 14px;
+}
+
+.takeoff-stage-head p,
+.takeoff-muted,
+.takeoff-room-row span {
+  color: #66727e;
+  font-size: 12px;
+  margin: 3px 0 0;
+}
+
+.takeoff-panel label {
+  color: #405060;
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  gap: 5px;
+  margin-bottom: 9px;
+}
+
+.takeoff-panel input,
+.takeoff-panel select {
+  border: 1px solid #c9d3dc;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 13px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.takeoff-segmented {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: 1fr;
+  margin-bottom: 10px;
+}
+
+.takeoff-segmented button {
+  text-align: left;
+}
+
+.takeoff-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.takeoff-stats span {
+  background: #f3f6f8;
+  border: 1px solid #d9e0e6;
+  border-radius: 5px;
+  color: #566575;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.takeoff-canvas {
+  display: block;
+  height: auto;
+  max-height: 58vh;
+  width: 100%;
+}
+
+.takeoff-lower-grid {
+  border-top: 1px solid #e8edf1;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(220px, 0.65fr);
+  padding: 12px;
+}
+
+.takeoff-room-form {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.takeoff-message,
+.takeoff-ok {
+  color: #3e6a42;
+  font-size: 12px;
+  margin: 10px 0 0;
+}
+
+.takeoff-issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.takeoff-issue {
+  border-radius: 5px;
+  font-size: 12px;
+  padding: 7px 8px;
+}
+
+.takeoff-issue--error {
+  background: #fdecec;
+  border: 1px solid #f6b6b6;
+  color: #a13939;
+}
+
+.takeoff-issue--warning {
+  background: #fff5df;
+  border: 1px solid #f2d19c;
+  color: #815a15;
+}
+
+.takeoff-room-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.takeoff-room-row {
+  align-items: center;
+  border: 1px solid #e1e7ec;
+  border-radius: 6px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 8px;
+}
+
+.takeoff-room-row strong,
+.takeoff-room-row span {
+  display: block;
+}
+
+.takeoff-code {
+  background: #f7f9fb;
+  border: 1px solid #e1e7ec;
+  border-radius: 6px;
+  color: #283746;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: 300px;
+  overflow: auto;
+  padding: 9px;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 1180px) {
+  .takeoff-layout {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+  .takeoff-layout > .takeoff-sidebar:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 767px) {
+  .takeoff-root {
+    padding: 12px;
+  }
+  .takeoff-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .takeoff-layout,
+  .takeoff-lower-grid {
+    grid-template-columns: 1fr;
+  }
+  .takeoff-room-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* ── Panels ───────────────────────────────────────────────────── */
 .panel {
   overflow: hidden;
