@@ -70,7 +70,7 @@ def _vrc_filename(description: str) -> str:
     return f"{safe}-vrc.pdf" if safe else "vrc.pdf"
 
 
-# ── Password middleware ───────────────────────────────────────────────────────
+# ── Auth middleware ───────────────────────────────────────────────────────────
 
 def _make_auth_middleware(app_password: str):
     """Return an HTTP Basic Auth middleware function.
@@ -102,6 +102,58 @@ def _make_auth_middleware(app_password: str):
     return require_password
 
 
+def _auth_mode(app_password: str, supabase_anon_key: str) -> str:
+    requested = os.getenv("VRC_AUTH_MODE", "").strip().lower()
+    if requested in {"none", "basic", "supabase"}:
+        return requested
+    if supabase_anon_key:
+        return "supabase"
+    if app_password:
+        return "basic"
+    return "none"
+
+
+def _make_supabase_auth_middleware(database: Database):
+    """Require a Supabase Auth access token for API routes.
+
+    The React app itself is served publicly so users see the in-app login screen.
+    All application data/API routes require a valid Supabase session token.
+    """
+    public_paths = {"/api/health", "/health", "/api/auth/config"}
+
+    async def require_supabase_user(request: Request, call_next):
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        if request.url.path in public_paths:
+            return await call_next(request)
+        if not request.url.path.startswith("/api/"):
+            return await call_next(request)
+
+        auth = request.headers.get("Authorization", "")
+        token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+        if not token:
+            token = request.cookies.get("vrc_access_token", "").strip()
+        if not token:
+            return Response(content="Unauthorized", status_code=401)
+
+        try:
+            user_response = database._client.auth.get_user(token)
+            user = getattr(user_response, "user", None)
+            user_id = getattr(user, "id", None)
+            if not user_id:
+                raise ValueError("Supabase token did not return a user.")
+            request.state.user = {
+                "id": user_id,
+                "email": getattr(user, "email", None),
+            }
+        except Exception:
+            return Response(content="Unauthorized", status_code=401)
+
+        return await call_next(request)
+
+    return require_supabase_user
+
+
 # ── Application factory ───────────────────────────────────────────────────────
 
 def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
@@ -109,7 +161,11 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
     api = FastAPI(title="VRC API")
 
     app_password = os.getenv("APP_PASSWORD", "")
-    if app_password:
+    supabase_anon_key = os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY", "")
+    auth_mode = _auth_mode(app_password, supabase_anon_key)
+    if auth_mode == "supabase":
+        api.middleware("http")(_make_supabase_auth_middleware(database))
+    elif auth_mode == "basic" and app_password:
         api.middleware("http")(_make_auth_middleware(app_password))
 
     # ── Health ────────────────────────────────────────────────────────────────
@@ -117,6 +173,19 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
     @api.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @api.get("/api/auth/config")
+    def auth_config() -> dict[str, str]:
+        return {
+            "mode": auth_mode,
+            "supabase_url": os.getenv("SUPABASE_URL", ""),
+            "supabase_anon_key": supabase_anon_key,
+        }
+
+    @api.get("/api/auth/me")
+    def auth_me(request: Request) -> dict[str, Any]:
+        user = getattr(request.state, "user", None) or {}
+        return {"user": user}
 
     # ── Assemblies ────────────────────────────────────────────────────────────
 

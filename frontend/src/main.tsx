@@ -147,6 +147,75 @@ type SaveConflict = {
   nextVersionDescription: string;  // pre-computed "Description v.2" (or v.3, etc.)
 };
 
+type AuthConfig = {
+  mode: "none" | "basic" | "supabase";
+  supabase_url?: string;
+  supabase_anon_key?: string;
+};
+
+type AuthSession = {
+  access_token: string;
+  refresh_token: string;
+  expires_at: number;
+  user?: { id?: string; email?: string };
+};
+
+const authStorageKey = "vrc.supabase.session.v1";
+const nativeFetch = window.fetch.bind(window);
+let authFetchInstalled = false;
+
+function readAuthSession(): AuthSession | null {
+  try {
+    const raw = window.localStorage.getItem(authStorageKey);
+    return raw ? JSON.parse(raw) as AuthSession : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAuthSession(session: AuthSession) {
+  window.localStorage.setItem(authStorageKey, JSON.stringify(session));
+  const maxAge = Math.max(0, Math.floor((session.expires_at - Date.now()) / 1000));
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `vrc_access_token=${encodeURIComponent(session.access_token)}; Path=/; Max-Age=${maxAge}; SameSite=Lax${secure}`;
+}
+
+function clearAuthSession() {
+  window.localStorage.removeItem(authStorageKey);
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `vrc_access_token=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
+}
+
+function apiPath(input: RequestInfo | URL): string | null {
+  const rawUrl = input instanceof Request ? input.url : String(input);
+  try {
+    const url = new URL(rawUrl, window.location.origin);
+    return url.origin === window.location.origin && url.pathname.startsWith("/api/") ? url.pathname : null;
+  } catch {
+    return rawUrl.startsWith("/api/") ? rawUrl.split("?", 1)[0] : null;
+  }
+}
+
+function installAuthenticatedFetch() {
+  if (authFetchInstalled) return;
+  authFetchInstalled = true;
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = apiPath(input);
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    const session = readAuthSession();
+    if (path && path !== "/api/auth/config" && session?.access_token && !headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${session.access_token}`);
+    }
+    const response = await nativeFetch(input, { ...init, headers });
+    if (path && path !== "/api/auth/config" && response.status === 401) {
+      window.dispatchEvent(new Event("vrc-auth-expired"));
+    }
+    return response;
+  };
+}
+
+installAuthenticatedFetch();
+
 const compassDirections: CompassDirection[] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 const standardTons = [1.5, 2, 2.5, 3, 3.5, 4, 5];
 const relativeFacingOffsets: Record<RelativeFacing, number> = {
@@ -5279,6 +5348,224 @@ function AirflowWizard() {
 
 // ── Root: hash-based routing ──────────────────────────────────────────────────
 
+function sessionFromAuthResponse(data: Record<string, any>): AuthSession {
+  const expiresIn = Number(data.expires_in ?? 3600);
+  return {
+    access_token: String(data.access_token ?? ""),
+    refresh_token: String(data.refresh_token ?? ""),
+    expires_at: Date.now() + expiresIn * 1000,
+    user: {
+      id: data.user?.id,
+      email: data.user?.email,
+    },
+  };
+}
+
+async function refreshSupabaseSession(config: AuthConfig, session: AuthSession): Promise<AuthSession> {
+  const response = await nativeFetch(`${config.supabase_url}/auth/v1/token?grant_type=refresh_token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": config.supabase_anon_key ?? "",
+    },
+    body: JSON.stringify({ refresh_token: session.refresh_token }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error_description ?? data.msg ?? data.error ?? "Session refresh failed.");
+  }
+  const refreshed = sessionFromAuthResponse(data);
+  writeAuthSession(refreshed);
+  return refreshed;
+}
+
+async function verifySession(session: AuthSession): Promise<void> {
+  const response = await nativeFetch("/api/auth/me", {
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  });
+  if (!response.ok) {
+    throw new Error("Session could not be verified.");
+  }
+}
+
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const [config, setConfig] = useState<AuthConfig | null>(null);
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    async function initAuth() {
+      try {
+        const response = await nativeFetch("/api/auth/config");
+        const nextConfig = await response.json() as AuthConfig;
+        if (!mounted) return;
+        setConfig(nextConfig);
+        if (nextConfig.mode !== "supabase") {
+          setLoading(false);
+          return;
+        }
+
+        const stored = readAuthSession();
+        if (!stored?.access_token) {
+          setLoading(false);
+          return;
+        }
+
+        let active = stored;
+        if (stored.expires_at - Date.now() < 60_000 && stored.refresh_token) {
+          active = await refreshSupabaseSession(nextConfig, stored);
+        } else {
+          writeAuthSession(stored);
+        }
+        await verifySession(active);
+        if (!mounted) return;
+        setSession(active);
+      } catch {
+        clearAuthSession();
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    initAuth();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    const handler = () => {
+      clearAuthSession();
+      setSession(null);
+      setError("Your session expired. Sign in again.");
+    };
+    window.addEventListener("vrc-auth-expired", handler);
+    return () => window.removeEventListener("vrc-auth-expired", handler);
+  }, []);
+
+  useEffect(() => {
+    if (config?.mode !== "supabase" || !session?.refresh_token) return;
+    const refreshIfNeeded = async () => {
+      const current = readAuthSession();
+      if (!current?.refresh_token) return;
+      if (current.expires_at - Date.now() > 5 * 60_000) return;
+      try {
+        const refreshed = await refreshSupabaseSession(config, current);
+        setSession(refreshed);
+      } catch {
+        clearAuthSession();
+        setSession(null);
+        setError("Your session expired. Sign in again.");
+      }
+    };
+    const interval = window.setInterval(refreshIfNeeded, 60_000);
+    return () => window.clearInterval(interval);
+  }, [config, session]);
+
+  async function signIn(event: React.FormEvent) {
+    event.preventDefault();
+    if (!config?.supabase_url || !config.supabase_anon_key) {
+      setError("Supabase Auth is not configured for this deployment.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await nativeFetch(`${config.supabase_url}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": config.supabase_anon_key,
+        },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error_description ?? data.msg ?? data.error ?? "Sign in failed.");
+      }
+      const nextSession = sessionFromAuthResponse(data);
+      if (!nextSession.access_token || !nextSession.refresh_token) {
+        throw new Error("Supabase did not return a complete session.");
+      }
+      writeAuthSession(nextSession);
+      await verifySession(nextSession);
+      setSession(nextSession);
+    } catch (err) {
+      clearAuthSession();
+      setError(err instanceof Error ? err.message : "Sign in failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function signOut() {
+    clearAuthSession();
+    setSession(null);
+    setPassword("");
+  }
+
+  if (loading) {
+    return <main className="auth-root"><div className="auth-card"><h1>VRC</h1><p>Loading session...</p></div></main>;
+  }
+
+  if (!config || config.mode === "none" || config.mode === "basic") {
+    return <>{children}</>;
+  }
+
+  if (!session) {
+    return (
+      <main className="auth-root">
+        <form className="auth-card" onSubmit={signIn}>
+          <div className="auth-brand">
+            <img src="/logo.png" alt="Baseline" />
+            <div>
+              <h1>VRC</h1>
+              <p>Sign in with your staff account.</p>
+            </div>
+          </div>
+          <label>
+            Email
+            <input
+              autoComplete="email"
+              inputMode="email"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+          </label>
+          <label>
+            Password
+            <input
+              autoComplete="current-password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+          </label>
+          {error && <div className="auth-error">{error}</div>}
+          <button className="toolbar-primary" type="submit" disabled={submitting}>
+            {submitting ? "Signing in..." : "Sign In"}
+          </button>
+        </form>
+      </main>
+    );
+  }
+
+  return (
+    <>
+      <div className="auth-session-pill">
+        <span>{session.user?.email ?? "Signed in"}</span>
+        <button onClick={signOut}>Sign out</button>
+      </div>
+      {children}
+    </>
+  );
+}
+
 function Root() {
   const [hash, setHash] = useState(window.location.hash);
   useEffect(() => {
@@ -5286,10 +5573,11 @@ function Root() {
     window.addEventListener("hashchange", handler);
     return () => window.removeEventListener("hashchange", handler);
   }, []);
-  if (hash === "#/admin") return <AdminPanel />;
-  if (hash === "#/takeoff") return <TakeoffApp />;
-  if (hash.startsWith("#/airflow-wizard")) return <AirflowWizard />;
-  return <App />;
+  let routed = <App />;
+  if (hash === "#/admin") routed = <AdminPanel />;
+  if (hash === "#/takeoff") routed = <TakeoffApp />;
+  if (hash.startsWith("#/airflow-wizard")) routed = <AirflowWizard />;
+  return <AuthGate>{routed}</AuthGate>;
 }
 
 createRoot(document.getElementById("root")!).render(<Root />);
