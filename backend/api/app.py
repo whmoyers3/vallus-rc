@@ -106,8 +106,6 @@ def _auth_mode(app_password: str, supabase_anon_key: str) -> str:
     requested = os.getenv("VRC_AUTH_MODE", "").strip().lower()
     if requested in {"none", "basic", "supabase"}:
         return requested
-    if supabase_anon_key:
-        return "supabase"
     if app_password:
         return "basic"
     return "none"

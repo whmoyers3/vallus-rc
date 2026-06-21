@@ -2,9 +2,22 @@
 
 ## Current Auth Mode
 
-The deployed app should use Supabase Auth for staff login.
+The deployed app should continue using the existing shared-password Basic Auth flow for now.
 
 Set these Vercel environment variables:
+
+```env
+VRC_AUTH_MODE=basic
+APP_PASSWORD=your-current-shared-password
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+```
+
+Supabase staff login is implemented behind a feature flag, but it is deferred for a later deployment. It will not turn on unless `VRC_AUTH_MODE=supabase` is set explicitly.
+
+## Deferred Supabase Staff Login
+
+When the staff username/password rollout is ready, set these Vercel environment variables:
 
 ```env
 VRC_AUTH_MODE=supabase
@@ -13,7 +26,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SUPABASE_ANON_KEY=your-anon-public-key
 ```
 
-`APP_PASSWORD` is now legacy. It is only used when `VRC_AUTH_MODE=basic`, or when no Supabase anon key is configured and the app falls back to Basic Auth.
+`APP_PASSWORD` is only used when `VRC_AUTH_MODE=basic`.
 
 ## Supabase Setup
 
@@ -58,4 +71,3 @@ For legacy Basic Auth testing:
 VRC_AUTH_MODE=basic
 APP_PASSWORD=your-test-password
 ```
-
