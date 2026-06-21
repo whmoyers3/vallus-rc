@@ -250,6 +250,9 @@ Implemented:
 - Added ceiling and floor load-area overrides for simple partial exposure cases.
 - Generated payload preview now emits `C1`, `C2`, `F1`, and `F2` line items from room profile settings.
 - Added room-profile validation for missing height or zero load areas.
+- Reworked room load surfaces into multiple floor/ceiling component rows with assembly, area, and label.
+- Added component checksums against measured room area so split slab/crawl or split ceiling cases can be verified.
+- Added `C3`, `W1`, `W2`, `W3`, `G1`, `G2`, and `G3` default assembly definitions to the takeoff payload preview.
 
 Notes:
 

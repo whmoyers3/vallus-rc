@@ -8,6 +8,7 @@ import type {
   TakeoffPoint,
   TakeoffProject,
   TakeoffRectRoom,
+  TakeoffRoomComponent,
   TakeoffScaleLine,
   TakeoffValidationIssue,
 } from "./types";
@@ -18,16 +19,17 @@ const { difference, intersection, union } = polygonClipping;
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
 const takeoffReferenceMaxBytes = 7 * 1024 * 1024;
-const ceilingTypeOptions = [
-  { id: "flat", label: "Flat ceiling", assembly: "C1" },
-  { id: "vaulted", label: "Vaulted ceiling", assembly: "C2" },
-  { id: "none", label: "No ceiling load", assembly: "" },
-] as const;
-const floorTypeOptions = [
-  { id: "slab", label: "Slab on grade", assembly: "F2" },
-  { id: "framed", label: "Framed/exposed floor", assembly: "F1" },
-  { id: "none", label: "No floor load", assembly: "" },
-] as const;
+const surfaceAssemblyOptions = {
+  floor: [
+    { assembly: "F2", label: "Slab on grade" },
+    { assembly: "F1", label: "Framed / crawl / garage / cantilever" },
+  ],
+  ceiling: [
+    { assembly: "C1", label: "Flat ceiling" },
+    { assembly: "C2", label: "Vaulted ceiling" },
+    { assembly: "C3", label: "Custom ceiling" },
+  ],
+} as const;
 const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "pdf_trace", label: "PDF Trace" },
   { id: "image_trace", label: "Image Trace" },
@@ -74,8 +76,32 @@ function makeInitialFloor(): TakeoffFloor {
     exteriorPolygon: [],
     perimeterLocked: false,
     rooms: [
-      { id: "room-1", name: "Great Room", x: 0, y: 0, width: 18, depth: 16, ceilingHeight: 9, ceilingType: "flat", floorType: "slab" },
-      { id: "room-2", name: "Kitchen", x: 18, y: 0, width: 12, depth: 14, ceilingHeight: 9, ceilingType: "flat", floorType: "slab" },
+      {
+        id: "room-1",
+        name: "Great Room",
+        x: 0,
+        y: 0,
+        width: 18,
+        depth: 16,
+        ceilingHeight: 9,
+        components: [
+          { id: "room-1-floor", surface: "floor", assembly: "F2", area: 288, label: "Slab" },
+          { id: "room-1-ceiling", surface: "ceiling", assembly: "C1", area: 288, label: "Flat ceiling" },
+        ],
+      },
+      {
+        id: "room-2",
+        name: "Kitchen",
+        x: 18,
+        y: 0,
+        width: 12,
+        depth: 14,
+        ceilingHeight: 9,
+        components: [
+          { id: "room-2-floor", surface: "floor", assembly: "F2", area: 168, label: "Slab" },
+          { id: "room-2-ceiling", surface: "ceiling", assembly: "C1", area: 168, label: "Flat ceiling" },
+        ],
+      },
     ],
   };
 }
@@ -135,34 +161,55 @@ function rectArea(rect: Pick<TakeoffRectRoom, "width" | "depth"> & { polygon?: T
   return baseArea + Math.max(0, rect.areaAdjustment ?? 0);
 }
 
-function roomCeilingType(room: TakeoffRectRoom) {
-  return room.ceilingType ?? "flat";
+function legacyComponentsForRoom(room: TakeoffRectRoom): TakeoffRoomComponent[] {
+  const components: TakeoffRoomComponent[] = [];
+  if ((room.floorType ?? "slab") !== "none") {
+    const assembly = room.floorType === "framed" ? "F1" : "F2";
+    components.push({
+      id: `${room.id}-floor-default`,
+      surface: "floor",
+      assembly,
+      area: Math.max(0, room.floorLoadArea ?? rectArea(room)),
+      label: assembly === "F1" ? "Framed / exposed floor" : "Slab",
+    });
+  }
+  if ((room.ceilingType ?? "flat") !== "none") {
+    const assembly = room.ceilingType === "vaulted" ? "C2" : "C1";
+    components.push({
+      id: `${room.id}-ceiling-default`,
+      surface: "ceiling",
+      assembly,
+      area: Math.max(0, room.ceilingLoadArea ?? rectArea(room)),
+      label: assembly === "C2" ? "Vaulted ceiling" : "Flat ceiling",
+    });
+  }
+  return components;
 }
 
-function roomFloorType(room: TakeoffRectRoom) {
-  return room.floorType ?? "slab";
+function roomComponents(room: TakeoffRectRoom) {
+  return room.components?.length ? room.components : legacyComponentsForRoom(room);
 }
 
-function roomCeilingArea(room: TakeoffRectRoom) {
-  if (roomCeilingType(room) === "none") return 0;
-  return Math.max(0, room.ceilingLoadArea ?? rectArea(room));
+function roomSurfaceComponents(room: TakeoffRectRoom, surface: TakeoffRoomComponent["surface"]) {
+  return roomComponents(room).filter((component) => component.surface === surface);
 }
 
-function roomFloorLoadArea(room: TakeoffRectRoom) {
-  if (roomFloorType(room) === "none") return 0;
-  return Math.max(0, room.floorLoadArea ?? rectArea(room));
+function componentAreaTotal(room: TakeoffRectRoom, surface: TakeoffRoomComponent["surface"]) {
+  return roomSurfaceComponents(room, surface).reduce((sum, component) => sum + Math.max(0, component.area || 0), 0);
 }
 
-function ceilingAssembly(room: TakeoffRectRoom) {
-  if (roomCeilingType(room) === "vaulted") return "C2";
-  if (roomCeilingType(room) === "flat") return "C1";
-  return "";
+function defaultComponent(surface: TakeoffRoomComponent["surface"], area: number): TakeoffRoomComponent {
+  return {
+    id: nextId(`component-${surface}`),
+    surface,
+    assembly: surface === "floor" ? "F2" : "C1",
+    area: Math.max(0, Math.round(area)),
+    label: surface === "floor" ? "Slab" : "Flat ceiling",
+  };
 }
 
-function floorAssembly(room: TakeoffRectRoom) {
-  if (roomFloorType(room) === "framed") return "F1";
-  if (roomFloorType(room) === "slab") return "F2";
-  return "";
+function defaultRoomComponents(area: number): TakeoffRoomComponent[] {
+  return [defaultComponent("floor", area), defaultComponent("ceiling", area)];
 }
 
 function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
@@ -383,11 +430,28 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
     if (room.ceilingHeight <= 0) {
       issues.push({ severity: "error", message: `${room.name || "Room"} needs a ceiling height.` });
     }
-    if (roomCeilingType(room) !== "none" && roomCeilingArea(room) <= 0) {
-      issues.push({ severity: "warning", message: `${room.name || "Room"} has a ceiling load type but no ceiling area.` });
+    const roomArea = rectArea(room);
+    const floorArea = componentAreaTotal(room, "floor");
+    const ceilingArea = componentAreaTotal(room, "ceiling");
+    if (floorArea > roomArea + 0.5) {
+      issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.` });
     }
-    if (roomFloorType(room) !== "none" && roomFloorLoadArea(room) <= 0) {
-      issues.push({ severity: "warning", message: `${room.name || "Room"} has a floor load type but no floor area.` });
+    if (ceilingArea > roomArea + 0.5) {
+      issues.push({ severity: "error", message: `${room.name || "Room"} ceiling components exceed room area by ${Math.round(ceilingArea - roomArea)} sf.` });
+    }
+    for (const component of roomComponents(room)) {
+      if (!component.assembly) {
+        issues.push({ severity: "error", message: `${room.name || "Room"} has a component with no assembly code.` });
+      }
+      if (component.area <= 0) {
+        issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${component.surface} component with no area.` });
+      }
+    }
+    if (floorArea < roomArea - 0.5) {
+      issues.push({ severity: "warning", message: `${room.name || "Room"} floor components leave ${Math.round(roomArea - floorArea)} sf unassigned.` });
+    }
+    if (ceilingArea < roomArea - 0.5) {
+      issues.push({ severity: "warning", message: `${room.name || "Room"} ceiling components leave ${Math.round(roomArea - ceilingArea)} sf unassigned.` });
     }
   }
 
@@ -425,28 +489,13 @@ function buildVrcPayload(project: TakeoffProject) {
     zone_id: "zone-default",
   }));
   const lineItems = floor.rooms.flatMap((room) => {
-    const items = [];
-    const floorAssemblyCode = floorAssembly(room);
-    const ceilingAssemblyCode = ceilingAssembly(room);
-    if (floorAssemblyCode) {
-      items.push({
-        name: `${room.name} ${roomFloorType(room) === "framed" ? "framed floor" : "slab"}`,
-        kind: "opaque",
-        room_name: room.name,
-        assembly: floorAssemblyCode,
-        area: roomFloorLoadArea(room),
-      });
-    }
-    if (ceilingAssemblyCode) {
-      items.push({
-        name: `${room.name} ${roomCeilingType(room) === "vaulted" ? "vaulted ceiling" : "ceiling"}`,
-        kind: "opaque",
-        room_name: room.name,
-        assembly: ceilingAssemblyCode,
-        area: roomCeilingArea(room),
-      });
-    }
-    return items;
+    return roomComponents(room).map((component) => ({
+      name: `${room.name} ${component.label || component.assembly}`,
+      kind: "opaque",
+      room_name: room.name,
+      assembly: component.assembly,
+      area: component.area,
+    }));
   });
 
   return {
@@ -479,8 +528,15 @@ function buildVrcPayload(project: TakeoffProject) {
       assemblies: {
         C1: { code: "C1", u_value: 0.033, description: "Flat Ceiling R-30 blown" },
         C2: { code: "C2", u_value: 0.033, description: "Vaulted R-30 batt" },
+        C3: { code: "C3", u_value: 0.033, description: "Custom ceiling" },
         F1: { code: "F1", u_value: 0.053, description: "Framed floor R-19 batt" },
         F2: { code: "F2", u_value: 0.1, description: "Slab on grade" },
+        W1: { code: "W1", u_value: 0.077, description: "Above Grade 2x4 R-13 batt" },
+        W2: { code: "W2", u_value: 0.067, description: "Basement Concrete + 2x4 R-13 batt" },
+        W3: { code: "W3", u_value: 0.053, description: "Attic 2x6 R-19 batt" },
+        G1: { code: "G1", u_value: 0.32, shgc: 0.22, description: "Double Insulated All types Blinds/Draperies" },
+        G2: { code: "G2", u_value: 0.32, shgc: 0.22, description: "Glass type 2" },
+        G3: { code: "G3", u_value: 0.32, shgc: 0.22, description: "Glass type 3" },
       },
       levels: [
         {
@@ -687,6 +743,47 @@ export function TakeoffApp() {
     setFloor((current) => ({
       ...current,
       rooms: current.rooms.map((room) => (room.id === roomId ? { ...room, ...patch } : room)),
+    }));
+  }
+
+  function addRoomComponent(roomId: string, surface: TakeoffRoomComponent["surface"]) {
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        const roomArea = rectArea(room);
+        const assignedArea = componentAreaTotal(room, surface);
+        const remainingArea = Math.max(0, roomArea - assignedArea);
+        const components = roomComponents(room);
+        return {
+          ...room,
+          components: [...components, defaultComponent(surface, remainingArea || roomArea)],
+        };
+      }),
+    }));
+  }
+
+  function updateRoomComponent(roomId: string, componentId: string, patch: Partial<TakeoffRoomComponent>) {
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        return {
+          ...room,
+          components: roomComponents(room).map((component) => (component.id === componentId ? { ...component, ...patch } : component)),
+        };
+      }),
+    }));
+  }
+
+  function removeRoomComponent(roomId: string, componentId: string) {
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => (
+        room.id === roomId
+          ? { ...room, components: roomComponents(room).filter((component) => component.id !== componentId) }
+          : room
+      )),
     }));
   }
 
@@ -987,7 +1084,7 @@ export function TakeoffApp() {
 
   function makeRoomFromPolygon(points: TakeoffPoint[]) {
     const bounds = polygonBounds(points);
-    return {
+    const room = {
       id: nextId("room"),
       name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
       x: bounds.x,
@@ -995,10 +1092,9 @@ export function TakeoffApp() {
       width: bounds.width,
       depth: bounds.depth,
       ceilingHeight: draftRoom.ceilingHeight,
-      ceilingType: "flat",
-      floorType: "slab",
       polygon: points,
     } satisfies TakeoffRectRoom;
+    return { ...room, components: defaultRoomComponents(rectArea(room)) };
   }
 
   function addDraggedRoom(rect: { x: number; y: number; width: number; depth: number }) {
@@ -1256,7 +1352,7 @@ export function TakeoffApp() {
   }
 
   function addRoom() {
-    let room: TakeoffRectRoom = { id: nextId("room"), ...draftRoom, ceilingType: "flat", floorType: "slab" };
+    let room: TakeoffRectRoom = { id: nextId("room"), ...draftRoom };
     const hasConflict = !insidePerimeter(room, floor) || floor.rooms.some((existing) => overlaps(existing, room));
 
     if (hasConflict) {
@@ -1268,6 +1364,7 @@ export function TakeoffApp() {
       room = { ...room, ...openPosition };
     }
 
+    room = { ...room, components: defaultRoomComponents(rectArea(room)) };
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
     setSelectedRoomId(room.id);
     setDraftRoom((current) => {
@@ -2050,9 +2147,9 @@ export function TakeoffApp() {
                   <div>
                     <strong>{room.name}</strong>
                     <span>
-                      {Math.round(rectArea(room))} sf · {room.ceilingHeight} ft
-                      {roomCeilingType(room) !== "none" ? ` · ${ceilingAssembly(room)}` : " · no ceiling"}
-                      {roomFloorType(room) !== "none" ? ` · ${floorAssembly(room)}` : " · no floor"}
+                      {Math.round(rectArea(room))} sf · {room.ceilingHeight} ft ·
+                      floor {Math.round(componentAreaTotal(room, "floor"))} sf ·
+                      ceiling {Math.round(componentAreaTotal(room, "ceiling"))} sf
                     </span>
                   </div>
                   <button onClick={(event) => { event.stopPropagation(); removeRoom(room.id); }}>Remove</button>
@@ -2081,54 +2178,56 @@ export function TakeoffApp() {
                     onChange={(event) => updateRoom(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
                   />
                 </label>
-                <label>
-                  Ceiling load
-                  <select
-                    value={roomCeilingType(selectedRoom)}
-                    onChange={(event) => updateRoom(selectedRoom.id, {
-                      ceilingType: event.target.value as TakeoffRectRoom["ceilingType"],
-                      ceilingLoadArea: event.target.value === "none" ? 0 : selectedRoom.ceilingLoadArea,
-                    })}
-                  >
-                    {ceilingTypeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                  </select>
-                </label>
-                {roomCeilingType(selectedRoom) !== "none" && (
-                  <label>
-                    Ceiling area sf
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={selectedRoom.ceilingLoadArea ?? Math.round(rectArea(selectedRoom))}
-                      onChange={(event) => updateRoom(selectedRoom.id, { ceilingLoadArea: Number(event.target.value) })}
-                    />
-                  </label>
-                )}
-                <label>
-                  Floor load
-                  <select
-                    value={roomFloorType(selectedRoom)}
-                    onChange={(event) => updateRoom(selectedRoom.id, {
-                      floorType: event.target.value as TakeoffRectRoom["floorType"],
-                      floorLoadArea: event.target.value === "none" ? 0 : selectedRoom.floorLoadArea,
-                    })}
-                  >
-                    {floorTypeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                  </select>
-                </label>
-                {roomFloorType(selectedRoom) !== "none" && (
-                  <label>
-                    Floor area sf
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={selectedRoom.floorLoadArea ?? Math.round(rectArea(selectedRoom))}
-                      onChange={(event) => updateRoom(selectedRoom.id, { floorLoadArea: Number(event.target.value) })}
-                    />
-                  </label>
-                )}
+                {(["floor", "ceiling"] as const).map((surface) => {
+                  const roomArea = rectArea(selectedRoom);
+                  const assigned = componentAreaTotal(selectedRoom, surface);
+                  const delta = roomArea - assigned;
+                  return (
+                    <div key={surface} className="takeoff-component-editor">
+                      <div className="takeoff-component-head">
+                        <h3>{surface === "floor" ? "Floor Components" : "Ceiling Components"}</h3>
+                        <button onClick={() => addRoomComponent(selectedRoom.id, surface)}>Add</button>
+                      </div>
+                      <p className={assigned > roomArea + 0.5 ? "takeoff-component-total takeoff-component-total--error" : "takeoff-component-total"}>
+                        Assigned {Math.round(assigned)} / {Math.round(roomArea)} sf
+                        {Math.abs(delta) > 0.5 ? ` · ${delta > 0 ? Math.round(delta) + " sf open" : Math.round(Math.abs(delta)) + " sf over"}` : " · balanced"}
+                      </p>
+                      {roomSurfaceComponents(selectedRoom, surface).length === 0 ? (
+                        <p className="takeoff-muted">No {surface} load components.</p>
+                      ) : (
+                        <div className="takeoff-component-list">
+                          {roomSurfaceComponents(selectedRoom, surface).map((component) => (
+                            <div key={component.id} className="takeoff-component-row">
+                              <select
+                                value={component.assembly}
+                                onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
+                              >
+                                {surfaceAssemblyOptions[surface].map((option) => (
+                                  <option key={option.assembly} value={option.assembly}>{option.assembly} - {option.label}</option>
+                                ))}
+                              </select>
+                              <input
+                                aria-label={`${surface} component label`}
+                                value={component.label ?? ""}
+                                placeholder="Label"
+                                onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { label: event.target.value })}
+                              />
+                              <input
+                                aria-label={`${surface} component area`}
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={component.area}
+                                onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { area: Number(event.target.value) })}
+                              />
+                              <button onClick={() => removeRoomComponent(selectedRoom.id, component.id)}>Remove</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 <p className="takeoff-muted">
                   Geometry {Math.round(rectArea(selectedRoom))} sf · Volume {Math.round(rectArea(selectedRoom) * selectedRoom.ceilingHeight)} cu ft
                 </p>

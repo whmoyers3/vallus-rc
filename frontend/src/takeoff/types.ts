@@ -5,6 +5,14 @@ export type TakeoffPoint = {
   y: number;
 };
 
+export type TakeoffRoomComponent = {
+  id: string;
+  surface: "floor" | "ceiling";
+  assembly: string;
+  area: number;
+  label?: string;
+};
+
 export type TakeoffRectRoom = {
   id: string;
   name: string;
@@ -17,6 +25,7 @@ export type TakeoffRectRoom = {
   floorType?: "none" | "slab" | "framed";
   ceilingLoadArea?: number;
   floorLoadArea?: number;
+  components?: TakeoffRoomComponent[];
   polygon?: TakeoffPoint[];
   areaAdjustment?: number;
 };

@@ -77,18 +77,19 @@ Deliverables:
 - Select a room from the plan or room list.
 - Edit a room name after creation.
 - Edit ceiling height after room creation.
-- Assign basic per-room ceiling treatment: flat, vaulted, or no ceiling load.
-- Assign basic per-room floor treatment: slab, framed/exposed floor, or no floor load.
-- Allow ceiling and floor load-area overrides for partial exposure cases.
+- Add multiple per-room floor component rows with assembly code, area, and label.
+- Add multiple per-room ceiling component rows with assembly code, area, and label.
+- Check floor and ceiling component area totals against measured room area.
 - Persist room profile settings in editable takeoff JSON.
-- Reflect room profile settings in the generated payload preview with `C1`, `C2`, `F1`, and `F2` line items.
+- Reflect room component settings in the generated payload preview with `C1`, `C2`, `C3`, `F1`, and `F2` line items.
 
 Acceptance criteria:
 
 - Room profile edits survive save/reopen.
 - Changing room height updates room volume in the payload preview.
-- Rooms with no ceiling or no floor load omit that component from the payload preview.
-- Area overrides support simple partial floor/ceiling cases until full boundary overlays arrive.
+- Rooms can split floor or ceiling area across multiple component rows.
+- Floor and ceiling component totals show open or over-assigned area against measured geometry.
+- Simple partial floor/ceiling cases work until full boundary overlays arrive.
 
 ## Phase 2 - Exterior Walls, Windows, And Doors
 
