@@ -13,6 +13,10 @@ export type TakeoffRectRoom = {
   width: number;
   depth: number;
   ceilingHeight: number;
+  ceilingType?: "none" | "flat" | "vaulted";
+  floorType?: "none" | "slab" | "framed";
+  ceilingLoadArea?: number;
+  floorLoadArea?: number;
   polygon?: TakeoffPoint[];
   areaAdjustment?: number;
 };

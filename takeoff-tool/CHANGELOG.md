@@ -235,3 +235,22 @@ Implemented:
 - Added a closing-edge preview and light fill once the polygon can be finished.
 - Successful polygon finish now exits polygon drawing mode so later clicks do not keep adding points.
 - Polygon finish now clips to the available conditioned footprint and subtracts existing rooms instead of silently blocking on overlaps.
+
+## 2026-06-21 - Phase 1.5 Room Profiles
+
+Started the Phase 1.5 bridge from geometry drafting to load surfaces.
+
+Implemented:
+
+- Added room selection from the plan and room list.
+- Added a Room Profile editor for drawn rooms.
+- Room names and ceiling heights can now be edited after room creation.
+- Added per-room ceiling treatment: flat, vaulted, or no ceiling load.
+- Added per-room floor treatment: slab, framed/exposed floor, or no floor load.
+- Added ceiling and floor load-area overrides for simple partial exposure cases.
+- Generated payload preview now emits `C1`, `C2`, `F1`, and `F2` line items from room profile settings.
+- Added room-profile validation for missing height or zero load areas.
+
+Notes:
+
+- This is not the full boundary-overlay or 3D ceiling workflow; it is the editable room profile layer needed before Phase 2 windows/doors and later boundary phases.

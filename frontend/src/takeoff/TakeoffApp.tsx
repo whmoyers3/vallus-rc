@@ -18,6 +18,16 @@ const { difference, intersection, union } = polygonClipping;
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
 const takeoffReferenceMaxBytes = 7 * 1024 * 1024;
+const ceilingTypeOptions = [
+  { id: "flat", label: "Flat ceiling", assembly: "C1" },
+  { id: "vaulted", label: "Vaulted ceiling", assembly: "C2" },
+  { id: "none", label: "No ceiling load", assembly: "" },
+] as const;
+const floorTypeOptions = [
+  { id: "slab", label: "Slab on grade", assembly: "F2" },
+  { id: "framed", label: "Framed/exposed floor", assembly: "F1" },
+  { id: "none", label: "No floor load", assembly: "" },
+] as const;
 const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "pdf_trace", label: "PDF Trace" },
   { id: "image_trace", label: "Image Trace" },
@@ -64,8 +74,8 @@ function makeInitialFloor(): TakeoffFloor {
     exteriorPolygon: [],
     perimeterLocked: false,
     rooms: [
-      { id: "room-1", name: "Great Room", x: 0, y: 0, width: 18, depth: 16, ceilingHeight: 9 },
-      { id: "room-2", name: "Kitchen", x: 18, y: 0, width: 12, depth: 14, ceilingHeight: 9 },
+      { id: "room-1", name: "Great Room", x: 0, y: 0, width: 18, depth: 16, ceilingHeight: 9, ceilingType: "flat", floorType: "slab" },
+      { id: "room-2", name: "Kitchen", x: 18, y: 0, width: 12, depth: 14, ceilingHeight: 9, ceilingType: "flat", floorType: "slab" },
     ],
   };
 }
@@ -123,6 +133,36 @@ function nextId(prefix: string) {
 function rectArea(rect: Pick<TakeoffRectRoom, "width" | "depth"> & { polygon?: TakeoffPoint[]; areaAdjustment?: number }) {
   const baseArea = rect.polygon && rect.polygon.length >= 3 ? polygonArea(rect.polygon) : Math.max(0, rect.width) * Math.max(0, rect.depth);
   return baseArea + Math.max(0, rect.areaAdjustment ?? 0);
+}
+
+function roomCeilingType(room: TakeoffRectRoom) {
+  return room.ceilingType ?? "flat";
+}
+
+function roomFloorType(room: TakeoffRectRoom) {
+  return room.floorType ?? "slab";
+}
+
+function roomCeilingArea(room: TakeoffRectRoom) {
+  if (roomCeilingType(room) === "none") return 0;
+  return Math.max(0, room.ceilingLoadArea ?? rectArea(room));
+}
+
+function roomFloorLoadArea(room: TakeoffRectRoom) {
+  if (roomFloorType(room) === "none") return 0;
+  return Math.max(0, room.floorLoadArea ?? rectArea(room));
+}
+
+function ceilingAssembly(room: TakeoffRectRoom) {
+  if (roomCeilingType(room) === "vaulted") return "C2";
+  if (roomCeilingType(room) === "flat") return "C1";
+  return "";
+}
+
+function floorAssembly(room: TakeoffRectRoom) {
+  if (roomFloorType(room) === "framed") return "F1";
+  if (roomFloorType(room) === "slab") return "F2";
+  return "";
 }
 
 function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
@@ -340,6 +380,15 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
     if (!insidePerimeter(room, floor)) {
       issues.push({ severity: "error", message: `${room.name || "Room"} extends beyond the conditioned footprint.` });
     }
+    if (room.ceilingHeight <= 0) {
+      issues.push({ severity: "error", message: `${room.name || "Room"} needs a ceiling height.` });
+    }
+    if (roomCeilingType(room) !== "none" && roomCeilingArea(room) <= 0) {
+      issues.push({ severity: "warning", message: `${room.name || "Room"} has a ceiling load type but no ceiling area.` });
+    }
+    if (roomFloorType(room) !== "none" && roomFloorLoadArea(room) <= 0) {
+      issues.push({ severity: "warning", message: `${room.name || "Room"} has a floor load type but no floor area.` });
+    }
   }
 
   for (let i = 0; i < floor.rooms.length; i += 1) {
@@ -375,13 +424,30 @@ function buildVrcPayload(project: TakeoffProject) {
     unit_id: "unit-whole-house",
     zone_id: "zone-default",
   }));
-  const lineItems = floor.rooms.map((room) => ({
-    name: `${room.name} slab`,
-    kind: "opaque",
-    room_name: room.name,
-    assembly: "F2",
-    area: rectArea(room),
-  }));
+  const lineItems = floor.rooms.flatMap((room) => {
+    const items = [];
+    const floorAssemblyCode = floorAssembly(room);
+    const ceilingAssemblyCode = ceilingAssembly(room);
+    if (floorAssemblyCode) {
+      items.push({
+        name: `${room.name} ${roomFloorType(room) === "framed" ? "framed floor" : "slab"}`,
+        kind: "opaque",
+        room_name: room.name,
+        assembly: floorAssemblyCode,
+        area: roomFloorLoadArea(room),
+      });
+    }
+    if (ceilingAssemblyCode) {
+      items.push({
+        name: `${room.name} ${roomCeilingType(room) === "vaulted" ? "vaulted ceiling" : "ceiling"}`,
+        kind: "opaque",
+        room_name: room.name,
+        assembly: ceilingAssemblyCode,
+        area: roomCeilingArea(room),
+      });
+    }
+    return items;
+  });
 
   return {
     project: {
@@ -411,6 +477,9 @@ function buildVrcPayload(project: TakeoffProject) {
       selected_system_tons: 1,
       selected_system_kw: 5,
       assemblies: {
+        C1: { code: "C1", u_value: 0.033, description: "Flat Ceiling R-30 blown" },
+        C2: { code: "C2", u_value: 0.033, description: "Vaulted R-30 batt" },
+        F1: { code: "F1", u_value: 0.053, description: "Framed floor R-19 batt" },
         F2: { code: "F2", u_value: 0.1, description: "Slab on grade" },
       },
       levels: [
@@ -538,6 +607,7 @@ export function TakeoffApp() {
   const [subtractMode, setSubtractMode] = useState(false);
   const [subtractRoomId, setSubtractRoomId] = useState("");
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [sliceRoomId, setSliceRoomId] = useState("");
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressNextCanvasClickRef = useRef(false);
@@ -560,6 +630,7 @@ export function TakeoffApp() {
   const assignedArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
   const unassignedArea = computedFootprintArea - assignedArea;
   const payload = useMemo(() => buildVrcPayload(takeoffProject), [takeoffProject]);
+  const selectedRoom = floor.rooms.find((room) => room.id === selectedRoomId) ?? null;
   const bounds = footprintBounds(floor);
   const pendingScaleFactor = calibrationFactor(floor.calibration.lines);
   const areaDeltaPct = floor.calibration.expectedArea && computedFootprintArea > 0
@@ -610,6 +681,13 @@ export function TakeoffApp() {
 
   function updateFloor(patch: Partial<TakeoffFloor>) {
     setFloor((current) => ({ ...current, ...patch }));
+  }
+
+  function updateRoom(roomId: string, patch: Partial<TakeoffRectRoom>) {
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => (room.id === roomId ? { ...room, ...patch } : room)),
+    }));
   }
 
   function updatePerimeter(field: "width" | "depth", value: number) {
@@ -917,6 +995,8 @@ export function TakeoffApp() {
       width: bounds.width,
       depth: bounds.depth,
       ceilingHeight: draftRoom.ceilingHeight,
+      ceilingType: "flat",
+      floorType: "slab",
       polygon: points,
     } satisfies TakeoffRectRoom;
   }
@@ -934,6 +1014,7 @@ export function TakeoffApp() {
     const points = clipPolygonToPoints(availablePolygon);
     const room = makeRoomFromPolygon(points);
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
+    setSelectedRoomId(room.id);
     setMessage(`${room.name} added as available polygon area.`);
   }
 
@@ -978,6 +1059,7 @@ export function TakeoffApp() {
     }
     const room = makeRoomFromPolygon(clipPolygonToPoints(availablePolygon));
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
+    setSelectedRoomId(room.id);
     setRoomPolygonDraft([]);
     setRoomPolygonMode(false);
     setTraceTool("select");
@@ -1174,7 +1256,7 @@ export function TakeoffApp() {
   }
 
   function addRoom() {
-    let room: TakeoffRectRoom = { id: nextId("room"), ...draftRoom };
+    let room: TakeoffRectRoom = { id: nextId("room"), ...draftRoom, ceilingType: "flat", floorType: "slab" };
     const hasConflict = !insidePerimeter(room, floor) || floor.rooms.some((existing) => overlaps(existing, room));
 
     if (hasConflict) {
@@ -1187,6 +1269,7 @@ export function TakeoffApp() {
     }
 
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
+    setSelectedRoomId(room.id);
     setDraftRoom((current) => {
       const nextCandidate = { ...current, x: room.x, y: room.y + room.depth };
       const nextRoom: TakeoffRectRoom = { id: "draft", ...nextCandidate };
@@ -1209,6 +1292,7 @@ export function TakeoffApp() {
 
   function removeRoom(id: string) {
     setFloor((current) => ({ ...current, rooms: current.rooms.filter((room) => room.id !== id) }));
+    if (selectedRoomId === id) setSelectedRoomId(null);
   }
 
   async function uploadReferenceAsset(file: File, floorId: string) {
@@ -1730,14 +1814,21 @@ export function TakeoffApp() {
                 </g>
               )}
               {floor.rooms.map((room, index) => (
-                <g key={room.id}>
+                <g
+                  key={room.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedRoomId(room.id);
+                  }}
+                  style={{ cursor: "pointer" }}
+                >
                   {room.polygon && room.polygon.length >= 3 ? (
                     <polygon
                       points={room.polygon.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
                       fill={roomColor(index)}
                       fillOpacity="0.75"
-                      stroke="#324457"
-                      strokeWidth="1.5"
+                      stroke={selectedRoomId === room.id ? "#0f5fa8" : "#324457"}
+                      strokeWidth={selectedRoomId === room.id ? "3" : "1.5"}
                     />
                   ) : (
                     <rect
@@ -1747,8 +1838,8 @@ export function TakeoffApp() {
                       height={room.depth * scale}
                       fill={roomColor(index)}
                       fillOpacity="0.75"
-                      stroke="#324457"
-                      strokeWidth="1.5"
+                      stroke={selectedRoomId === room.id ? "#0f5fa8" : "#324457"}
+                      strokeWidth={selectedRoomId === room.id ? "3" : "1.5"}
                     />
                   )}
                   {room.polygon?.map((point, pointIndex) => (
@@ -1951,15 +2042,100 @@ export function TakeoffApp() {
             </div>
             <div className="takeoff-room-list">
               {floor.rooms.map((room) => (
-                <div key={room.id} className="takeoff-room-row">
+                <div
+                  key={room.id}
+                  className={`takeoff-room-row ${selectedRoomId === room.id ? "takeoff-room-row--selected" : ""}`}
+                  onClick={() => setSelectedRoomId(room.id)}
+                >
                   <div>
                     <strong>{room.name}</strong>
-                    <span>{room.width} x {room.depth} ft · {Math.round(rectArea(room))} sf</span>
+                    <span>
+                      {Math.round(rectArea(room))} sf · {room.ceilingHeight} ft
+                      {roomCeilingType(room) !== "none" ? ` · ${ceilingAssembly(room)}` : " · no ceiling"}
+                      {roomFloorType(room) !== "none" ? ` · ${floorAssembly(room)}` : " · no floor"}
+                    </span>
                   </div>
-                  <button onClick={() => removeRoom(room.id)}>Remove</button>
+                  <button onClick={(event) => { event.stopPropagation(); removeRoom(room.id); }}>Remove</button>
                 </div>
               ))}
             </div>
+          </section>
+
+          <section className="takeoff-panel">
+            <div className="takeoff-panel-head">
+              <h2>Room Profile</h2>
+            </div>
+            {selectedRoom ? (
+              <>
+                <label>
+                  Name
+                  <input value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
+                </label>
+                <label>
+                  Ceiling height ft
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={selectedRoom.ceilingHeight}
+                    onChange={(event) => updateRoom(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  Ceiling load
+                  <select
+                    value={roomCeilingType(selectedRoom)}
+                    onChange={(event) => updateRoom(selectedRoom.id, {
+                      ceilingType: event.target.value as TakeoffRectRoom["ceilingType"],
+                      ceilingLoadArea: event.target.value === "none" ? 0 : selectedRoom.ceilingLoadArea,
+                    })}
+                  >
+                    {ceilingTypeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                  </select>
+                </label>
+                {roomCeilingType(selectedRoom) !== "none" && (
+                  <label>
+                    Ceiling area sf
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={selectedRoom.ceilingLoadArea ?? Math.round(rectArea(selectedRoom))}
+                      onChange={(event) => updateRoom(selectedRoom.id, { ceilingLoadArea: Number(event.target.value) })}
+                    />
+                  </label>
+                )}
+                <label>
+                  Floor load
+                  <select
+                    value={roomFloorType(selectedRoom)}
+                    onChange={(event) => updateRoom(selectedRoom.id, {
+                      floorType: event.target.value as TakeoffRectRoom["floorType"],
+                      floorLoadArea: event.target.value === "none" ? 0 : selectedRoom.floorLoadArea,
+                    })}
+                  >
+                    {floorTypeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                  </select>
+                </label>
+                {roomFloorType(selectedRoom) !== "none" && (
+                  <label>
+                    Floor area sf
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={selectedRoom.floorLoadArea ?? Math.round(rectArea(selectedRoom))}
+                      onChange={(event) => updateRoom(selectedRoom.id, { floorLoadArea: Number(event.target.value) })}
+                    />
+                  </label>
+                )}
+                <p className="takeoff-muted">
+                  Geometry {Math.round(rectArea(selectedRoom))} sf · Volume {Math.round(rectArea(selectedRoom) * selectedRoom.ceilingHeight)} cu ft
+                </p>
+              </>
+            ) : (
+              <p className="takeoff-muted">Select a room on the plan or in the room list.</p>
+            )}
           </section>
 
           <section className="takeoff-panel">

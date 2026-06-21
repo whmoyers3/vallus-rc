@@ -68,6 +68,28 @@ Acceptance criteria:
 - Generated project links to a VRC calculation record.
 - Grid/manual mode can create the same perimeter and room partition data without a PDF background.
 
+## Phase 1.5 - Room Profiles And Basic Load Surfaces
+
+Goal: make drawn rooms editable after creation and capture the first room-level load-surface choices before exterior component placement.
+
+Deliverables:
+
+- Select a room from the plan or room list.
+- Edit a room name after creation.
+- Edit ceiling height after room creation.
+- Assign basic per-room ceiling treatment: flat, vaulted, or no ceiling load.
+- Assign basic per-room floor treatment: slab, framed/exposed floor, or no floor load.
+- Allow ceiling and floor load-area overrides for partial exposure cases.
+- Persist room profile settings in editable takeoff JSON.
+- Reflect room profile settings in the generated payload preview with `C1`, `C2`, `F1`, and `F2` line items.
+
+Acceptance criteria:
+
+- Room profile edits survive save/reopen.
+- Changing room height updates room volume in the payload preview.
+- Rooms with no ceiling or no floor load omit that component from the payload preview.
+- Area overrides support simple partial floor/ceiling cases until full boundary overlays arrive.
+
 ## Phase 2 - Exterior Walls, Windows, And Doors
 
 Goal: produce useful room load components, not just floor areas.

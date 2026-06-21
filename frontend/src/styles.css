@@ -968,10 +968,17 @@ button.toolbar-primary:hover {
   align-items: center;
   border: 1px solid #e1e7ec;
   border-radius: 6px;
+  cursor: pointer;
   display: flex;
   gap: 8px;
   justify-content: space-between;
   padding: 8px;
+}
+
+.takeoff-room-row--selected {
+  background: #eef5fb;
+  border-color: #7fb0d5;
+  box-shadow: inset 3px 0 0 #1f6fb2;
 }
 
 .takeoff-room-row strong,
