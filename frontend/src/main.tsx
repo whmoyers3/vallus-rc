@@ -182,6 +182,7 @@ const compassArrows: Record<CompassDirection, string> = {
 };
 const typeCategories: TypeCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
 const defaultUnitId = "unit-whole-house";
+const defaultLightingWPerSf = 0.502;
 const defaultTypeDefinitions: TypeDefinition[] = [
   { code: "W1", category: "Wall", u_value: 0.077, shgc: null, description: "Above Grade    2x4    R-13 batt" },
   { code: "W2", category: "Wall", u_value: 0.067, shgc: null, description: "Basement    Concrete + 2x4    R-13 batt" },
@@ -228,7 +229,7 @@ const initialProject: ProjectDraft = {
     selected_kw: 5,
     cooling_cfm_divisor: 18.1,
     heating_cfm_divisor: 20.2,
-    auto_lighting_w_per_sf: 0.5,
+    auto_lighting_w_per_sf: defaultLightingWPerSf,
     auto_infiltration: true
   },
   rooms: [{ name: "Test Room", floor_area: 120, ceiling_height: 8.33, volume: 1000, lighting_basis: "Floor", unit_id: defaultUnitId }],

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from backend.engine.constants import DEFAULT_LIGHTING_W_PER_SF
+
 
 DIRECTION_CODES = {
     "North": "N",
@@ -603,7 +605,7 @@ def import_room_cooling_markdown(text: str, filename: str = "") -> tuple[dict[st
                 "selected_kw": selected_kw,
                 "cooling_cfm_divisor": 18.1,
                 "heating_cfm_divisor": 20.2,
-                "auto_lighting_w_per_sf": 0.5,
+                "auto_lighting_w_per_sf": DEFAULT_LIGHTING_W_PER_SF,
                 "auto_infiltration": True,
                 "rooms": rooms,
                 "line_items": line_items,

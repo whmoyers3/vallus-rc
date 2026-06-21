@@ -8,6 +8,7 @@ import type {
 } from "./types";
 
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
+const defaultLightingWPerSf = 0.502;
 const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "pdf_trace", label: "PDF Trace" },
   { id: "image_trace", label: "Image Trace" },
@@ -127,7 +128,7 @@ function buildVrcPayload(project: TakeoffProject) {
           selected_kw: 5,
           cooling_cfm_divisor: 18.1,
           heating_cfm_divisor: 20.2,
-          auto_lighting_w_per_sf: 0.5,
+          auto_lighting_w_per_sf: defaultLightingWPerSf,
           auto_infiltration: true,
           rooms,
           line_items: lineItems,
@@ -429,4 +430,3 @@ export function TakeoffApp() {
     </main>
   );
 }
-
