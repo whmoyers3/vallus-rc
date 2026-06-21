@@ -233,3 +233,4 @@ Implemented:
 - Added Enter to finish and Escape to clear a polygon draft.
 - Added a visible Close marker on the first polygon point.
 - Added a closing-edge preview and light fill once the polygon can be finished.
+- Successful polygon finish now exits polygon drawing mode so later clicks do not keep adding points.

@@ -961,7 +961,7 @@ export function TakeoffApp() {
   function createPolygonRoom(points: TakeoffPoint[]) {
     if (points.length < 3) {
       setMessage("Polygon room needs at least 3 points.");
-      return;
+      return false;
     }
     const bounds = polygonBounds(points);
     const room: TakeoffRectRoom = {
@@ -976,24 +976,28 @@ export function TakeoffApp() {
     };
     if (!insidePerimeter(room, floor)) {
       setMessage("Polygon room extends beyond the conditioned footprint.");
-      return;
+      return false;
     }
     const overlap = floor.rooms.find((existing) => overlaps(existing, room));
     if (overlap) {
       setMessage(`Polygon room overlaps ${overlap.name}.`);
-      return;
+      return false;
     }
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
     setRoomPolygonDraft([]);
+    setRoomPolygonMode(false);
+    setTraceTool("select");
     setMessage(`${room.name} added.`);
+    return true;
   }
 
-  function finishPolygonRoom() {
+  function finishPolygonRoom(suppressCanvasClick = false) {
+    if (suppressCanvasClick) suppressNextCanvasClickRef.current = true;
     if (roomPolygonDraft.length < 3) {
       setMessage("Add at least 3 polygon points before finishing the room.");
-      return;
+      return false;
     }
-    createPolygonRoom(roomPolygonDraft);
+    return createPolygonRoom(roomPolygonDraft);
   }
 
   function addPolygonRoomPoint(point: TakeoffPoint) {
@@ -1830,11 +1834,20 @@ export function TakeoffApp() {
                         key={`draft-room-point-${index}`}
                         onClick={(event) => {
                           if (!canClose) return;
+                          event.preventDefault();
                           event.stopPropagation();
-                          finishPolygonRoom();
+                          finishPolygonRoom(true);
                         }}
                         onPointerDown={(event) => {
-                          if (canClose) event.stopPropagation();
+                          if (!canClose) return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          suppressNextCanvasClickRef.current = true;
+                        }}
+                        onPointerUp={(event) => {
+                          if (!canClose) return;
+                          event.preventDefault();
+                          event.stopPropagation();
                         }}
                         style={{ cursor: canClose ? "pointer" : "default" }}
                       >
@@ -1875,7 +1888,7 @@ export function TakeoffApp() {
                 <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
                 <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
                 <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setTraceTool("select"); }}>Subtract</button>
-                {roomPolygonDraft.length >= 3 && <button className="toolbar-primary" onClick={finishPolygonRoom}>Finish Polygon</button>}
+                {roomPolygonDraft.length >= 3 && <button className="toolbar-primary" onClick={() => finishPolygonRoom()}>Finish Polygon</button>}
                 {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
               </div>
               {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle. Point-by-point room shapes are the next step.</p>}
