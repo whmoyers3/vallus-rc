@@ -153,3 +153,18 @@ Notes:
 
 - Polygon room drawing is V1 geometry; full boolean slicing/merging remains a later hardening task.
 - Unassigned slice detection currently samples by grid cells rather than producing exact CAD-grade polygon differences.
+
+## 2026-06-21 - Crop Click and Precision Fixes
+
+Improved import and drawing precision after field testing.
+
+Implemented:
+
+- Prevented crop drag release from becoming the first calibration scale-line point.
+- Switched canvas click mapping to rendered SVG bounds for better high-zoom cursor precision.
+- Removed forced grid rounding from raw cursor placement; geometry snapping is now handled separately.
+- Dragged rectangle rooms now trim around existing room bounds and keep the largest available open rectangle.
+
+Notes:
+
+- Large rectangle trimming is still rectangle/bounds based; exact polygon clipping remains a later CAD-hardening task.

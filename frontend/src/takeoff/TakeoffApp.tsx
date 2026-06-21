@@ -28,6 +28,7 @@ type DragState = {
   current: TakeoffPoint;
   target?: MovablePointTarget;
 } | null;
+type PlanRect = { x: number; y: number; width: number; depth: number };
 
 function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
@@ -47,6 +48,37 @@ function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
     width: Number(Math.abs(a.x - b.x).toFixed(3)),
     depth: Number(Math.abs(a.y - b.y).toFixed(3)),
   };
+}
+
+function rectsOverlap(a: PlanRect, b: PlanRect) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.depth && a.y + a.depth > b.y;
+}
+
+function subtractRect(rect: PlanRect, blocker: PlanRect) {
+  if (!rectsOverlap(rect, blocker)) return [rect];
+  const rectRight = rect.x + rect.width;
+  const rectBottom = rect.y + rect.depth;
+  const blockerRight = blocker.x + blocker.width;
+  const blockerBottom = blocker.y + blocker.depth;
+  const ix1 = Math.max(rect.x, blocker.x);
+  const iy1 = Math.max(rect.y, blocker.y);
+  const ix2 = Math.min(rectRight, blockerRight);
+  const iy2 = Math.min(rectBottom, blockerBottom);
+  const candidates: PlanRect[] = [
+    { x: rect.x, y: rect.y, width: ix1 - rect.x, depth: rect.depth },
+    { x: ix2, y: rect.y, width: rectRight - ix2, depth: rect.depth },
+    { x: ix1, y: rect.y, width: ix2 - ix1, depth: iy1 - rect.y },
+    { x: ix1, y: iy2, width: ix2 - ix1, depth: rectBottom - iy2 },
+  ];
+  return candidates.filter((candidate) => candidate.width > 0.25 && candidate.depth > 0.25);
+}
+
+function largestOpenRect(rect: PlanRect, blockers: PlanRect[]) {
+  let candidates = [rect];
+  for (const blocker of blockers) {
+    candidates = candidates.flatMap((candidate) => subtractRect(candidate, blocker));
+  }
+  return candidates.sort((a, b) => b.width * b.depth - a.width * a.depth)[0] ?? null;
 }
 
 function lineLength(line: Pick<TakeoffScaleLine, "start" | "end">) {
@@ -177,6 +209,11 @@ function roomCenter(room: TakeoffRectRoom) {
     x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
     y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
   };
+}
+
+function roomBounds(room: TakeoffRectRoom): PlanRect {
+  if (room.polygon && room.polygon.length >= 3) return polygonBounds(room.polygon);
+  return { x: room.x, y: room.y, width: room.width, depth: room.depth };
 }
 
 function pointInRoom(point: TakeoffPoint, room: TakeoffRectRoom) {
@@ -384,6 +421,7 @@ export function TakeoffApp() {
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [sliceRoomId, setSliceRoomId] = useState("");
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
+  const suppressNextCanvasClickRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -489,17 +527,14 @@ export function TakeoffApp() {
 
   function pointFromCanvasEvent(event: React.MouseEvent<SVGSVGElement>) {
     const svg = event.currentTarget;
-    const transform = svg.getScreenCTM();
-    if (!transform) return null;
-    const point = svg.createSVGPoint();
-    point.x = event.clientX;
-    point.y = event.clientY;
-    const svgPoint = point.matrixTransform(transform.inverse());
-    const snapFeet = Math.max(0.25, floor.scale.gridSnapInches / 12);
-    const rawX = (svgPoint.x - offsetX) / scale;
-    const rawY = (svgPoint.y - offsetY) / scale;
-    const x = Math.min(floor.designGrid.width, Math.max(0, Math.round(rawX / snapFeet) * snapFeet));
-    const y = Math.min(floor.designGrid.depth, Math.max(0, Math.round(rawY / snapFeet) * snapFeet));
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    const svgX = (event.clientX - rect.left) * (drawingWidth / rect.width);
+    const svgY = (event.clientY - rect.top) * (drawingHeight / rect.height);
+    const rawX = (svgX - offsetX) / scale;
+    const rawY = (svgY - offsetY) / scale;
+    const x = Math.min(floor.designGrid.width, Math.max(0, rawX));
+    const y = Math.min(floor.designGrid.depth, Math.max(0, rawY));
     return { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
   }
 
@@ -736,13 +771,18 @@ export function TakeoffApp() {
           depth: Math.min(rect.y + rect.depth, floorBounds.y + floorBounds.depth) - Math.max(floorBounds.y, rect.y),
         }
       : rect;
+    const openRect = largestOpenRect(snappedRect, floor.rooms.map((room) => roomBounds(room)));
+    if (!openRect) {
+      setMessage("No open room area remains after snapping around existing rooms.");
+      return;
+    }
     const room: TakeoffRectRoom = {
       id: nextId("room"),
       name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
-      x: Number(snappedRect.x.toFixed(3)),
-      y: Number(snappedRect.y.toFixed(3)),
-      width: Number(Math.max(0, snappedRect.width).toFixed(3)),
-      depth: Number(Math.max(0, snappedRect.depth).toFixed(3)),
+      x: Number(openRect.x.toFixed(3)),
+      y: Number(openRect.y.toFixed(3)),
+      width: Number(Math.max(0, openRect.width).toFixed(3)),
+      depth: Number(Math.max(0, openRect.depth).toFixed(3)),
       ceilingHeight: draftRoom.ceilingHeight,
     };
     if (!insidePerimeter(room, floor)) {
@@ -755,7 +795,7 @@ export function TakeoffApp() {
       return;
     }
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
-    setMessage(`${room.name} added.`);
+    setMessage(`${room.name} added${rectsOverlap(rect, openRect) && (room.width !== rect.width || room.depth !== rect.depth) ? " and snapped to the open area" : ""}.`);
   }
 
   function createPolygonRoom(points: TakeoffPoint[]) {
@@ -854,6 +894,7 @@ export function TakeoffApp() {
     }
     const kind = dragState.kind;
     setDragState(null);
+    suppressNextCanvasClickRef.current = true;
     if (kind === "move-point") {
       setMessage("Point moved.");
       return;
@@ -928,6 +969,10 @@ export function TakeoffApp() {
   }
 
   function handleCanvasClick(event: React.MouseEvent<SVGSVGElement>) {
+    if (suppressNextCanvasClickRef.current) {
+      suppressNextCanvasClickRef.current = false;
+      return;
+    }
     const point = pointFromCanvasEvent(event);
     if (!point) return;
     if (event.shiftKey || dragState) return;
