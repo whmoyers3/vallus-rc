@@ -13,6 +13,8 @@ export type TakeoffRectRoom = {
   width: number;
   depth: number;
   ceilingHeight: number;
+  polygon?: TakeoffPoint[];
+  areaAdjustment?: number;
 };
 
 export type TakeoffScaleLine = {
@@ -60,6 +62,11 @@ export type TakeoffFloor = {
   exteriorPolygon: TakeoffPoint[];
   perimeterLocked: boolean;
   rooms: TakeoffRectRoom[];
+  attributedSlices?: Array<{
+    id: string;
+    roomId: string;
+    cells: Array<{ x: number; y: number; width: number; depth: number }>;
+  }>;
 };
 
 export type TakeoffProject = {

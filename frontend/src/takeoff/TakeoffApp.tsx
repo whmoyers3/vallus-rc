@@ -21,18 +21,21 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "grid_manual", label: "Grid Manual" },
 ];
 type WorkflowStep = "crop" | "calibrate" | "trace";
+type MovablePointTarget = { type: "exterior"; index: number } | { type: "room"; roomId: string; index: number };
 type DragState = {
-  kind: "crop" | "room";
+  kind: "crop" | "room" | "move-point";
   start: TakeoffPoint;
   current: TakeoffPoint;
+  target?: MovablePointTarget;
 } | null;
 
 function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
 }
 
-function rectArea(rect: Pick<TakeoffRectRoom, "width" | "depth">) {
-  return Math.max(0, rect.width) * Math.max(0, rect.depth);
+function rectArea(rect: Pick<TakeoffRectRoom, "width" | "depth"> & { polygon?: TakeoffPoint[]; areaAdjustment?: number }) {
+  const baseArea = rect.polygon && rect.polygon.length >= 3 ? polygonArea(rect.polygon) : Math.max(0, rect.width) * Math.max(0, rect.depth);
+  return baseArea + Math.max(0, rect.areaAdjustment ?? 0);
 }
 
 function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
@@ -61,6 +64,8 @@ function scaleRoom(room: TakeoffRectRoom, factor: number): TakeoffRectRoom {
     y: Number((room.y * factor).toFixed(3)),
     width: Number((room.width * factor).toFixed(3)),
     depth: Number((room.depth * factor).toFixed(3)),
+    polygon: room.polygon?.map((point) => scalePoint(point, factor)),
+    areaAdjustment: room.areaAdjustment ? Number((room.areaAdjustment * factor * factor).toFixed(3)) : room.areaAdjustment,
   };
 }
 
@@ -119,6 +124,19 @@ function pointOnSegment(point: TakeoffPoint, a: TakeoffPoint, b: TakeoffPoint) {
   return dot <= squaredLength + 0.001;
 }
 
+function closestPointOnSegment(point: TakeoffPoint, a: TakeoffPoint, b: TakeoffPoint) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return a;
+  const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared));
+  return { x: a.x + t * dx, y: a.y + t * dy };
+}
+
+function distance(a: TakeoffPoint, b: TakeoffPoint) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 function pointInPolygon(point: TakeoffPoint, polygon: TakeoffPoint[]) {
   if (polygon.length < 3) return false;
   let inside = false;
@@ -143,6 +161,7 @@ function footprintBounds(floor: TakeoffFloor) {
 }
 
 function roomCorners(room: TakeoffRectRoom): TakeoffPoint[] {
+  if (room.polygon && room.polygon.length >= 3) return room.polygon;
   return [
     { x: room.x, y: room.y },
     { x: room.x + room.width, y: room.y },
@@ -151,7 +170,26 @@ function roomCorners(room: TakeoffRectRoom): TakeoffPoint[] {
   ];
 }
 
+function roomCenter(room: TakeoffRectRoom) {
+  const points = roomCorners(room);
+  if (points.length === 0) return { x: room.x, y: room.y };
+  return {
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+  };
+}
+
+function pointInRoom(point: TakeoffPoint, room: TakeoffRectRoom) {
+  if (room.polygon && room.polygon.length >= 3) return pointInPolygon(point, room.polygon);
+  return point.x >= room.x && point.x <= room.x + room.width && point.y >= room.y && point.y <= room.y + room.depth;
+}
+
 function overlaps(a: TakeoffRectRoom, b: TakeoffRectRoom) {
+  if (a.polygon || b.polygon) {
+    const aBounds = polygonBounds(roomCorners(a));
+    const bBounds = polygonBounds(roomCorners(b));
+    return aBounds.x < bBounds.x + bBounds.width && aBounds.x + aBounds.width > bBounds.x && aBounds.y < bBounds.y + bBounds.depth && aBounds.y + aBounds.depth > bBounds.y;
+  }
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.depth && a.y + a.depth > b.y;
 }
 
@@ -341,6 +379,10 @@ export function TakeoffApp() {
   const [referenceRenderStatus, setReferenceRenderStatus] = useState("");
   const [dragState, setDragState] = useState<DragState>(null);
   const [roomDrawMode, setRoomDrawMode] = useState(false);
+  const [roomPolygonMode, setRoomPolygonMode] = useState(false);
+  const [roomPolygonDraft, setRoomPolygonDraft] = useState<TakeoffPoint[]>([]);
+  const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
+  const [sliceRoomId, setSliceRoomId] = useState("");
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -370,6 +412,32 @@ export function TakeoffApp() {
     : 0;
   const activeDragRect = dragState ? rectFromPoints(dragState.start, dragState.current) : null;
   const visibleCrop = floor.reference?.crop ?? { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
+  const unassignedCells = useMemo(() => {
+    if (floor.exteriorPolygon.length < 3) return [];
+    const cellSize = Math.max(1, floor.scale.feetPerGrid);
+    const floorBounds = footprintBounds(floor);
+    const attributed = floor.attributedSlices?.flatMap((slice) => slice.cells) ?? [];
+    const cells: Array<{ x: number; y: number; width: number; depth: number }> = [];
+
+    for (let y = floorBounds.y; y < floorBounds.y + floorBounds.depth; y += cellSize) {
+      for (let x = floorBounds.x; x < floorBounds.x + floorBounds.width; x += cellSize) {
+        const cell = {
+          x: Number(x.toFixed(3)),
+          y: Number(y.toFixed(3)),
+          width: Math.min(cellSize, floorBounds.x + floorBounds.width - x),
+          depth: Math.min(cellSize, floorBounds.y + floorBounds.depth - y),
+        };
+        const center = { x: cell.x + cell.width / 2, y: cell.y + cell.depth / 2 };
+        const inFootprint = pointInPolygon(center, floor.exteriorPolygon);
+        const inRoom = floor.rooms.some((room) => pointInRoom(center, room));
+        const alreadyAttributed = attributed.some((slice) => center.x >= slice.x && center.x <= slice.x + slice.width && center.y >= slice.y && center.y <= slice.y + slice.depth);
+        if (inFootprint && !inRoom && !alreadyAttributed) cells.push(cell);
+      }
+    }
+
+    return cells.slice(0, 500);
+  }, [floor]);
+  const unassignedCellArea = unassignedCells.reduce((sum, cell) => sum + cell.width * cell.depth, 0);
 
   const canvasWidth = 720;
   const canvasHeight = 420;
@@ -433,6 +501,77 @@ export function TakeoffApp() {
     const x = Math.min(floor.designGrid.width, Math.max(0, Math.round(rawX / snapFeet) * snapFeet));
     const y = Math.min(floor.designGrid.depth, Math.max(0, Math.round(rawY / snapFeet) * snapFeet));
     return { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
+  }
+
+  function snapToExistingGeometry(point: TakeoffPoint) {
+    const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
+    let best = { point, distance: threshold };
+    const segmentSets = [
+      floor.exteriorPolygon,
+      ...floor.rooms.map((room) => roomCorners(room)),
+    ].filter((points) => points.length >= 2);
+
+    for (const points of segmentSets) {
+      for (let index = 0; index < points.length; index += 1) {
+        const start = points[index];
+        const end = points[(index + 1) % points.length];
+        if (distance(point, start) <= best.distance) best = { point: start, distance: distance(point, start) };
+        const projected = closestPointOnSegment(point, start, end);
+        const projectedDistance = distance(point, projected);
+        if (projectedDistance <= best.distance) best = { point: projected, distance: projectedDistance };
+      }
+    }
+
+    return { x: Number(best.point.x.toFixed(3)), y: Number(best.point.y.toFixed(3)) };
+  }
+
+  function findMovablePoint(point: TakeoffPoint) {
+    const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
+    let bestTarget: MovablePointTarget | null = null;
+    let bestDistance = threshold;
+    for (let index = 0; index < floor.exteriorPolygon.length; index += 1) {
+      const candidate = floor.exteriorPolygon[index];
+      const candidateDistance = distance(point, candidate);
+      if (candidateDistance <= bestDistance) {
+        bestTarget = { type: "exterior", index };
+        bestDistance = candidateDistance;
+      }
+    }
+    for (const room of floor.rooms) {
+      if (!room.polygon) continue;
+      for (let index = 0; index < room.polygon.length; index += 1) {
+        const candidate = room.polygon[index];
+        const candidateDistance = distance(point, candidate);
+        if (candidateDistance <= bestDistance) {
+          bestTarget = { type: "room", roomId: room.id, index };
+          bestDistance = candidateDistance;
+        }
+      }
+    }
+    return bestTarget;
+  }
+
+  function movePoint(target: MovablePointTarget | undefined, point: TakeoffPoint) {
+    if (!target) return;
+    const snapped = snapToExistingGeometry(point);
+    setFloor((current) => {
+      if (target.type === "exterior") {
+        return {
+          ...current,
+          perimeterLocked: false,
+          exteriorPolygon: current.exteriorPolygon.map((existing, index) => (index === target.index ? snapped : existing)),
+        };
+      }
+      return {
+        ...current,
+        rooms: current.rooms.map((room) => {
+          if (room.id !== target.roomId || !room.polygon) return room;
+          const polygon = room.polygon.map((existing, index) => (index === target.index ? snapped : existing));
+          const bounds = polygonBounds(polygon);
+          return { ...room, ...bounds, polygon };
+        }),
+      };
+    });
   }
 
   function addCalibrationPoint(point: TakeoffPoint) {
@@ -518,6 +657,10 @@ export function TakeoffApp() {
             crop: current.reference.crop ? scaleRect(current.reference.crop, factor) : current.reference.crop,
           }
         : current.reference,
+      attributedSlices: current.attributedSlices?.map((slice) => ({
+        ...slice,
+        cells: slice.cells.map((cell) => scaleRect(cell, factor)),
+      })),
       calibration: {
         ...current.calibration,
         lines: current.calibration.lines.map((line) => scaleLine(line, factor)),
@@ -584,13 +727,22 @@ export function TakeoffApp() {
       setMessage("Drag a larger area to create a room.");
       return;
     }
+    const floorBounds = footprintBounds(floor);
+    const snappedRect = floor.exteriorPolygon.length >= 3
+      ? {
+          x: Math.max(floorBounds.x, rect.x),
+          y: Math.max(floorBounds.y, rect.y),
+          width: Math.min(rect.x + rect.width, floorBounds.x + floorBounds.width) - Math.max(floorBounds.x, rect.x),
+          depth: Math.min(rect.y + rect.depth, floorBounds.y + floorBounds.depth) - Math.max(floorBounds.y, rect.y),
+        }
+      : rect;
     const room: TakeoffRectRoom = {
       id: nextId("room"),
       name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      depth: rect.depth,
+      x: Number(snappedRect.x.toFixed(3)),
+      y: Number(snappedRect.y.toFixed(3)),
+      width: Number(Math.max(0, snappedRect.width).toFixed(3)),
+      depth: Number(Math.max(0, snappedRect.depth).toFixed(3)),
       ceilingHeight: draftRoom.ceilingHeight,
     };
     if (!insidePerimeter(room, floor)) {
@@ -606,9 +758,73 @@ export function TakeoffApp() {
     setMessage(`${room.name} added.`);
   }
 
+  function createPolygonRoom(points: TakeoffPoint[]) {
+    if (points.length < 3) {
+      setMessage("Polygon room needs at least 3 points.");
+      return;
+    }
+    const bounds = polygonBounds(points);
+    const room: TakeoffRectRoom = {
+      id: nextId("room"),
+      name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      depth: bounds.depth,
+      ceilingHeight: draftRoom.ceilingHeight,
+      polygon: points,
+    };
+    if (!insidePerimeter(room, floor)) {
+      setMessage("Polygon room extends beyond the conditioned footprint.");
+      return;
+    }
+    const overlap = floor.rooms.find((existing) => overlaps(existing, room));
+    if (overlap) {
+      setMessage(`Polygon room overlaps ${overlap.name}.`);
+      return;
+    }
+    setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
+    setRoomPolygonDraft([]);
+    setMessage(`${room.name} added.`);
+  }
+
+  function addPolygonRoomPoint(point: TakeoffPoint) {
+    const snapped = snapToExistingGeometry(point);
+    if (roomPolygonDraft.length >= 3 && distance(snapped, roomPolygonDraft[0]) <= Math.max(1, floor.scale.gridSnapInches / 12)) {
+      createPolygonRoom(roomPolygonDraft);
+      return;
+    }
+    setRoomPolygonDraft((current) => [...current, snapped]);
+    setMessage("Polygon point added. Click back near the first point to complete the room.");
+  }
+
+  function assignHighlightedSlices() {
+    const roomId = sliceRoomId || floor.rooms[0]?.id;
+    if (!roomId || unassignedCells.length === 0) return;
+    const sliceArea = unassignedCellArea;
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => (room.id === roomId ? { ...room, areaAdjustment: (room.areaAdjustment ?? 0) + sliceArea } : room)),
+      attributedSlices: [
+        ...(current.attributedSlices ?? []),
+        { id: nextId("slice"), roomId, cells: unassignedCells },
+      ],
+    }));
+    setMessage(`${Math.round(sliceArea)} sf attributed to ${floor.rooms.find((room) => room.id === roomId)?.name ?? "room"}.`);
+  }
+
   function handleCanvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
     const point = pointFromCanvasEvent(event);
     if (!point) return;
+    if (event.shiftKey) {
+      const target = findMovablePoint(point);
+      if (target) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setDragState({ kind: "move-point", start: point, current: point, target });
+        setMessage("Move point started. Drag to the new location.");
+      }
+      return;
+    }
     if (workflowStep === "crop") {
       event.currentTarget.setPointerCapture(event.pointerId);
       setDragState({ kind: "crop", start: point, current: point });
@@ -624,6 +840,9 @@ export function TakeoffApp() {
     if (!dragState) return;
     const point = pointFromCanvasEvent(event);
     if (!point) return;
+    if (dragState.kind === "move-point") {
+      movePoint(dragState.target, point);
+    }
     setDragState((current) => (current ? { ...current, current: point } : current));
   }
 
@@ -635,6 +854,10 @@ export function TakeoffApp() {
     }
     const kind = dragState.kind;
     setDragState(null);
+    if (kind === "move-point") {
+      setMessage("Point moved.");
+      return;
+    }
     if (kind === "crop") {
       applyCrop(rect);
       return;
@@ -693,7 +916,7 @@ export function TakeoffApp() {
   function fitPlan() {
     const planWidth = Math.max(bounds.width, 1);
     const planDepth = Math.max(bounds.depth, 1);
-    const nextZoom = Math.min(4, Math.max(0.5, Math.min((canvasWidth - 56) / (planWidth * baseScale), (canvasHeight - 56) / (planDepth * baseScale))));
+    const nextZoom = Math.min(8, Math.max(0.5, Math.min((canvasWidth - 56) / (planWidth * baseScale), (canvasHeight - 56) / (planDepth * baseScale))));
     setZoom(Number(nextZoom.toFixed(2)));
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -707,12 +930,17 @@ export function TakeoffApp() {
   function handleCanvasClick(event: React.MouseEvent<SVGSVGElement>) {
     const point = pointFromCanvasEvent(event);
     if (!point) return;
+    if (event.shiftKey || dragState) return;
     if (workflowStep === "calibrate") {
       addCalibrationPoint(point);
       return;
     }
+    if (workflowStep === "trace" && roomPolygonMode) {
+      addPolygonRoomPoint(point);
+      return;
+    }
     if (traceTool !== "exterior" || floor.perimeterLocked) return;
-    addExteriorPoint(point);
+    addExteriorPoint(snapToExistingGeometry(point));
   }
 
   function addRoom() {
@@ -1008,7 +1236,7 @@ export function TakeoffApp() {
                 <button onClick={fitGrid}>Fit Grid</button>
                 <button onClick={fitPlan}>Fit Plan</button>
                 <span>{Math.round(zoom * 100)}%</span>
-                <button onClick={() => setZoom((current) => Math.min(3, Number((current + 0.25).toFixed(2))))}>+</button>
+                <button onClick={() => setZoom((current) => Math.min(8, Number((current + 0.25).toFixed(2))))}>+</button>
               </div>
             </div>
           </div>
@@ -1082,6 +1310,18 @@ export function TakeoffApp() {
                   <text x={offsetX + point.x * scale + 6} y={offsetY + point.y * scale - 6} fontSize="10" fill="#1f2933">{index + 1}</text>
                 </g>
               ))}
+              {unassignedCells.map((cell, index) => (
+                <rect
+                  key={`unassigned-${index}-${cell.x}-${cell.y}`}
+                  x={offsetX + cell.x * scale}
+                  y={offsetY + cell.y * scale}
+                  width={cell.width * scale}
+                  height={cell.depth * scale}
+                  fill="rgba(244, 187, 68, 0.28)"
+                  stroke="rgba(154, 106, 18, 0.38)"
+                  strokeWidth="0.5"
+                />
+              ))}
               {activeDragRect && (
                 <rect
                   x={offsetX + activeDragRect.x * scale}
@@ -1119,23 +1359,83 @@ export function TakeoffApp() {
               )}
               {floor.rooms.map((room, index) => (
                 <g key={room.id}>
-                  <rect
-                    x={offsetX + room.x * scale}
-                    y={offsetY + room.y * scale}
-                    width={room.width * scale}
-                    height={room.depth * scale}
-                    fill={roomColor(index)}
-                    stroke="#324457"
-                    strokeWidth="1.5"
-                  />
-                  <text x={offsetX + room.x * scale + 6} y={offsetY + room.y * scale + 18} fontSize="12" fill="#1f2933">
-                    {room.name}
-                  </text>
-                  <text x={offsetX + room.x * scale + 6} y={offsetY + room.y * scale + 34} fontSize="11" fill="#465667">
+                  {room.polygon && room.polygon.length >= 3 ? (
+                    <polygon
+                      points={room.polygon.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
+                      fill={roomColor(index)}
+                      fillOpacity="0.75"
+                      stroke="#324457"
+                      strokeWidth="1.5"
+                    />
+                  ) : (
+                    <rect
+                      x={offsetX + room.x * scale}
+                      y={offsetY + room.y * scale}
+                      width={room.width * scale}
+                      height={room.depth * scale}
+                      fill={roomColor(index)}
+                      fillOpacity="0.75"
+                      stroke="#324457"
+                      strokeWidth="1.5"
+                    />
+                  )}
+                  {room.polygon?.map((point, pointIndex) => (
+                    <circle key={`${room.id}-point-${pointIndex}`} cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="3.5" fill="#324457" stroke="#ffffff" strokeWidth="1.2" />
+                  ))}
+                  {editingRoomId === room.id ? (
+                    <foreignObject x={offsetX + roomCenter(room).x * scale - 50} y={offsetY + roomCenter(room).y * scale - 17} width="120" height="32">
+                      <input
+                        className="takeoff-svg-input"
+                        value={room.name}
+                        autoFocus
+                        onBlur={() => setEditingRoomId(null)}
+                        onChange={(event) => {
+                          const name = event.target.value;
+                          setFloor((current) => ({
+                            ...current,
+                            rooms: current.rooms.map((existing) => (existing.id === room.id ? { ...existing, name } : existing)),
+                          }));
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === "Escape") setEditingRoomId(null);
+                        }}
+                      />
+                    </foreignObject>
+                  ) : (
+                    <text
+                      x={offsetX + roomCenter(room).x * scale}
+                      y={offsetY + roomCenter(room).y * scale}
+                      fontSize="12"
+                      fill="#1f2933"
+                      textAnchor="middle"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setEditingRoomId(room.id);
+                      }}
+                      style={{ cursor: "text", fontWeight: 700 }}
+                    >
+                      {room.name}
+                    </text>
+                  )}
+                  <text x={offsetX + roomCenter(room).x * scale} y={offsetY + roomCenter(room).y * scale + 16} fontSize="11" fill="#465667" textAnchor="middle">
                     {Math.round(rectArea(room))} sf
                   </text>
                 </g>
               ))}
+              {roomPolygonDraft.length > 0 && (
+                <g>
+                  <polyline
+                    points={roomPolygonDraft.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
+                    fill="none"
+                    stroke="#2f7a4f"
+                    strokeDasharray="6 4"
+                    strokeWidth="2"
+                  />
+                  {roomPolygonDraft.map((point, index) => (
+                    <circle key={`draft-room-point-${index}`} cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="4" fill="#2f7a4f" stroke="#ffffff" strokeWidth="1.5" />
+                  ))}
+                </g>
+              )}
             </svg>
             </div>
           </div>
@@ -1146,9 +1446,12 @@ export function TakeoffApp() {
                 <h2>New Room</h2>
               </div>
               <div className="takeoff-form-actions">
-                <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setTraceTool("select"); }}>Draw Room</button>
+                <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setTraceTool("select"); }}>Draw Rect</button>
+                <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setTraceTool("select"); }}>Draw Polygon</button>
+                {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
               </div>
               {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle. Point-by-point room shapes are the next step.</p>}
+              {roomPolygonMode && <p className="takeoff-note">Click room corners. Points snap to exterior and room edges. Click near the first point to complete.</p>}
               <div className="takeoff-room-form">
                 <label>Name<input value={draftRoom.name} onChange={(event) => setDraftRoom({ ...draftRoom, name: event.target.value })} /></label>
                 <label>X ft<input type="number" value={draftRoom.x} onChange={(event) => setDraftRoom({ ...draftRoom, x: Number(event.target.value) })} /></label>
@@ -1175,6 +1478,15 @@ export function TakeoffApp() {
                   {validation.map((issue, index) => (
                     <div key={index} className={`takeoff-issue takeoff-issue--${issue.severity}`}>{issue.message}</div>
                   ))}
+                </div>
+              )}
+              {unassignedCells.length > 0 && (
+                <div className="takeoff-slice-tools">
+                  <p className="takeoff-muted">{Math.round(unassignedCellArea)} sf highlighted as unassigned slices.</p>
+                  <select value={sliceRoomId || floor.rooms[0]?.id || ""} onChange={(event) => setSliceRoomId(event.target.value)}>
+                    {floor.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+                  </select>
+                  <button onClick={assignHighlightedSlices}>Attribute Highlighted Area</button>
                 </div>
               )}
             </section>

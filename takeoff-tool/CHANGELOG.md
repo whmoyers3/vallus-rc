@@ -133,3 +133,23 @@ Notes:
 
 - The pdf.js worker increases the frontend bundle; route-level code splitting is a future optimization.
 - Room drawing still needs point-by-point/polygon room geometry for non-rectangular spaces.
+
+## 2026-06-21 - Polygon Rooms and Editable Points
+
+Improved tracing and room authoring ergonomics.
+
+Implemented:
+
+- Raised maximum plan zoom from 300% to 800%.
+- Rooms now render at 75% opacity so the plan remains visible underneath.
+- Room labels can be clicked directly on the plan to rename the room.
+- Added polygon room drawing with point-by-point clicks and edge snapping.
+- Added Shift-drag movement for exterior points and polygon room points.
+- Rectangular drag rooms clamp back to the exterior footprint bounds when dragged beyond the perimeter.
+- Highlighted sampled unassigned slices inside the traced footprint.
+- Added a first-pass control to attribute highlighted leftover cells to an adjacent room as an area adjustment.
+
+Notes:
+
+- Polygon room drawing is V1 geometry; full boolean slicing/merging remains a later hardening task.
+- Unassigned slice detection currently samples by grid cells rather than producing exact CAD-grade polygon differences.
