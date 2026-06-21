@@ -168,3 +168,20 @@ Implemented:
 Notes:
 
 - Large rectangle trimming is still rectangle/bounds based; exact polygon clipping remains a later CAD-hardening task.
+
+## 2026-06-21 - Polygon Boolean Room Merge/Subtract
+
+Added first-pass polygon boolean operations for room authoring.
+
+Implemented:
+
+- Added `polygon-clipping` for union, intersection, and difference geometry.
+- Large dragged room rectangles now clip to the exterior footprint and subtract existing room shapes, producing an available polygon room instead of only a rectangle.
+- Added a subtraction drag mode that cuts a drawn shape out of a selected room.
+- Highlighted unassigned slices now merge into the selected room polygon with a union operation instead of only adding an area adjustment.
+- Polygon-aware room overlap checks now use intersection area rather than bounding boxes.
+
+Notes:
+
+- Current boolean workflow keeps the largest resulting polygon if an operation creates multiple disconnected pieces.
+- More advanced merge/split review UI is still needed before production use.

@@ -11,6 +11,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.2",
     "pdfjs-dist": "^6.0.227",
+    "polygon-clipping": "^0.15.7",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "typescript": "^5.9.3",

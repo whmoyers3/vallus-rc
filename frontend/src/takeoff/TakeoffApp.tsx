@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import polygonClipping, { type MultiPolygon, type Polygon, type Ring } from "polygon-clipping";
 import type {
   TakeoffAuthoringMode,
   TakeoffFloor,
@@ -12,6 +13,7 @@ import type {
 } from "./types";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+const { difference, intersection, union } = polygonClipping;
 
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
@@ -23,12 +25,45 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
 type WorkflowStep = "crop" | "calibrate" | "trace";
 type MovablePointTarget = { type: "exterior"; index: number } | { type: "room"; roomId: string; index: number };
 type DragState = {
-  kind: "crop" | "room" | "move-point";
+  kind: "crop" | "room" | "subtract" | "move-point";
   start: TakeoffPoint;
   current: TakeoffPoint;
   target?: MovablePointTarget;
 } | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
+
+function closeRing(points: TakeoffPoint[]): Ring {
+  const ring = points.map((point) => [point.x, point.y] as [number, number]);
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first && last && (first[0] !== last[0] || first[1] !== last[1])) ring.push(first);
+  return ring;
+}
+
+function pointsToClipPolygon(points: TakeoffPoint[]): Polygon {
+  return [closeRing(points)];
+}
+
+function rectToPoints(rect: PlanRect): TakeoffPoint[] {
+  return [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y + rect.depth },
+    { x: rect.x, y: rect.y + rect.depth },
+  ];
+}
+
+function clipPolygonToPoints(polygon: Polygon) {
+  const ring = polygon[0] ?? [];
+  return ring.slice(0, -1).map(([x, y]) => ({ x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) }));
+}
+
+function largestClipPolygon(multiPolygon: MultiPolygon) {
+  return multiPolygon
+    .map((polygon) => ({ polygon, area: polygonArea(clipPolygonToPoints(polygon)) }))
+    .filter((entry) => entry.area > 0.5)
+    .sort((a, b) => b.area - a.area)[0]?.polygon ?? null;
+}
 
 function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
@@ -48,37 +83,6 @@ function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
     width: Number(Math.abs(a.x - b.x).toFixed(3)),
     depth: Number(Math.abs(a.y - b.y).toFixed(3)),
   };
-}
-
-function rectsOverlap(a: PlanRect, b: PlanRect) {
-  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.depth && a.y + a.depth > b.y;
-}
-
-function subtractRect(rect: PlanRect, blocker: PlanRect) {
-  if (!rectsOverlap(rect, blocker)) return [rect];
-  const rectRight = rect.x + rect.width;
-  const rectBottom = rect.y + rect.depth;
-  const blockerRight = blocker.x + blocker.width;
-  const blockerBottom = blocker.y + blocker.depth;
-  const ix1 = Math.max(rect.x, blocker.x);
-  const iy1 = Math.max(rect.y, blocker.y);
-  const ix2 = Math.min(rectRight, blockerRight);
-  const iy2 = Math.min(rectBottom, blockerBottom);
-  const candidates: PlanRect[] = [
-    { x: rect.x, y: rect.y, width: ix1 - rect.x, depth: rect.depth },
-    { x: ix2, y: rect.y, width: rectRight - ix2, depth: rect.depth },
-    { x: ix1, y: rect.y, width: ix2 - ix1, depth: iy1 - rect.y },
-    { x: ix1, y: iy2, width: ix2 - ix1, depth: rectBottom - iy2 },
-  ];
-  return candidates.filter((candidate) => candidate.width > 0.25 && candidate.depth > 0.25);
-}
-
-function largestOpenRect(rect: PlanRect, blockers: PlanRect[]) {
-  let candidates = [rect];
-  for (const blocker of blockers) {
-    candidates = candidates.flatMap((candidate) => subtractRect(candidate, blocker));
-  }
-  return candidates.sort((a, b) => b.width * b.depth - a.width * a.depth)[0] ?? null;
 }
 
 function lineLength(line: Pick<TakeoffScaleLine, "start" | "end">) {
@@ -211,9 +215,8 @@ function roomCenter(room: TakeoffRectRoom) {
   };
 }
 
-function roomBounds(room: TakeoffRectRoom): PlanRect {
-  if (room.polygon && room.polygon.length >= 3) return polygonBounds(room.polygon);
-  return { x: room.x, y: room.y, width: room.width, depth: room.depth };
+function roomToClipPolygon(room: TakeoffRectRoom): Polygon {
+  return pointsToClipPolygon(roomCorners(room));
 }
 
 function pointInRoom(point: TakeoffPoint, room: TakeoffRectRoom) {
@@ -223,9 +226,7 @@ function pointInRoom(point: TakeoffPoint, room: TakeoffRectRoom) {
 
 function overlaps(a: TakeoffRectRoom, b: TakeoffRectRoom) {
   if (a.polygon || b.polygon) {
-    const aBounds = polygonBounds(roomCorners(a));
-    const bBounds = polygonBounds(roomCorners(b));
-    return aBounds.x < bBounds.x + bBounds.width && aBounds.x + aBounds.width > bBounds.x && aBounds.y < bBounds.y + bBounds.depth && aBounds.y + aBounds.depth > bBounds.y;
+    return intersection(roomToClipPolygon(a), roomToClipPolygon(b)).some((polygon) => polygonArea(clipPolygonToPoints(polygon)) > 0.25);
   }
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.depth && a.y + a.depth > b.y;
 }
@@ -418,6 +419,8 @@ export function TakeoffApp() {
   const [roomDrawMode, setRoomDrawMode] = useState(false);
   const [roomPolygonMode, setRoomPolygonMode] = useState(false);
   const [roomPolygonDraft, setRoomPolygonDraft] = useState<TakeoffPoint[]>([]);
+  const [subtractMode, setSubtractMode] = useState(false);
+  const [subtractRoomId, setSubtractRoomId] = useState("");
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [sliceRoomId, setSliceRoomId] = useState("");
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
@@ -757,34 +760,48 @@ export function TakeoffApp() {
     setMessage("Crop reset. Drag a new crop around the plan area.");
   }
 
+  function availablePolygonFromRect(rect: PlanRect, ignoredRoomId?: string) {
+    if (rect.width < 0.25 || rect.depth < 0.25) return null;
+    const rectPolygon = pointsToClipPolygon(rectToPoints(rect));
+    let available: MultiPolygon = [rectPolygon];
+    if (floor.exteriorPolygon.length >= 3) {
+      available = intersection(available, pointsToClipPolygon(floor.exteriorPolygon));
+    }
+    const blockers = floor.rooms
+      .filter((room) => room.id !== ignoredRoomId)
+      .map((room) => roomToClipPolygon(room));
+    if (blockers.length > 0) {
+      available = difference(available, ...blockers);
+    }
+    return largestClipPolygon(available);
+  }
+
+  function makeRoomFromPolygon(points: TakeoffPoint[]) {
+    const bounds = polygonBounds(points);
+    return {
+      id: nextId("room"),
+      name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      depth: bounds.depth,
+      ceilingHeight: draftRoom.ceilingHeight,
+      polygon: points,
+    } satisfies TakeoffRectRoom;
+  }
+
   function addDraggedRoom(rect: { x: number; y: number; width: number; depth: number }) {
     if (rect.width < 1 || rect.depth < 1) {
       setMessage("Drag a larger area to create a room.");
       return;
     }
-    const floorBounds = footprintBounds(floor);
-    const snappedRect = floor.exteriorPolygon.length >= 3
-      ? {
-          x: Math.max(floorBounds.x, rect.x),
-          y: Math.max(floorBounds.y, rect.y),
-          width: Math.min(rect.x + rect.width, floorBounds.x + floorBounds.width) - Math.max(floorBounds.x, rect.x),
-          depth: Math.min(rect.y + rect.depth, floorBounds.y + floorBounds.depth) - Math.max(floorBounds.y, rect.y),
-        }
-      : rect;
-    const openRect = largestOpenRect(snappedRect, floor.rooms.map((room) => roomBounds(room)));
-    if (!openRect) {
-      setMessage("No open room area remains after snapping around existing rooms.");
+    const availablePolygon = availablePolygonFromRect(rect);
+    if (!availablePolygon) {
+      setMessage("No open room area remains after clipping to the exterior and existing rooms.");
       return;
     }
-    const room: TakeoffRectRoom = {
-      id: nextId("room"),
-      name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
-      x: Number(openRect.x.toFixed(3)),
-      y: Number(openRect.y.toFixed(3)),
-      width: Number(Math.max(0, openRect.width).toFixed(3)),
-      depth: Number(Math.max(0, openRect.depth).toFixed(3)),
-      ceilingHeight: draftRoom.ceilingHeight,
-    };
+    const points = clipPolygonToPoints(availablePolygon);
+    const room = makeRoomFromPolygon(points);
     if (!insidePerimeter(room, floor)) {
       setMessage("Dragged room extends beyond the conditioned footprint.");
       return;
@@ -795,7 +812,30 @@ export function TakeoffApp() {
       return;
     }
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
-    setMessage(`${room.name} added${rectsOverlap(rect, openRect) && (room.width !== rect.width || room.depth !== rect.depth) ? " and snapped to the open area" : ""}.`);
+    setMessage(`${room.name} added as available polygon area.`);
+  }
+
+  function subtractDraggedShape(rect: PlanRect) {
+    const roomId = subtractRoomId || floor.rooms[0]?.id;
+    const targetRoom = floor.rooms.find((room) => room.id === roomId);
+    if (!targetRoom) {
+      setMessage("Select a room before using the subtract tool.");
+      return;
+    }
+    const subtractShape = availablePolygonFromRect(rect, targetRoom.id) ?? pointsToClipPolygon(rectToPoints(rect));
+    const result = difference(roomToClipPolygon(targetRoom), subtractShape);
+    const largest = largestClipPolygon(result);
+    if (!largest) {
+      setMessage("Subtraction would remove the entire room.");
+      return;
+    }
+    const polygon = clipPolygonToPoints(largest);
+    const bounds = polygonBounds(polygon);
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => (room.id === targetRoom.id ? { ...room, ...bounds, polygon } : room)),
+    }));
+    setMessage(`Subtracted shape from ${targetRoom.name}.`);
   }
 
   function createPolygonRoom(points: TakeoffPoint[]) {
@@ -841,16 +881,26 @@ export function TakeoffApp() {
   function assignHighlightedSlices() {
     const roomId = sliceRoomId || floor.rooms[0]?.id;
     if (!roomId || unassignedCells.length === 0) return;
-    const sliceArea = unassignedCellArea;
+    const targetRoom = floor.rooms.find((room) => room.id === roomId);
+    if (!targetRoom) return;
+    const cellPolygons = unassignedCells.map((cell) => pointsToClipPolygon(rectToPoints(cell)));
+    const merged = union(roomToClipPolygon(targetRoom), ...cellPolygons);
+    const largest = largestClipPolygon(merged);
+    if (!largest) {
+      setMessage("Could not merge highlighted slices into that room.");
+      return;
+    }
+    const polygon = clipPolygonToPoints(largest);
+    const bounds = polygonBounds(polygon);
     setFloor((current) => ({
       ...current,
-      rooms: current.rooms.map((room) => (room.id === roomId ? { ...room, areaAdjustment: (room.areaAdjustment ?? 0) + sliceArea } : room)),
+      rooms: current.rooms.map((room) => (room.id === roomId ? { ...room, ...bounds, polygon, areaAdjustment: undefined } : room)),
       attributedSlices: [
         ...(current.attributedSlices ?? []),
         { id: nextId("slice"), roomId, cells: unassignedCells },
       ],
     }));
-    setMessage(`${Math.round(sliceArea)} sf attributed to ${floor.rooms.find((room) => room.id === roomId)?.name ?? "room"}.`);
+    setMessage(`${Math.round(unassignedCellArea)} sf merged into ${targetRoom.name}.`);
   }
 
   function handleCanvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
@@ -868,6 +918,11 @@ export function TakeoffApp() {
     if (workflowStep === "crop") {
       event.currentTarget.setPointerCapture(event.pointerId);
       setDragState({ kind: "crop", start: point, current: point });
+      return;
+    }
+    if (workflowStep === "trace" && subtractMode) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setDragState({ kind: "subtract", start: point, current: point });
       return;
     }
     if (workflowStep === "trace" && roomDrawMode) {
@@ -901,6 +956,10 @@ export function TakeoffApp() {
     }
     if (kind === "crop") {
       applyCrop(rect);
+      return;
+    }
+    if (kind === "subtract") {
+      subtractDraggedShape(rect);
       return;
     }
     addDraggedRoom(rect);
@@ -1373,8 +1432,8 @@ export function TakeoffApp() {
                   y={offsetY + activeDragRect.y * scale}
                   width={activeDragRect.width * scale}
                   height={activeDragRect.depth * scale}
-                  fill={dragState?.kind === "crop" ? "rgba(179, 67, 47, 0.12)" : "rgba(72, 128, 93, 0.16)"}
-                  stroke={dragState?.kind === "crop" ? "#b3432f" : "#2f7a4f"}
+                  fill={dragState?.kind === "crop" || dragState?.kind === "subtract" ? "rgba(179, 67, 47, 0.12)" : "rgba(72, 128, 93, 0.16)"}
+                  stroke={dragState?.kind === "crop" || dragState?.kind === "subtract" ? "#b3432f" : "#2f7a4f"}
                   strokeDasharray="6 4"
                   strokeWidth="2"
                 />
@@ -1491,12 +1550,24 @@ export function TakeoffApp() {
                 <h2>New Room</h2>
               </div>
               <div className="takeoff-form-actions">
-                <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setTraceTool("select"); }}>Draw Rect</button>
-                <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setTraceTool("select"); }}>Draw Polygon</button>
+                <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
+                <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
+                <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setTraceTool("select"); }}>Subtract</button>
                 {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
               </div>
               {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle. Point-by-point room shapes are the next step.</p>}
               {roomPolygonMode && <p className="takeoff-note">Click room corners. Points snap to exterior and room edges. Click near the first point to complete.</p>}
+              {subtractMode && (
+                <>
+                  <label>
+                    Subtract from
+                    <select value={subtractRoomId || floor.rooms[0]?.id || ""} onChange={(event) => setSubtractRoomId(event.target.value)}>
+                      {floor.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+                    </select>
+                  </label>
+                  <p className="takeoff-note">Drag a subtraction shape across the selected room to cut it away.</p>
+                </>
+              )}
               <div className="takeoff-room-form">
                 <label>Name<input value={draftRoom.name} onChange={(event) => setDraftRoom({ ...draftRoom, name: event.target.value })} /></label>
                 <label>X ft<input type="number" value={draftRoom.x} onChange={(event) => setDraftRoom({ ...draftRoom, x: Number(event.target.value) })} /></label>
