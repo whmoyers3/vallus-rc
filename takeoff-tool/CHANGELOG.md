@@ -203,3 +203,22 @@ Notes:
 
 - Plan PDF/image file storage is not embedded in JSON; reopened drafts preserve reference metadata and can reattach the underlay later.
 - Final Markdown payload export remains deferred until room characteristics, windows/doors, ceilings, and floor/ceiling boundary handling are complete.
+
+## 2026-06-21 - Takeoff Reference File Storage
+
+Added stored plan-page references to complete the save/reopen workflow.
+
+Implemented:
+
+- Added private Supabase Storage bucket setup for `takeoff-references`.
+- Set the plan reference file cap to 7 MB for PDF, PNG, JPEG, and WebP files.
+- Added `takeoff_assets` metadata storage linked to editable takeoff projects.
+- Added backend upload and download endpoints for takeoff reference files.
+- Takeoff PDF/image uploads now store the original file and save an `assetId` in the editable JSON.
+- Reopened takeoffs now restore the plan underlay from the stored reference file.
+- Permanent takeoff JSON strips transient signed/download URLs while keeping durable asset metadata.
+
+Notes:
+
+- This keeps PDF/image files disposable later without deleting the editable geometry JSON.
+- A future cleanup tool should remove old stored reference files while preserving takeoff drafts.

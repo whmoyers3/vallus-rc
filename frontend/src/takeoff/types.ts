@@ -41,6 +41,12 @@ export type TakeoffFloor = {
   reference?: {
     filename: string;
     kind: "pdf" | "image";
+    assetId?: number;
+    storagePath?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    downloadUrl?: string;
+    signedUrl?: string;
     crop?: {
       x: number;
       y: number;

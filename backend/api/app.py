@@ -11,13 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from backend.api.airflow_export import build_airflow_workbook, _orientation_table, _group_units, _plan_label
-from backend.api.database import Database, ProjectNotFound, TakeoffProjectNotFound, BatteryError
+from backend.api.database import Database, ProjectNotFound, TakeoffProjectNotFound, TakeoffAssetNotFound, BatteryError
 from backend.api.detail_report import build_detail_report
 from backend.api.glass_audit import build_glass_factor_audit
 from backend.api.residual_audit import build_residual_audit
@@ -56,6 +56,15 @@ class MarkdownImportPayload(BaseModel):
 class PdfImportPayload(BaseModel):
     filename: str = ""
     data_base64: str
+
+
+TAKEOFF_REFERENCE_MAX_BYTES = 7 * 1024 * 1024
+TAKEOFF_REFERENCE_MIME_TYPES = {
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+}
 
 
 # ── Filename helpers ──────────────────────────────────────────────────────────
@@ -282,6 +291,57 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
             database.delete_takeoff_project(takeoff_id)
         except TakeoffProjectNotFound as exc:
             raise HTTPException(status_code=404, detail="Takeoff project not found") from exc
+
+    # ── Takeoff Reference Assets ─────────────────────────────────────────────
+
+    @api.post("/api/takeoff-assets", status_code=201)
+    async def upload_takeoff_asset(
+        file: UploadFile = File(...),
+        floor_id: str = Form(""),
+        page_number: int = Form(1),
+    ) -> dict[str, Any]:
+        content_type = file.content_type or ""
+        if content_type not in TAKEOFF_REFERENCE_MIME_TYPES:
+            raise HTTPException(status_code=415, detail="Upload a PDF, PNG, JPEG, or WebP plan reference.")
+
+        data = await file.read()
+        if len(data) > TAKEOFF_REFERENCE_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Plan reference files are capped at 7 MB.")
+        if not data:
+            raise HTTPException(status_code=422, detail="Plan reference file is empty.")
+
+        try:
+            asset = database.create_takeoff_asset(
+                data,
+                file.filename or "plan-reference",
+                content_type,
+                floor_id=floor_id,
+                page_number=page_number,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not store plan reference: {exc}") from exc
+        return {
+            "id": asset["id"],
+            "filename": asset["filename"],
+            "mime_type": asset["mime_type"],
+            "size_bytes": asset["size_bytes"],
+            "storage_path": asset["storage_path"],
+            "download_url": asset["download_url"],
+            "signed_url": asset.get("signed_url", ""),
+        }
+
+    @api.get("/api/takeoff-assets/{asset_id}/download")
+    def download_takeoff_asset(asset_id: int) -> Response:
+        try:
+            data, asset = database.download_takeoff_asset(asset_id)
+        except TakeoffAssetNotFound as exc:
+            raise HTTPException(status_code=404, detail="Takeoff asset not found") from exc
+        filename = re.sub(r'[\\/*?:"<>|]', "", asset.get("filename") or "plan-reference")
+        return Response(
+            content=data,
+            media_type=asset.get("mime_type") or "application/octet-stream",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
 
     # ── Calculation ───────────────────────────────────────────────────────────
 

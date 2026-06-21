@@ -17,6 +17,7 @@ const { difference, intersection, union } = polygonClipping;
 
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
+const takeoffReferenceMaxBytes = 7 * 1024 * 1024;
 const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "pdf_trace", label: "PDF Trace" },
   { id: "image_trace", label: "Image Trace" },
@@ -40,6 +41,15 @@ type SavedTakeoffRow = {
   schema_version?: string;
   created_at?: string;
   updated_at?: string;
+};
+type UploadedTakeoffAsset = {
+  id: number;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  storage_path: string;
+  download_url: string;
+  signed_url?: string;
 };
 
 function makeInitialFloor(): TakeoffFloor {
@@ -467,11 +477,36 @@ function takeoffSnapshot(project: TakeoffProject) {
   return JSON.stringify(project);
 }
 
+function persistableTakeoffProject(project: TakeoffProject): TakeoffProject {
+  return {
+    ...project,
+    floors: project.floors.map((floor) => ({
+      ...floor,
+      reference: floor.reference
+        ? {
+            ...floor.reference,
+            signedUrl: undefined,
+            downloadUrl: undefined,
+          }
+        : floor.reference,
+    })),
+  };
+}
+
 function formatTimestamp(value?: string) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleString();
+}
+
+function revokeReferenceUrl(url: string) {
+  if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
+function formatBytes(bytes?: number) {
+  if (!bytes) return "";
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function TakeoffApp() {
@@ -509,7 +544,7 @@ export function TakeoffApp() {
 
   useEffect(() => {
     return () => {
-      if (referenceUrl) URL.revokeObjectURL(referenceUrl);
+      if (referenceUrl) revokeReferenceUrl(referenceUrl);
     };
   }, [referenceUrl]);
 
@@ -517,7 +552,8 @@ export function TakeoffApp() {
     () => makeTakeoffProject(projectName, frontDoorFaces, floor),
     [floor, frontDoorFaces, projectName],
   );
-  const serializedTakeoff = useMemo(() => takeoffSnapshot(takeoffProject), [takeoffProject]);
+  const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
+  const serializedTakeoff = useMemo(() => takeoffSnapshot(persistableTakeoff), [persistableTakeoff]);
   const isDirty = takeoffId === null || serializedTakeoff !== savedSnapshot;
   const validation = useMemo(() => buildValidation(floor), [floor]);
   const computedFootprintArea = footprintArea(floor);
@@ -590,9 +626,15 @@ export function TakeoffApp() {
     }));
   }
 
-  async function renderPdfPreview(file: File) {
+  async function renderPdfPreview(source: File | string) {
     setReferenceRenderStatus("Rendering PDF preview...");
-    const bytes = new Uint8Array(await file.arrayBuffer());
+    const arrayBuffer = typeof source === "string"
+      ? await fetch(source).then((response) => {
+          if (!response.ok) throw new Error("Could not download the saved PDF reference.");
+          return response.arrayBuffer();
+        })
+      : await source.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
     const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
     const page = await pdf.getPage(1);
     const viewport = page.getViewport({ scale: 2 });
@@ -1163,6 +1205,20 @@ export function TakeoffApp() {
     setFloor((current) => ({ ...current, rooms: current.rooms.filter((room) => room.id !== id) }));
   }
 
+  async function uploadReferenceAsset(file: File, floorId: string) {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("floor_id", floorId);
+    formData.append("page_number", "1");
+
+    const response = await fetch("/api/takeoff-assets", { method: "POST", body: formData });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || "Could not upload plan reference.");
+    }
+    return await response.json() as UploadedTakeoffAsset;
+  }
+
   async function saveTakeoff() {
     setSaveLoading(true);
     setMessage("");
@@ -1207,14 +1263,23 @@ export function TakeoffApp() {
       const response = await fetch(`/api/takeoffs/${id}`);
       if (!response.ok) throw new Error(await response.text());
       const loadedProject = normalizeTakeoffProject(await response.json());
-      if (referenceUrl) URL.revokeObjectURL(referenceUrl);
-      setReferenceUrl("");
-      setReferenceRenderStatus(loadedProject.floors[0].reference ? "Reference metadata reopened. Re-upload the plan file to restore the underlay." : "");
+      if (referenceUrl) revokeReferenceUrl(referenceUrl);
+      const loadedReference = loadedProject.floors[0].reference;
+      if (loadedReference?.downloadUrl) {
+        const restoredUrl = loadedReference.kind === "pdf"
+          ? await renderPdfPreview(loadedReference.downloadUrl)
+          : loadedReference.downloadUrl;
+        setReferenceUrl(restoredUrl);
+        setReferenceRenderStatus(`Reference restored: ${loadedReference.filename}`);
+      } else {
+        setReferenceUrl("");
+        setReferenceRenderStatus(loadedReference ? "Reference metadata reopened, but the stored file was not available." : "");
+      }
       setProjectName(loadedProject.name);
       setFrontDoorFaces(loadedProject.frontDoorFaces);
       setFloor(loadedProject.floors[0]);
       setTakeoffId(id);
-      setSavedSnapshot(takeoffSnapshot(loadedProject));
+      setSavedSnapshot(takeoffSnapshot(persistableTakeoffProject(loadedProject)));
       setOpenDialog(false);
       setCalibrationStart(null);
       setRoomPolygonDraft([]);
@@ -1232,13 +1297,43 @@ export function TakeoffApp() {
   async function handleReference(file: File | undefined) {
     if (!file) return;
     const kind = file.type.includes("pdf") ? "pdf" : "image";
-    if (referenceUrl) URL.revokeObjectURL(referenceUrl);
+    if (file.size > takeoffReferenceMaxBytes) {
+      setMessage("Plan reference files are capped at 7 MB. Please upload a single extracted floor-plan page.");
+      return;
+    }
+    if (!["application/pdf", "image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+      setMessage("Upload a PDF, PNG, JPEG, or WebP plan reference.");
+      return;
+    }
+    if (referenceUrl) revokeReferenceUrl(referenceUrl);
     try {
       const nextReferenceUrl = kind === "pdf" ? await renderPdfPreview(file) : URL.createObjectURL(file);
+      setReferenceRenderStatus("Uploading plan reference...");
+      const asset = await uploadReferenceAsset(file, floor.id);
       setReferenceUrl(nextReferenceUrl);
+      setReferenceRenderStatus(`Stored ${asset.filename} (${formatBytes(asset.size_bytes)}).`);
+      setFloor((current) => ({
+        ...current,
+        authoringMode: kind === "pdf" ? "pdf_trace" : "image_trace",
+        reference: {
+          filename: file.name,
+          kind,
+          assetId: asset.id,
+          storagePath: asset.storage_path,
+          mimeType: asset.mime_type,
+          sizeBytes: asset.size_bytes,
+          downloadUrl: asset.download_url,
+          signedUrl: asset.signed_url,
+          crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth },
+        },
+        calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
+        exteriorPolygon: [],
+        perimeterLocked: false,
+      }));
     } catch (error) {
-      setReferenceRenderStatus("Could not render the PDF preview.");
-      setMessage(error instanceof Error ? error.message : "Could not render the PDF preview.");
+      setReferenceUrl("");
+      setReferenceRenderStatus("Could not store the plan reference.");
+      setMessage(error instanceof Error ? error.message : "Could not store the plan reference.");
       return;
     }
     setWorkflowStep("crop");
@@ -1248,18 +1343,6 @@ export function TakeoffApp() {
     setDragState(null);
     setRightPanelOpen(false);
     setZoom(1);
-    setFloor((current) => ({
-      ...current,
-      authoringMode: kind === "pdf" ? "pdf_trace" : "image_trace",
-      reference: {
-        filename: file.name,
-        kind,
-        crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth },
-      },
-      calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
-      exteriorPolygon: [],
-      perimeterLocked: false,
-    }));
     setMessage("Reference uploaded. Drag a crop around the plan area, then continue to scale setup.");
   }
 
@@ -1332,11 +1415,17 @@ export function TakeoffApp() {
               Reference
               <input type="file" accept=".pdf,image/*" onChange={(event) => handleReference(event.target.files?.[0])} />
             </label>
-            {floor.reference && <p className="takeoff-muted">{floor.reference.filename}</p>}
+            {floor.reference && (
+              <p className="takeoff-muted">
+                {floor.reference.filename}
+                {floor.reference.sizeBytes ? ` · ${formatBytes(floor.reference.sizeBytes)}` : ""}
+                {floor.reference.assetId ? ` · stored asset #${floor.reference.assetId}` : ""}
+              </p>
+            )}
             {referenceRenderStatus && <p className="takeoff-muted">{referenceRenderStatus}</p>}
             {floor.authoringMode !== "grid_manual" && (
               <p className="takeoff-note">
-                The reference is shown under the grid. Calibrate known dimensions first, then trace the conditioned exterior.
+                The reference is shown under the grid. Upload one floor-plan page at a time, up to 7 MB.
               </p>
             )}
           </section>

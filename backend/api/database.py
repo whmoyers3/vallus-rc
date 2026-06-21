@@ -14,7 +14,11 @@ Tables: calculations, takeoff_projects
 
 from __future__ import annotations
 
+import copy
+import mimetypes
 import os
+import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,11 +27,18 @@ from supabase import create_client, Client
 from .assemblies import STANDARD_ASSEMBLIES
 
 
+TAKEOFF_STORAGE_BUCKET = os.getenv("TAKEOFF_STORAGE_BUCKET", "takeoff-references")
+
+
 class ProjectNotFound(KeyError):
     pass
 
 
 class TakeoffProjectNotFound(KeyError):
+    pass
+
+
+class TakeoffAssetNotFound(KeyError):
     pass
 
 
@@ -73,6 +84,41 @@ def _extract_takeoff_hierarchy(payload: dict[str, Any]) -> dict[str, Any]:
         "schema_version": payload.get("schemaVersion", "takeoff.v1"),
         "calculation_id": payload.get("calculationId") or None,
     }
+
+
+def _safe_storage_filename(filename: str) -> str:
+    """Sanitize uploaded reference names for Supabase Storage paths."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.',!*$@=;:+?()& -]+", "-", filename).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or "plan-reference"
+
+
+def _asset_ids_from_takeoff(payload: dict[str, Any]) -> set[int]:
+    ids: set[int] = set()
+    for floor in payload.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        reference = floor.get("reference") or {}
+        asset_id = reference.get("assetId")
+        if isinstance(asset_id, int):
+            ids.add(asset_id)
+        elif isinstance(asset_id, str) and asset_id.isdigit():
+            ids.add(int(asset_id))
+    return ids
+
+
+def _persistable_takeoff_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    stored = copy.deepcopy(payload)
+    for floor in stored.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        reference = floor.get("reference")
+        if isinstance(reference, dict):
+            reference.pop("signedUrl", None)
+            reference.pop("signed_url", None)
+            reference.pop("downloadUrl", None)
+            reference.pop("download_url", None)
+    return stored
 
 
 def _compute_comparison_snapshot(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -335,10 +381,13 @@ class Database:
     # ── Takeoff Projects ─────────────────────────────────────────────────────
 
     def create_takeoff_project(self, payload: dict[str, Any]) -> int:
+        payload = _persistable_takeoff_payload(payload)
         row = _extract_takeoff_hierarchy(payload)
         row["takeoff_json"] = payload
         result = self._client.table("takeoff_projects").insert(row).execute()
-        return int(result.data[0]["id"])
+        takeoff_id = int(result.data[0]["id"])
+        self.attach_takeoff_assets(takeoff_id, payload)
+        return takeoff_id
 
     def list_takeoff_projects(self) -> list[dict[str, Any]]:
         result = (
@@ -362,9 +411,10 @@ class Database:
         )
         if result.data is None:
             raise TakeoffProjectNotFound(takeoff_id)
-        return result.data["takeoff_json"]
+        return self.hydrate_takeoff_asset_urls(result.data["takeoff_json"])
 
     def update_takeoff_project(self, takeoff_id: int, payload: dict[str, Any]) -> None:
+        payload = _persistable_takeoff_payload(payload)
         row = _extract_takeoff_hierarchy(payload)
         row["takeoff_json"] = payload
         result = (
@@ -375,6 +425,7 @@ class Database:
         )
         if not result.data:
             raise TakeoffProjectNotFound(takeoff_id)
+        self.attach_takeoff_assets(takeoff_id, payload)
 
     def delete_takeoff_project(self, takeoff_id: int) -> None:
         result = (
@@ -385,6 +436,102 @@ class Database:
         )
         if not result.data:
             raise TakeoffProjectNotFound(takeoff_id)
+
+    def create_takeoff_asset(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        mime_type: str,
+        floor_id: str = "",
+        page_number: int = 1,
+    ) -> dict[str, Any]:
+        extension = mimetypes.guess_extension(mime_type) or ""
+        safe_name = _safe_storage_filename(filename)
+        storage_path = f"references/{uuid.uuid4().hex}-{safe_name}"
+        if extension and "." not in safe_name:
+            storage_path += extension
+
+        self._client.storage.from_(TAKEOFF_STORAGE_BUCKET).upload(
+            storage_path,
+            file_bytes,
+            {"content-type": mime_type, "upsert": "false"},
+        )
+
+        row = {
+            "storage_bucket": TAKEOFF_STORAGE_BUCKET,
+            "storage_path": storage_path,
+            "filename": filename,
+            "mime_type": mime_type,
+            "size_bytes": len(file_bytes),
+            "floor_id": floor_id,
+            "page_number": page_number,
+        }
+        result = self._client.table("takeoff_assets").insert(row).execute()
+        asset = result.data[0]
+        asset["download_url"] = f"/api/takeoff-assets/{asset['id']}/download"
+        asset["signed_url"] = self.create_takeoff_asset_signed_url(asset["storage_path"])
+        return asset
+
+    def get_takeoff_asset(self, asset_id: int) -> dict[str, Any]:
+        result = (
+            self._client.table("takeoff_assets")
+            .select("*")
+            .eq("id", asset_id)
+            .maybe_single()
+            .execute()
+        )
+        if result.data is None:
+            raise TakeoffAssetNotFound(asset_id)
+        return result.data
+
+    def download_takeoff_asset(self, asset_id: int) -> tuple[bytes, dict[str, Any]]:
+        asset = self.get_takeoff_asset(asset_id)
+        data = self._client.storage.from_(asset.get("storage_bucket") or TAKEOFF_STORAGE_BUCKET).download(asset["storage_path"])
+        return data, asset
+
+    def create_takeoff_asset_signed_url(self, storage_path: str, expires_in: int = 3600) -> str:
+        signed = self._client.storage.from_(TAKEOFF_STORAGE_BUCKET).create_signed_url(storage_path, expires_in)
+        if isinstance(signed, dict):
+            return signed.get("signedURL") or signed.get("signed_url") or signed.get("signedUrl") or ""
+        return getattr(signed, "signed_url", "") or getattr(signed, "signedURL", "") or ""
+
+    def attach_takeoff_assets(self, takeoff_id: int, payload: dict[str, Any]) -> None:
+        asset_ids = sorted(_asset_ids_from_takeoff(payload))
+        if not asset_ids:
+            return
+        self._client.table("takeoff_assets").update({"takeoff_project_id": takeoff_id}).in_("id", asset_ids).execute()
+
+    def hydrate_takeoff_asset_urls(self, payload: dict[str, Any]) -> dict[str, Any]:
+        hydrated = copy.deepcopy(payload)
+        asset_ids = sorted(_asset_ids_from_takeoff(hydrated))
+        if not asset_ids:
+            return hydrated
+        result = (
+            self._client.table("takeoff_assets")
+            .select("id, storage_path, storage_bucket, filename, mime_type, size_bytes")
+            .in_("id", asset_ids)
+            .execute()
+        )
+        assets = {int(row["id"]): row for row in (result.data or [])}
+        for floor in hydrated.get("floors") or []:
+            if not isinstance(floor, dict):
+                continue
+            reference = floor.get("reference")
+            if not isinstance(reference, dict):
+                continue
+            asset_id = reference.get("assetId")
+            if isinstance(asset_id, str) and asset_id.isdigit():
+                asset_id = int(asset_id)
+                reference["assetId"] = asset_id
+            asset = assets.get(asset_id)
+            if not asset:
+                continue
+            reference["downloadUrl"] = f"/api/takeoff-assets/{asset_id}/download"
+            reference["signedUrl"] = self.create_takeoff_asset_signed_url(asset["storage_path"])
+            reference["storagePath"] = asset["storage_path"]
+            reference["mimeType"] = asset["mime_type"]
+            reference["sizeBytes"] = asset["size_bytes"]
+        return hydrated
 
     # ── Assemblies ────────────────────────────────────────────────────────────
 
