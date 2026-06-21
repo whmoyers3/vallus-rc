@@ -4,11 +4,12 @@ Replaces the local SQLite database.  Requires environment variables:
   SUPABASE_URL              — your project URL from the Supabase dashboard
   SUPABASE_SERVICE_ROLE_KEY — service-role key (never exposed to the browser)
 
-Table: calculations
+Tables: calculations, takeoff_projects
   - Keeps the same public interface as the old SQLite Database class so
     app.py needs no changes to the CRUD calls.
   - Extends the schema with structured hierarchy fields for file naming
     and cross-source comparison.
+  - Stores editable takeoff JSON separately from completed calculation payloads.
 """
 
 from __future__ import annotations
@@ -23,6 +24,10 @@ from .assemblies import STANDARD_ASSEMBLIES
 
 
 class ProjectNotFound(KeyError):
+    pass
+
+
+class TakeoffProjectNotFound(KeyError):
     pass
 
 
@@ -53,6 +58,20 @@ def _extract_hierarchy(payload: dict[str, Any]) -> dict[str, Any]:
         "orientation":  p.get("orientation") or None,
         "variations":   p.get("variations") or None,
         "source":       p.get("source", "vrc"),
+    }
+
+
+def _extract_takeoff_hierarchy(payload: dict[str, Any]) -> dict[str, Any]:
+    """Pull searchable metadata out of an editable takeoff payload."""
+    floors = payload.get("floors") or []
+    first_floor = floors[0] if floors and isinstance(floors[0], dict) else {}
+    reference = first_floor.get("reference") or {}
+    return {
+        "name": payload.get("name", "") or "Untitled Takeoff",
+        "location": payload.get("location", ""),
+        "description": reference.get("filename", "") or first_floor.get("name", ""),
+        "schema_version": payload.get("schemaVersion", "takeoff.v1"),
+        "calculation_id": payload.get("calculationId") or None,
     }
 
 
@@ -312,6 +331,60 @@ class Database:
         )
         if not result.data:
             raise ProjectNotFound(project_id)
+
+    # ── Takeoff Projects ─────────────────────────────────────────────────────
+
+    def create_takeoff_project(self, payload: dict[str, Any]) -> int:
+        row = _extract_takeoff_hierarchy(payload)
+        row["takeoff_json"] = payload
+        result = self._client.table("takeoff_projects").insert(row).execute()
+        return int(result.data[0]["id"])
+
+    def list_takeoff_projects(self) -> list[dict[str, Any]]:
+        result = (
+            self._client.table("takeoff_projects")
+            .select(
+                "id, calculation_id, name, location, description, "
+                "schema_version, created_at, updated_at"
+            )
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        return result.data or []
+
+    def get_takeoff_project(self, takeoff_id: int) -> dict[str, Any]:
+        result = (
+            self._client.table("takeoff_projects")
+            .select("takeoff_json")
+            .eq("id", takeoff_id)
+            .maybe_single()
+            .execute()
+        )
+        if result.data is None:
+            raise TakeoffProjectNotFound(takeoff_id)
+        return result.data["takeoff_json"]
+
+    def update_takeoff_project(self, takeoff_id: int, payload: dict[str, Any]) -> None:
+        row = _extract_takeoff_hierarchy(payload)
+        row["takeoff_json"] = payload
+        result = (
+            self._client.table("takeoff_projects")
+            .update(row)
+            .eq("id", takeoff_id)
+            .execute()
+        )
+        if not result.data:
+            raise TakeoffProjectNotFound(takeoff_id)
+
+    def delete_takeoff_project(self, takeoff_id: int) -> None:
+        result = (
+            self._client.table("takeoff_projects")
+            .delete()
+            .eq("id", takeoff_id)
+            .execute()
+        )
+        if not result.data:
+            raise TakeoffProjectNotFound(takeoff_id)
 
     # ── Assemblies ────────────────────────────────────────────────────────────
 

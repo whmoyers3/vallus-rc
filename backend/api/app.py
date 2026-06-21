@@ -17,7 +17,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from backend.api.airflow_export import build_airflow_workbook, _orientation_table, _group_units, _plan_label
-from backend.api.database import Database, ProjectNotFound, BatteryError
+from backend.api.database import Database, ProjectNotFound, TakeoffProjectNotFound, BatteryError
 from backend.api.detail_report import build_detail_report
 from backend.api.glass_audit import build_glass_factor_audit
 from backend.api.residual_audit import build_residual_audit
@@ -33,6 +33,10 @@ from backend.reports import generate_resload_pdf
 class ProjectPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     project: dict[str, Any]
+
+
+class TakeoffPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
 
 
 class BatchCalculatePayload(BaseModel):
@@ -245,6 +249,39 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
             database.delete_project(project_id)
         except ProjectNotFound as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
+
+    # ── Takeoff Projects (editable JSON CRUD) ────────────────────────────────
+
+    @api.get("/api/takeoffs")
+    def list_takeoff_projects() -> list[dict[str, Any]]:
+        return database.list_takeoff_projects()
+
+    @api.post("/api/takeoffs", status_code=201)
+    def create_takeoff_project(payload: TakeoffPayload) -> dict[str, int]:
+        takeoff_id = database.create_takeoff_project(payload.model_dump())
+        return {"id": takeoff_id}
+
+    @api.get("/api/takeoffs/{takeoff_id}")
+    def get_takeoff_project(takeoff_id: int) -> dict[str, Any]:
+        try:
+            return database.get_takeoff_project(takeoff_id)
+        except TakeoffProjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="Takeoff project not found") from exc
+
+    @api.put("/api/takeoffs/{takeoff_id}")
+    def update_takeoff_project(takeoff_id: int, payload: TakeoffPayload) -> dict[str, int]:
+        try:
+            database.update_takeoff_project(takeoff_id, payload.model_dump())
+        except TakeoffProjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="Takeoff project not found") from exc
+        return {"id": takeoff_id}
+
+    @api.delete("/api/takeoffs/{takeoff_id}", status_code=204)
+    def delete_takeoff_project(takeoff_id: int) -> None:
+        try:
+            database.delete_takeoff_project(takeoff_id)
+        except TakeoffProjectNotFound as exc:
+            raise HTTPException(status_code=404, detail="Takeoff project not found") from exc
 
     # ── Calculation ───────────────────────────────────────────────────────────
 

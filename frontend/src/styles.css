@@ -617,8 +617,26 @@ button.toolbar-primary:hover {
 }
 
 .takeoff-toolbar-actions {
+  align-items: center;
   display: flex;
   gap: 8px;
+}
+
+.takeoff-save-status {
+  background: #e8f2eb;
+  border: 1px solid #bfd8c6;
+  border-radius: 999px;
+  color: #2f6c3d;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 9px;
+  white-space: nowrap;
+}
+
+.takeoff-save-status--dirty {
+  background: #f4e6c4;
+  border-color: #d7bd79;
+  color: #7c5610;
 }
 
 .takeoff-layout {

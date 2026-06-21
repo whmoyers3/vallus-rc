@@ -31,6 +31,47 @@ type DragState = {
   target?: MovablePointTarget;
 } | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
+type SavedTakeoffRow = {
+  id: number;
+  calculation_id?: number | null;
+  name: string;
+  location?: string;
+  description?: string;
+  schema_version?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+function makeInitialFloor(): TakeoffFloor {
+  return {
+    id: "floor-1",
+    name: "First Floor",
+    authoringMode: "grid_manual",
+    designGrid: { width: 60, depth: 45 },
+    scale: { feetPerGrid: 1, gridSnapInches: 6 },
+    conditionedPerimeter: { width: 40, depth: 30 },
+    calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
+    exteriorPolygon: [],
+    perimeterLocked: false,
+    rooms: [
+      { id: "room-1", name: "Great Room", x: 0, y: 0, width: 18, depth: 16, ceilingHeight: 9 },
+      { id: "room-2", name: "Kitchen", x: 18, y: 0, width: 12, depth: 14, ceilingHeight: 9 },
+    ],
+  };
+}
+
+function makeTakeoffProject(
+  name: string,
+  frontDoorFaces: TakeoffProject["frontDoorFaces"],
+  floor: TakeoffFloor,
+): TakeoffProject {
+  return {
+    schemaVersion: "takeoff.v1",
+    name,
+    frontDoorFaces,
+    floors: [floor],
+  };
+}
 
 function closeRing(points: TakeoffPoint[]): Ring {
   const ring = points.map((point) => [point.x, point.y] as [number, number]);
@@ -386,26 +427,66 @@ function roomColor(index: number) {
   return colors[index % colors.length];
 }
 
+function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFloor {
+  const fallback = makeInitialFloor();
+  if (!rawFloor) return fallback;
+  return {
+    ...fallback,
+    ...rawFloor,
+    id: rawFloor.id || fallback.id,
+    name: rawFloor.name || fallback.name,
+    authoringMode: rawFloor.authoringMode || fallback.authoringMode,
+    designGrid: { ...fallback.designGrid, ...(rawFloor.designGrid ?? {}) },
+    scale: { ...fallback.scale, ...(rawFloor.scale ?? {}) },
+    reference: rawFloor.reference,
+    calibration: {
+      ...fallback.calibration,
+      ...(rawFloor.calibration ?? {}),
+      lines: rawFloor.calibration?.lines ?? [],
+    },
+    conditionedPerimeter: { ...fallback.conditionedPerimeter, ...(rawFloor.conditionedPerimeter ?? {}) },
+    exteriorPolygon: rawFloor.exteriorPolygon ?? [],
+    perimeterLocked: Boolean(rawFloor.perimeterLocked),
+    rooms: rawFloor.rooms ?? [],
+    attributedSlices: rawFloor.attributedSlices ?? [],
+  };
+}
+
+function normalizeTakeoffProject(rawProject: Partial<TakeoffProject>): TakeoffProject {
+  const frontDoorFaces = directionOptions.includes(rawProject.frontDoorFaces as TakeoffProject["frontDoorFaces"])
+    ? rawProject.frontDoorFaces as TakeoffProject["frontDoorFaces"]
+    : "S";
+  return makeTakeoffProject(
+    rawProject.name || "Takeoff V1 Draft",
+    frontDoorFaces,
+    normalizeFloor(rawProject.floors?.[0]),
+  );
+}
+
+function takeoffSnapshot(project: TakeoffProject) {
+  return JSON.stringify(project);
+}
+
+function formatTimestamp(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString();
+}
+
 export function TakeoffApp() {
   const [projectName, setProjectName] = useState("Takeoff V1 Draft");
   const [frontDoorFaces, setFrontDoorFaces] = useState<(typeof directionOptions)[number]>("S");
-  const [floor, setFloor] = useState<TakeoffFloor>({
-    id: "floor-1",
-    name: "First Floor",
-    authoringMode: "grid_manual",
-    designGrid: { width: 60, depth: 45 },
-    scale: { feetPerGrid: 1, gridSnapInches: 6 },
-    conditionedPerimeter: { width: 40, depth: 30 },
-    calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
-    exteriorPolygon: [],
-    perimeterLocked: false,
-    rooms: [
-      { id: "room-1", name: "Great Room", x: 0, y: 0, width: 18, depth: 16, ceilingHeight: 9 },
-      { id: "room-2", name: "Kitchen", x: 18, y: 0, width: 12, depth: 14, ceilingHeight: 9 },
-    ],
-  });
+  const [floor, setFloor] = useState<TakeoffFloor>(() => makeInitialFloor());
   const [draftRoom, setDraftRoom] = useState({ name: "Bedroom", x: 0, y: 16, width: 12, depth: 12, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
+  const [takeoffId, setTakeoffId] = useState<number | null>(null);
+  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "S", makeInitialFloor())));
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [openDialog, setOpenDialog] = useState(false);
+  const [openDialogLoading, setOpenDialogLoading] = useState(false);
+  const [openDialogError, setOpenDialogError] = useState("");
+  const [savedTakeoffs, setSavedTakeoffs] = useState<SavedTakeoffRow[]>([]);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [zoom, setZoom] = useState(1);
@@ -433,14 +514,11 @@ export function TakeoffApp() {
   }, [referenceUrl]);
 
   const takeoffProject = useMemo<TakeoffProject>(
-    () => ({
-      schemaVersion: "takeoff.v1",
-      name: projectName,
-      frontDoorFaces,
-      floors: [floor],
-    }),
+    () => makeTakeoffProject(projectName, frontDoorFaces, floor),
     [floor, frontDoorFaces, projectName],
   );
+  const serializedTakeoff = useMemo(() => takeoffSnapshot(takeoffProject), [takeoffProject]);
+  const isDirty = takeoffId === null || serializedTakeoff !== savedSnapshot;
   const validation = useMemo(() => buildValidation(floor), [floor]);
   const computedFootprintArea = footprintArea(floor);
   const assignedArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
@@ -1085,6 +1163,72 @@ export function TakeoffApp() {
     setFloor((current) => ({ ...current, rooms: current.rooms.filter((room) => room.id !== id) }));
   }
 
+  async function saveTakeoff() {
+    setSaveLoading(true);
+    setMessage("");
+    try {
+      const response = await fetch(takeoffId ? `/api/takeoffs/${takeoffId}` : "/api/takeoffs", {
+        method: takeoffId ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: serializedTakeoff,
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const data: { id: number } = await response.json();
+      setTakeoffId(data.id);
+      setSavedSnapshot(serializedTakeoff);
+      setMessage("Takeoff saved.");
+    } catch (error) {
+      setMessage(error instanceof Error ? `Could not save takeoff: ${error.message}` : "Could not save takeoff.");
+    } finally {
+      setSaveLoading(false);
+    }
+  }
+
+  async function openTakeoffList() {
+    setOpenDialog(true);
+    setOpenDialogLoading(true);
+    setOpenDialogError("");
+    try {
+      const response = await fetch("/api/takeoffs");
+      if (!response.ok) throw new Error(await response.text());
+      const rows: SavedTakeoffRow[] = await response.json();
+      setSavedTakeoffs(rows);
+    } catch (error) {
+      setOpenDialogError(error instanceof Error ? error.message : "Could not load saved takeoffs.");
+    } finally {
+      setOpenDialogLoading(false);
+    }
+  }
+
+  async function loadTakeoff(id: number) {
+    setOpenDialogLoading(true);
+    setOpenDialogError("");
+    try {
+      const response = await fetch(`/api/takeoffs/${id}`);
+      if (!response.ok) throw new Error(await response.text());
+      const loadedProject = normalizeTakeoffProject(await response.json());
+      if (referenceUrl) URL.revokeObjectURL(referenceUrl);
+      setReferenceUrl("");
+      setReferenceRenderStatus(loadedProject.floors[0].reference ? "Reference metadata reopened. Re-upload the plan file to restore the underlay." : "");
+      setProjectName(loadedProject.name);
+      setFrontDoorFaces(loadedProject.frontDoorFaces);
+      setFloor(loadedProject.floors[0]);
+      setTakeoffId(id);
+      setSavedSnapshot(takeoffSnapshot(loadedProject));
+      setOpenDialog(false);
+      setCalibrationStart(null);
+      setRoomPolygonDraft([]);
+      setDragState(null);
+      setWorkflowStep("trace");
+      setTraceTool("select");
+      setMessage("Takeoff reopened.");
+    } catch (error) {
+      setOpenDialogError(error instanceof Error ? error.message : "Could not open takeoff.");
+    } finally {
+      setOpenDialogLoading(false);
+    }
+  }
+
   async function handleReference(file: File | undefined) {
     if (!file) return;
     const kind = file.type.includes("pdf") ? "pdf" : "image";
@@ -1124,9 +1268,19 @@ export function TakeoffApp() {
       <header className="takeoff-toolbar">
         <div>
           <h1>Takeoff V1</h1>
-          <p>{floor.name} · {Math.round(assignedArea)} sf assigned · {Math.max(0, Math.round(unassignedArea))} sf open</p>
+          <p>
+            {floor.name} · {Math.round(assignedArea)} sf assigned · {Math.max(0, Math.round(unassignedArea))} sf open
+            {takeoffId ? ` · Takeoff #${takeoffId}` : ""}
+          </p>
         </div>
         <div className="takeoff-toolbar-actions">
+          <button onClick={openTakeoffList}>Open</button>
+          <button className="toolbar-primary" onClick={saveTakeoff} disabled={saveLoading}>
+            {saveLoading ? "Saving..." : takeoffId ? "Save" : "Save Draft"}
+          </button>
+          <span className={`takeoff-save-status ${isDirty ? "takeoff-save-status--dirty" : ""}`}>
+            {isDirty ? "Unsaved" : "Saved"}
+          </span>
           <a className="button" href="#">Calculator</a>
           <a className="button" href="/#/projects">Projects</a>
         </div>
@@ -1649,6 +1803,46 @@ export function TakeoffApp() {
           )}
         </aside>
       </section>
+      {openDialog && (
+        <div className="modal-backdrop open-dialog-backdrop" onClick={() => setOpenDialog(false)}>
+          <div className="modal open-dialog-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Open Takeoff</h2>
+              <button className="modal-close" onClick={() => setOpenDialog(false)}>x</button>
+            </div>
+            {openDialogLoading && <p className="modal-empty">Loading...</p>}
+            {openDialogError && <p className="modal-error">{openDialogError}</p>}
+            {!openDialogLoading && !openDialogError && savedTakeoffs.length === 0 && (
+              <p className="modal-empty">No saved takeoffs yet. Save this draft to create the first one.</p>
+            )}
+            {!openDialogLoading && savedTakeoffs.length > 0 && (
+              <table className="project-list-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Reference</th>
+                    <th>Updated</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {savedTakeoffs.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        <strong>{row.name || "Untitled Takeoff"}</strong>
+                        <div className="takeoff-muted">{row.schema_version || "takeoff.v1"}</div>
+                      </td>
+                      <td>{row.description || "-"}</td>
+                      <td>{formatTimestamp(row.updated_at) || "-"}</td>
+                      <td><button className="toolbar-primary" onClick={() => loadTakeoff(row.id)}>Open</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

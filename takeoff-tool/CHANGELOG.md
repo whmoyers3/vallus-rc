@@ -185,3 +185,21 @@ Notes:
 
 - Current boolean workflow keeps the largest resulting polygon if an operation creates multiple disconnected pieces.
 - More advanced merge/split review UI is still needed before production use.
+
+## 2026-06-21 - Editable Takeoff Save/Reopen
+
+Completed the Phase 1 editable takeoff persistence requirement.
+
+Implemented:
+
+- Added Supabase `takeoff_projects` storage for editable takeoff JSON separate from finalized `calculations` payloads.
+- Added `/api/takeoffs` CRUD routes for list, create, reopen, update, and delete.
+- Added a one-time Supabase migration file for existing databases.
+- Added Takeoff V1 toolbar Save/Open controls with saved/unsaved state.
+- Added an Open Takeoff modal listing saved takeoff drafts.
+- Reopened takeoff JSON restores project name, floor setup, crop metadata, scale calibration, exterior polygon, room polygons, labels, and attributed slices.
+
+Notes:
+
+- Plan PDF/image file storage is not embedded in JSON; reopened drafts preserve reference metadata and can reattach the underlay later.
+- Final Markdown payload export remains deferred until room characteristics, windows/doors, ceilings, and floor/ceiling boundary handling are complete.
