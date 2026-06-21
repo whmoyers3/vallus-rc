@@ -628,11 +628,27 @@ button.toolbar-primary:hover {
   align-items: start;
 }
 
+.takeoff-layout--left-collapsed {
+  grid-template-columns: 44px minmax(520px, 1fr) minmax(260px, 340px);
+}
+
+.takeoff-layout--right-collapsed {
+  grid-template-columns: minmax(220px, 280px) minmax(520px, 1fr) 44px;
+}
+
+.takeoff-layout--left-collapsed.takeoff-layout--right-collapsed {
+  grid-template-columns: 44px minmax(520px, 1fr) 44px;
+}
+
 .takeoff-sidebar {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+}
+
+.takeoff-sidebar--collapsed {
+  min-height: 360px;
 }
 
 .takeoff-panel,
@@ -659,6 +675,31 @@ button.toolbar-primary:hover {
   margin-bottom: 10px;
 }
 
+.takeoff-icon-button,
+.takeoff-rail-toggle {
+  background: #f6f8fa;
+  border: 1px solid #c9d3dc;
+  border-radius: 5px;
+  color: #405060;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.takeoff-icon-button {
+  padding: 4px 7px;
+}
+
+.takeoff-rail-toggle {
+  align-items: center;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  min-height: 360px;
+  padding: 8px 0;
+  writing-mode: vertical-rl;
+}
+
 .takeoff-panel h2,
 .takeoff-stage-head h2 {
   font-size: 13px;
@@ -668,6 +709,13 @@ button.toolbar-primary:hover {
 .takeoff-stage-head {
   border-bottom: 1px solid #e8edf1;
   padding: 12px 14px;
+}
+
+.takeoff-stage-actions {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .takeoff-stage-head p,
@@ -708,6 +756,17 @@ button.toolbar-primary:hover {
   text-align: left;
 }
 
+.takeoff-note {
+  background: #eef5fb;
+  border: 1px solid #c9ddec;
+  border-radius: 6px;
+  color: #31516b;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+  padding: 8px;
+}
+
 .takeoff-stats {
   display: flex;
   gap: 8px;
@@ -724,11 +783,40 @@ button.toolbar-primary:hover {
   padding: 5px 8px;
 }
 
+.takeoff-stage-tools {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.takeoff-stage-tools button {
+  background: #ffffff;
+  border: 1px solid #c9d3dc;
+  border-radius: 5px;
+  color: #34495c;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  min-width: 32px;
+  padding: 5px 8px;
+}
+
+.takeoff-stage-tools span {
+  color: #566575;
+  font-size: 12px;
+  min-width: 40px;
+  text-align: center;
+}
+
+.takeoff-canvas-scroll {
+  background: #f1f5f8;
+  max-height: 62vh;
+  overflow: auto;
+}
+
 .takeoff-canvas {
   display: block;
-  height: auto;
-  max-height: 58vh;
-  width: 100%;
+  min-width: 100%;
 }
 
 .takeoff-lower-grid {
@@ -743,6 +831,12 @@ button.toolbar-primary:hover {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.takeoff-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .takeoff-message,
@@ -812,7 +906,10 @@ button.toolbar-primary:hover {
 }
 
 @media (max-width: 1180px) {
-  .takeoff-layout {
+  .takeoff-layout,
+  .takeoff-layout--left-collapsed,
+  .takeoff-layout--right-collapsed,
+  .takeoff-layout--left-collapsed.takeoff-layout--right-collapsed {
     grid-template-columns: 240px minmax(0, 1fr);
   }
   .takeoff-layout > .takeoff-sidebar:last-child {
@@ -829,8 +926,20 @@ button.toolbar-primary:hover {
     flex-direction: column;
   }
   .takeoff-layout,
+  .takeoff-layout--left-collapsed,
+  .takeoff-layout--right-collapsed,
+  .takeoff-layout--left-collapsed.takeoff-layout--right-collapsed,
   .takeoff-lower-grid {
     grid-template-columns: 1fr;
+  }
+  .takeoff-stage-head,
+  .takeoff-stage-actions {
+    align-items: flex-start;
+  }
+  .takeoff-rail-toggle {
+    min-height: auto;
+    padding: 8px;
+    writing-mode: horizontal-tb;
   }
   .takeoff-room-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));

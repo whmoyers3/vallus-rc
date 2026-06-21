@@ -38,6 +38,27 @@ function insidePerimeter(room: TakeoffRectRoom, floor: TakeoffFloor) {
   );
 }
 
+function findOpenRoomPosition(floor: TakeoffFloor, candidate: TakeoffRectRoom) {
+  if (candidate.width <= 0 || candidate.depth <= 0) return null;
+
+  const snapFeet = Math.max(0.25, floor.scale.gridSnapInches / 12);
+  const maxX = floor.conditionedPerimeter.width - candidate.width;
+  const maxY = floor.conditionedPerimeter.depth - candidate.depth;
+
+  if (maxX < 0 || maxY < 0) return null;
+
+  for (let y = 0; y <= maxY + 0.001; y += snapFeet) {
+    for (let x = 0; x <= maxX + 0.001; x += snapFeet) {
+      const room = { ...candidate, x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
+      if (insidePerimeter(room, floor) && !floor.rooms.some((existing) => overlaps(existing, room))) {
+        return { x: room.x, y: room.y };
+      }
+    }
+  }
+
+  return null;
+}
+
 function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
   const issues: TakeoffValidationIssue[] = [];
   const footprintArea = floor.conditionedPerimeter.width * floor.conditionedPerimeter.depth;
@@ -62,8 +83,13 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
   }
 
   const unassigned = footprintArea - roomArea;
-  if (footprintArea > 0 && unassigned > 1) {
-    issues.push({ severity: "warning", message: `${Math.round(unassigned)} sf is not assigned to a room.` });
+  if (footprintArea > 0 && floor.rooms.length === 0) {
+    issues.push({
+      severity: "warning",
+      message: `No rooms are assigned yet. Conditioned footprint is ${Math.round(footprintArea)} sf.`,
+    });
+  } else if (footprintArea > 0 && unassigned > 1) {
+    issues.push({ severity: "warning", message: `${Math.round(unassigned)} sf of conditioned footprint remains unassigned.` });
   }
 
   return issues;
@@ -159,6 +185,9 @@ export function TakeoffApp() {
   });
   const [draftRoom, setDraftRoom] = useState({ name: "Bedroom", x: 0, y: 16, width: 12, depth: 12, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [zoom, setZoom] = useState(1);
 
   const takeoffProject = useMemo<TakeoffProject>(
     () => ({
@@ -177,10 +206,14 @@ export function TakeoffApp() {
 
   const canvasWidth = 720;
   const canvasHeight = 420;
-  const scale = Math.min(
+  const baseScale = Math.min(
     (canvasWidth - 56) / Math.max(floor.conditionedPerimeter.width, 1),
     (canvasHeight - 56) / Math.max(floor.conditionedPerimeter.depth, 1),
   );
+  const scale = baseScale * zoom;
+  const drawingWidth = Math.max(canvasWidth, floor.conditionedPerimeter.width * scale + 56);
+  const drawingHeight = Math.max(canvasHeight, floor.conditionedPerimeter.depth * scale + 56);
+  const gridSize = Math.max(4, scale * floor.scale.feetPerGrid);
   const offsetX = 28;
   const offsetY = 28;
 
@@ -196,18 +229,37 @@ export function TakeoffApp() {
   }
 
   function addRoom() {
-    const room: TakeoffRectRoom = { id: nextId("room"), ...draftRoom };
-    if (!insidePerimeter(room, floor)) {
-      setMessage("Room is outside the conditioned footprint.");
-      return;
+    let room: TakeoffRectRoom = { id: nextId("room"), ...draftRoom };
+    const hasConflict = !insidePerimeter(room, floor) || floor.rooms.some((existing) => overlaps(existing, room));
+
+    if (hasConflict) {
+      const openPosition = findOpenRoomPosition(floor, room);
+      if (!openPosition) {
+        setMessage("No open spot fits that room size inside the conditioned footprint.");
+        return;
+      }
+      room = { ...room, ...openPosition };
     }
-    const overlap = floor.rooms.find((existing) => overlaps(existing, room));
-    if (overlap) {
-      setMessage(`Room overlaps ${overlap.name}. Move or resize it first.`);
-      return;
-    }
+
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
-    setMessage(`${room.name} added.`);
+    setDraftRoom((current) => {
+      const nextCandidate = { ...current, x: room.x, y: room.y + room.depth };
+      const nextRoom: TakeoffRectRoom = { id: "draft", ...nextCandidate };
+      const nextPosition = findOpenRoomPosition({ ...floor, rooms: [...floor.rooms, room] }, nextRoom);
+      return nextPosition ? { ...nextCandidate, ...nextPosition } : nextCandidate;
+    });
+    setMessage(hasConflict ? `${room.name} added at the next open spot.` : `${room.name} added.`);
+  }
+
+  function moveDraftRoomToOpenSpot() {
+    const room: TakeoffRectRoom = { id: "draft", ...draftRoom };
+    const openPosition = findOpenRoomPosition(floor, room);
+    if (!openPosition) {
+      setMessage("No open spot fits that draft room size.");
+      return;
+    }
+    setDraftRoom((current) => ({ ...current, ...openPosition }));
+    setMessage("Draft room moved to the next open spot.");
   }
 
   function removeRoom(id: string) {
@@ -233,11 +285,16 @@ export function TakeoffApp() {
         </div>
       </header>
 
-      <section className="takeoff-layout">
-        <aside className="takeoff-sidebar">
+      <section className={`takeoff-layout ${!leftPanelOpen ? "takeoff-layout--left-collapsed" : ""} ${!rightPanelOpen ? "takeoff-layout--right-collapsed" : ""}`}>
+        <aside className={`takeoff-sidebar ${!leftPanelOpen ? "takeoff-sidebar--collapsed" : ""}`}>
+          {!leftPanelOpen ? (
+            <button className="takeoff-rail-toggle" onClick={() => setLeftPanelOpen(true)} aria-label="Show setup panel">Setup</button>
+          ) : (
+          <>
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
               <h2>Project</h2>
+              <button className="takeoff-icon-button" onClick={() => setLeftPanelOpen(false)} aria-label="Hide setup panel">Hide</button>
             </div>
             <label>
               Name
@@ -275,6 +332,11 @@ export function TakeoffApp() {
               <input type="file" accept=".pdf,image/*" onChange={(event) => handleReference(event.target.files?.[0])} />
             </label>
             {floor.reference && <p className="takeoff-muted">{floor.reference.filename}</p>}
+            {floor.authoringMode !== "grid_manual" && (
+              <p className="takeoff-note">
+                Trace mode stores the uploaded reference in this scaffold. PDF/image rendering over the grid is the next build slice.
+              </p>
+            )}
           </section>
 
           <section className="takeoff-panel">
@@ -316,6 +378,8 @@ export function TakeoffApp() {
               <input type="number" min="0" value={floor.conditionedPerimeter.depth} onChange={(event) => updatePerimeter("depth", Number(event.target.value))} />
             </label>
           </section>
+          </>
+          )}
         </aside>
 
         <section className="takeoff-stage-panel">
@@ -324,41 +388,58 @@ export function TakeoffApp() {
               <h2>Plan Grid</h2>
               <p>{Math.round(footprintArea)} sf footprint</p>
             </div>
-            <div className="takeoff-stats">
-              <span><b>{floor.rooms.length}</b> rooms</span>
-              <span><b>{Math.round(assignedArea)}</b> assigned</span>
-              <span><b>{Math.max(0, Math.round(unassignedArea))}</b> open</span>
+            <div className="takeoff-stage-actions">
+              <div className="takeoff-stats">
+                <span><b>{floor.rooms.length}</b> rooms</span>
+                <span><b>{Math.round(assignedArea)}</b> assigned</span>
+                <span><b>{Math.max(0, Math.round(unassignedArea))}</b> open</span>
+              </div>
+              <div className="takeoff-stage-tools" aria-label="Plan zoom controls">
+                <button onClick={() => setZoom((current) => Math.max(0.5, Number((current - 0.25).toFixed(2))))}>-</button>
+                <button onClick={() => setZoom(1)}>Fit</button>
+                <span>{Math.round(zoom * 100)}%</span>
+                <button onClick={() => setZoom((current) => Math.min(3, Number((current + 0.25).toFixed(2))))}>+</button>
+              </div>
             </div>
           </div>
 
-          <svg className="takeoff-canvas" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} role="img" aria-label="Takeoff grid preview">
-            <defs>
-              <pattern id="takeoff-grid-small" width={scale * floor.scale.feetPerGrid} height={scale * floor.scale.feetPerGrid} patternUnits="userSpaceOnUse">
-                <path d={`M ${scale * floor.scale.feetPerGrid} 0 L 0 0 0 ${scale * floor.scale.feetPerGrid}`} fill="none" stroke="#dce4ea" strokeWidth="1" />
-              </pattern>
-            </defs>
-            <rect x="0" y="0" width={canvasWidth} height={canvasHeight} fill="#f8fafb" />
-            <rect x={offsetX} y={offsetY} width={floor.conditionedPerimeter.width * scale} height={floor.conditionedPerimeter.depth * scale} fill="url(#takeoff-grid-small)" stroke="#1f6fb2" strokeWidth="2" />
-            {floor.rooms.map((room, index) => (
-              <g key={room.id}>
-                <rect
-                  x={offsetX + room.x * scale}
-                  y={offsetY + room.y * scale}
-                  width={room.width * scale}
-                  height={room.depth * scale}
-                  fill={roomColor(index)}
-                  stroke="#324457"
-                  strokeWidth="1.5"
-                />
-                <text x={offsetX + room.x * scale + 6} y={offsetY + room.y * scale + 18} fontSize="12" fill="#1f2933">
-                  {room.name}
-                </text>
-                <text x={offsetX + room.x * scale + 6} y={offsetY + room.y * scale + 34} fontSize="11" fill="#465667">
-                  {Math.round(rectArea(room))} sf
-                </text>
-              </g>
-            ))}
-          </svg>
+          <div className="takeoff-canvas-scroll">
+            <svg
+              className="takeoff-canvas"
+              viewBox={`0 0 ${drawingWidth} ${drawingHeight}`}
+              width={drawingWidth}
+              height={drawingHeight}
+              role="img"
+              aria-label="Takeoff grid preview"
+            >
+              <defs>
+                <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
+                  <path d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`} fill="none" stroke="#dce4ea" strokeWidth="1" />
+                </pattern>
+              </defs>
+              <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill="#f8fafb" />
+              <rect x={offsetX} y={offsetY} width={floor.conditionedPerimeter.width * scale} height={floor.conditionedPerimeter.depth * scale} fill="url(#takeoff-grid-small)" stroke="#1f6fb2" strokeWidth="2" />
+              {floor.rooms.map((room, index) => (
+                <g key={room.id}>
+                  <rect
+                    x={offsetX + room.x * scale}
+                    y={offsetY + room.y * scale}
+                    width={room.width * scale}
+                    height={room.depth * scale}
+                    fill={roomColor(index)}
+                    stroke="#324457"
+                    strokeWidth="1.5"
+                  />
+                  <text x={offsetX + room.x * scale + 6} y={offsetY + room.y * scale + 18} fontSize="12" fill="#1f2933">
+                    {room.name}
+                  </text>
+                  <text x={offsetX + room.x * scale + 6} y={offsetY + room.y * scale + 34} fontSize="11" fill="#465667">
+                    {Math.round(rectArea(room))} sf
+                  </text>
+                </g>
+              ))}
+            </svg>
+          </div>
 
           <div className="takeoff-lower-grid">
             <section className="takeoff-panel">
@@ -373,7 +454,10 @@ export function TakeoffApp() {
                 <label>Depth<input type="number" min="0" value={draftRoom.depth} onChange={(event) => setDraftRoom({ ...draftRoom, depth: Number(event.target.value) })} /></label>
                 <label>Height<input type="number" min="0" step="0.5" value={draftRoom.ceilingHeight} onChange={(event) => setDraftRoom({ ...draftRoom, ceilingHeight: Number(event.target.value) })} /></label>
               </div>
-              <button className="toolbar-primary" onClick={addRoom}>Add Room</button>
+              <div className="takeoff-form-actions">
+                <button className="toolbar-primary" onClick={addRoom}>Add Room</button>
+                <button onClick={moveDraftRoomToOpenSpot}>Find Open Spot</button>
+              </div>
               {message && <p className="takeoff-message">{message}</p>}
             </section>
 
@@ -394,10 +478,15 @@ export function TakeoffApp() {
           </div>
         </section>
 
-        <aside className="takeoff-sidebar">
+        <aside className={`takeoff-sidebar ${!rightPanelOpen ? "takeoff-sidebar--collapsed" : ""}`}>
+          {!rightPanelOpen ? (
+            <button className="takeoff-rail-toggle" onClick={() => setRightPanelOpen(true)} aria-label="Show output panel">Output</button>
+          ) : (
+          <>
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
               <h2>Rooms</h2>
+              <button className="takeoff-icon-button" onClick={() => setRightPanelOpen(false)} aria-label="Hide output panel">Hide</button>
             </div>
             <div className="takeoff-room-list">
               {floor.rooms.map((room) => (
@@ -425,6 +514,8 @@ export function TakeoffApp() {
             </div>
             <pre className="takeoff-code">{JSON.stringify(payload, null, 2)}</pre>
           </section>
+          </>
+          )}
         </aside>
       </section>
     </main>
