@@ -988,14 +988,22 @@ export function TakeoffApp() {
     setMessage(`${room.name} added.`);
   }
 
+  function finishPolygonRoom() {
+    if (roomPolygonDraft.length < 3) {
+      setMessage("Add at least 3 polygon points before finishing the room.");
+      return;
+    }
+    createPolygonRoom(roomPolygonDraft);
+  }
+
   function addPolygonRoomPoint(point: TakeoffPoint) {
     const snapped = snapToExistingGeometry(point);
     if (roomPolygonDraft.length >= 3 && distance(snapped, roomPolygonDraft[0]) <= Math.max(1, floor.scale.gridSnapInches / 12)) {
-      createPolygonRoom(roomPolygonDraft);
+      finishPolygonRoom();
       return;
     }
     setRoomPolygonDraft((current) => [...current, snapped]);
-    setMessage("Polygon point added. Click back near the first point to complete the room.");
+    setMessage(roomPolygonDraft.length >= 2 ? "Polygon point added. Click Close or press Enter to finish." : "Polygon point added.");
   }
 
   function assignHighlightedSlices() {
@@ -1345,6 +1353,25 @@ export function TakeoffApp() {
     setZoom(1);
     setMessage("Reference uploaded. Drag a crop around the plan area, then continue to scale setup.");
   }
+
+  useEffect(() => {
+    if (!roomPolygonMode) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finishPolygonRoom();
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setRoomPolygonDraft([]);
+        setMessage("Polygon draft cleared.");
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [roomPolygonDraft, roomPolygonMode]);
 
   return (
     <main className="takeoff-root">
@@ -1778,9 +1805,61 @@ export function TakeoffApp() {
                     strokeDasharray="6 4"
                     strokeWidth="2"
                   />
-                  {roomPolygonDraft.map((point, index) => (
-                    <circle key={`draft-room-point-${index}`} cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="4" fill="#2f7a4f" stroke="#ffffff" strokeWidth="1.5" />
-                  ))}
+                  {roomPolygonDraft.length >= 3 && (
+                    <>
+                      <line
+                        x1={offsetX + roomPolygonDraft[roomPolygonDraft.length - 1].x * scale}
+                        y1={offsetY + roomPolygonDraft[roomPolygonDraft.length - 1].y * scale}
+                        x2={offsetX + roomPolygonDraft[0].x * scale}
+                        y2={offsetY + roomPolygonDraft[0].y * scale}
+                        stroke="#2f7a4f"
+                        strokeDasharray="3 4"
+                        strokeWidth="2"
+                      />
+                      <polygon
+                        points={roomPolygonDraft.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
+                        fill="rgba(72, 128, 93, 0.12)"
+                        stroke="none"
+                      />
+                    </>
+                  )}
+                  {roomPolygonDraft.map((point, index) => {
+                    const canClose = index === 0 && roomPolygonDraft.length >= 3;
+                    return (
+                      <g
+                        key={`draft-room-point-${index}`}
+                        onClick={(event) => {
+                          if (!canClose) return;
+                          event.stopPropagation();
+                          finishPolygonRoom();
+                        }}
+                        onPointerDown={(event) => {
+                          if (canClose) event.stopPropagation();
+                        }}
+                        style={{ cursor: canClose ? "pointer" : "default" }}
+                      >
+                        <circle
+                          cx={offsetX + point.x * scale}
+                          cy={offsetY + point.y * scale}
+                          r={canClose ? 7 : 4}
+                          fill={canClose ? "#1f6f3c" : "#2f7a4f"}
+                          stroke="#ffffff"
+                          strokeWidth={canClose ? "2" : "1.5"}
+                        />
+                        {canClose && (
+                          <text
+                            x={offsetX + point.x * scale + 10}
+                            y={offsetY + point.y * scale - 8}
+                            fontSize="11"
+                            fill="#1f6f3c"
+                            fontWeight="700"
+                          >
+                            Close
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
                 </g>
               )}
             </svg>
@@ -1796,10 +1875,11 @@ export function TakeoffApp() {
                 <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
                 <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
                 <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setTraceTool("select"); }}>Subtract</button>
+                {roomPolygonDraft.length >= 3 && <button className="toolbar-primary" onClick={finishPolygonRoom}>Finish Polygon</button>}
                 {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
               </div>
               {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle. Point-by-point room shapes are the next step.</p>}
-              {roomPolygonMode && <p className="takeoff-note">Click room corners. Points snap to exterior and room edges. Click near the first point to complete.</p>}
+              {roomPolygonMode && <p className="takeoff-note">Click room corners. After 3 points, use Finish Polygon, press Enter, or click the Close marker on the first point.</p>}
               {subtractMode && (
                 <>
                   <label>

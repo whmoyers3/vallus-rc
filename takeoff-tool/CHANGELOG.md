@@ -222,3 +222,14 @@ Notes:
 
 - This keeps PDF/image files disposable later without deleting the editable geometry JSON.
 - A future cleanup tool should remove old stored reference files while preserving takeoff drafts.
+
+## 2026-06-21 - Polygon Close Controls
+
+Improved the draw-polygon room tool so closing a room is explicit.
+
+Implemented:
+
+- Added a Finish Polygon button once a draft has at least 3 points.
+- Added Enter to finish and Escape to clear a polygon draft.
+- Added a visible Close marker on the first polygon point.
+- Added a closing-edge preview and light fill once the polygon can be finished.
