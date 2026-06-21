@@ -15,6 +15,15 @@ export type TakeoffRectRoom = {
   ceilingHeight: number;
 };
 
+export type TakeoffScaleLine = {
+  id: string;
+  label: string;
+  orientation: "horizontal" | "vertical" | "any";
+  start: TakeoffPoint;
+  end: TakeoffPoint;
+  knownFeet: number;
+};
+
 export type TakeoffFloor = {
   id: string;
   name: string;
@@ -30,6 +39,13 @@ export type TakeoffFloor = {
   reference?: {
     filename: string;
     kind: "pdf" | "image";
+  };
+  calibration: {
+    lines: TakeoffScaleLine[];
+    confirmed: boolean;
+    appliedFactor: number;
+    expectedArea?: number;
+    areaConfirmed: boolean;
   };
   conditionedPerimeter: {
     width: number;

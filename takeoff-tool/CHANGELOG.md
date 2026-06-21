@@ -98,3 +98,21 @@ Notes:
 
 - The PDF is currently a visual underlay only; the traced polygon remains the calculation source of truth.
 - This does not yet include pdf.js page rendering, page selection, rotation, or calibration handles.
+
+## 2026-06-21 - Import Scale Setup Added
+
+Added a dedicated scale setup workflow after PDF/image upload.
+
+Implemented:
+
+- Upload now starts in an import calibration step before exterior tracing.
+- Users can draw known horizontal, vertical, or free-angle dimension lines on the plan preview.
+- Each scale line accepts a known real-world dimension in feet.
+- The app computes an average scale correction and applies it to the design grid, fallback footprint, scale lines, rooms, and traced geometry.
+- The PDF/image underlay and SVG grid/overlay continue to use the same zoom and view transforms.
+- Exterior trace includes an expected floor-area sanity check and confirmation state.
+
+Notes:
+
+- Calibration lines are stored in takeoff JSON with the editable floor record.
+- The current PDF preview is still browser-native; pdf.js page rendering remains the recommended hardening step.

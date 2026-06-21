@@ -863,6 +863,32 @@ button.toolbar-primary:hover {
   gap: 8px;
 }
 
+.takeoff-scale-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.takeoff-scale-row {
+  border: 1px solid #e1e7ec;
+  border-radius: 6px;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: 1fr 86px;
+  padding: 8px;
+}
+
+.takeoff-scale-row span {
+  color: #66727e;
+  font-size: 12px;
+}
+
+.takeoff-scale-row button,
+.takeoff-scale-row span {
+  align-self: end;
+}
+
 .takeoff-message,
 .takeoff-ok {
   color: #3e6a42;

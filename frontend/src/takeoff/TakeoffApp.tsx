@@ -5,6 +5,7 @@ import type {
   TakeoffPoint,
   TakeoffProject,
   TakeoffRectRoom,
+  TakeoffScaleLine,
   TakeoffValidationIssue,
 } from "./types";
 
@@ -22,6 +23,40 @@ function nextId(prefix: string) {
 
 function rectArea(rect: Pick<TakeoffRectRoom, "width" | "depth">) {
   return Math.max(0, rect.width) * Math.max(0, rect.depth);
+}
+
+function lineLength(line: Pick<TakeoffScaleLine, "start" | "end">) {
+  return Math.hypot(line.end.x - line.start.x, line.end.y - line.start.y);
+}
+
+function scalePoint(point: TakeoffPoint, factor: number): TakeoffPoint {
+  return { x: Number((point.x * factor).toFixed(3)), y: Number((point.y * factor).toFixed(3)) };
+}
+
+function scaleRoom(room: TakeoffRectRoom, factor: number): TakeoffRectRoom {
+  return {
+    ...room,
+    x: Number((room.x * factor).toFixed(3)),
+    y: Number((room.y * factor).toFixed(3)),
+    width: Number((room.width * factor).toFixed(3)),
+    depth: Number((room.depth * factor).toFixed(3)),
+  };
+}
+
+function scaleLine(line: TakeoffScaleLine, factor: number): TakeoffScaleLine {
+  return { ...line, start: scalePoint(line.start, factor), end: scalePoint(line.end, factor) };
+}
+
+function calibrationFactor(lines: TakeoffScaleLine[]) {
+  const factors = lines
+    .map((line) => {
+      const measured = lineLength(line);
+      return measured > 0 && line.knownFeet > 0 ? line.knownFeet / measured : 0;
+    })
+    .filter((factor) => factor > 0);
+
+  if (factors.length === 0) return 0;
+  return factors.reduce((sum, factor) => sum + factor, 0) / factors.length;
 }
 
 function polygonArea(points: TakeoffPoint[]) {
@@ -254,6 +289,7 @@ export function TakeoffApp() {
     designGrid: { width: 60, depth: 45 },
     scale: { feetPerGrid: 1, gridSnapInches: 6 },
     conditionedPerimeter: { width: 40, depth: 30 },
+    calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
     exteriorPolygon: [],
     perimeterLocked: false,
     rooms: [
@@ -267,6 +303,9 @@ export function TakeoffApp() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
+  const [workflowStep, setWorkflowStep] = useState<"calibrate" | "trace">("trace");
+  const [calibrationOrientation, setCalibrationOrientation] = useState<TakeoffScaleLine["orientation"]>("horizontal");
+  const [calibrationStart, setCalibrationStart] = useState<TakeoffPoint | null>(null);
   const [referenceUrl, setReferenceUrl] = useState("");
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -291,6 +330,10 @@ export function TakeoffApp() {
   const unassignedArea = computedFootprintArea - assignedArea;
   const payload = useMemo(() => buildVrcPayload(takeoffProject), [takeoffProject]);
   const bounds = footprintBounds(floor);
+  const pendingScaleFactor = calibrationFactor(floor.calibration.lines);
+  const areaDeltaPct = floor.calibration.expectedArea && computedFootprintArea > 0
+    ? ((computedFootprintArea - floor.calibration.expectedArea) / floor.calibration.expectedArea) * 100
+    : 0;
 
   const canvasWidth = 720;
   const canvasHeight = 420;
@@ -322,6 +365,136 @@ export function TakeoffApp() {
       ...current,
       designGrid: { ...current.designGrid, [field]: Math.max(0, value) },
     }));
+  }
+
+  function pointFromCanvasEvent(event: React.MouseEvent<SVGSVGElement>) {
+    const svg = event.currentTarget;
+    const transform = svg.getScreenCTM();
+    if (!transform) return null;
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const svgPoint = point.matrixTransform(transform.inverse());
+    const snapFeet = Math.max(0.25, floor.scale.gridSnapInches / 12);
+    const rawX = (svgPoint.x - offsetX) / scale;
+    const rawY = (svgPoint.y - offsetY) / scale;
+    const x = Math.min(floor.designGrid.width, Math.max(0, Math.round(rawX / snapFeet) * snapFeet));
+    const y = Math.min(floor.designGrid.depth, Math.max(0, Math.round(rawY / snapFeet) * snapFeet));
+    return { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
+  }
+
+  function addCalibrationPoint(point: TakeoffPoint) {
+    if (!calibrationStart) {
+      setCalibrationStart(point);
+      setMessage(`Scale line start set at ${point.x} ft, ${point.y} ft. Click the other end.`);
+      return;
+    }
+
+    const end = { ...point };
+    if (calibrationOrientation === "horizontal") end.y = calibrationStart.y;
+    if (calibrationOrientation === "vertical") end.x = calibrationStart.x;
+
+    const measured = lineLength({ start: calibrationStart, end });
+    if (measured <= 0) {
+      setMessage("Scale line needs two different points.");
+      return;
+    }
+
+    const line: TakeoffScaleLine = {
+      id: nextId("scale"),
+      label: calibrationOrientation === "horizontal" ? "Known horizontal" : calibrationOrientation === "vertical" ? "Known vertical" : "Known dimension",
+      orientation: calibrationOrientation,
+      start: calibrationStart,
+      end,
+      knownFeet: Number(measured.toFixed(1)),
+    };
+
+    setFloor((current) => ({
+      ...current,
+      calibration: { ...current.calibration, lines: [...current.calibration.lines, line], confirmed: false, areaConfirmed: false },
+    }));
+    setCalibrationStart(null);
+    setMessage("Scale line added. Enter the real dimension, then add another line or apply scale.");
+  }
+
+  function updateScaleLine(id: string, patch: Partial<Pick<TakeoffScaleLine, "label" | "knownFeet">>) {
+    setFloor((current) => ({
+      ...current,
+      calibration: {
+        ...current.calibration,
+        confirmed: false,
+        lines: current.calibration.lines.map((line) => (line.id === id ? { ...line, ...patch } : line)),
+      },
+    }));
+  }
+
+  function removeScaleLine(id: string) {
+    setFloor((current) => ({
+      ...current,
+      calibration: { ...current.calibration, lines: current.calibration.lines.filter((line) => line.id !== id), confirmed: false },
+    }));
+  }
+
+  function clearScaleLines() {
+    setCalibrationStart(null);
+    setFloor((current) => ({ ...current, calibration: { ...current.calibration, lines: [], confirmed: false, areaConfirmed: false } }));
+    setMessage("Scale lines cleared.");
+  }
+
+  function applyCalibration() {
+    const factor = calibrationFactor(floor.calibration.lines);
+    if (!factor) {
+      setMessage("Add at least one scale line with a known dimension before applying scale.");
+      return;
+    }
+
+    setFloor((current) => ({
+      ...current,
+      designGrid: {
+        width: Number((current.designGrid.width * factor).toFixed(3)),
+        depth: Number((current.designGrid.depth * factor).toFixed(3)),
+      },
+      conditionedPerimeter: {
+        width: Number((current.conditionedPerimeter.width * factor).toFixed(3)),
+        depth: Number((current.conditionedPerimeter.depth * factor).toFixed(3)),
+      },
+      exteriorPolygon: current.exteriorPolygon.map((point) => scalePoint(point, factor)),
+      rooms: current.rooms.map((room) => scaleRoom(room, factor)),
+      calibration: {
+        ...current.calibration,
+        lines: current.calibration.lines.map((line) => scaleLine(line, factor)),
+        confirmed: true,
+        appliedFactor: Number((current.calibration.appliedFactor * factor).toFixed(5)),
+        areaConfirmed: false,
+      },
+    }));
+    setWorkflowStep("trace");
+    setTraceTool("exterior");
+    setCalibrationStart(null);
+    setMessage(`Scale applied. Average correction factor: ${factor.toFixed(3)}.`);
+  }
+
+  function skipCalibration() {
+    setFloor((current) => ({ ...current, calibration: { ...current.calibration, confirmed: true } }));
+    setWorkflowStep("trace");
+    setTraceTool("exterior");
+    setMessage("Calibration skipped. Trace carefully and confirm the computed floor area before room work.");
+  }
+
+  function updateExpectedArea(value: number) {
+    setFloor((current) => ({
+      ...current,
+      calibration: { ...current.calibration, expectedArea: Number.isFinite(value) && value > 0 ? value : undefined, areaConfirmed: false },
+    }));
+  }
+
+  function confirmFootprintArea() {
+    if (floor.exteriorPolygon.length < 3) {
+      setMessage("Trace the exterior perimeter before confirming floor area.");
+      return;
+    }
+    setFloor((current) => ({ ...current, calibration: { ...current.calibration, areaConfirmed: true } }));
+    setMessage("Footprint area confirmed. You can continue assigning rooms.");
   }
 
   function addExteriorPoint(point: TakeoffPoint) {
@@ -387,20 +560,14 @@ export function TakeoffApp() {
   }
 
   function handleCanvasClick(event: React.MouseEvent<SVGSVGElement>) {
+    const point = pointFromCanvasEvent(event);
+    if (!point) return;
+    if (workflowStep === "calibrate") {
+      addCalibrationPoint(point);
+      return;
+    }
     if (traceTool !== "exterior" || floor.perimeterLocked) return;
-    const svg = event.currentTarget;
-    const transform = svg.getScreenCTM();
-    if (!transform) return;
-    const point = svg.createSVGPoint();
-    point.x = event.clientX;
-    point.y = event.clientY;
-    const svgPoint = point.matrixTransform(transform.inverse());
-    const snapFeet = Math.max(0.25, floor.scale.gridSnapInches / 12);
-    const rawX = (svgPoint.x - offsetX) / scale;
-    const rawY = (svgPoint.y - offsetY) / scale;
-    const x = Math.min(floor.designGrid.width, Math.max(0, Math.round(rawX / snapFeet) * snapFeet));
-    const y = Math.min(floor.designGrid.depth, Math.max(0, Math.round(rawY / snapFeet) * snapFeet));
-    addExteriorPoint({ x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) });
+    addExteriorPoint(point);
   }
 
   function addRoom() {
@@ -446,7 +613,18 @@ export function TakeoffApp() {
     const kind = file.type.includes("pdf") ? "pdf" : "image";
     if (referenceUrl) URL.revokeObjectURL(referenceUrl);
     setReferenceUrl(URL.createObjectURL(file));
-    setFloor((current) => ({ ...current, reference: { filename: file.name, kind } }));
+    setWorkflowStep("calibrate");
+    setTraceTool("select");
+    setCalibrationStart(null);
+    setFloor((current) => ({
+      ...current,
+      authoringMode: kind === "pdf" ? "pdf_trace" : "image_trace",
+      reference: { filename: file.name, kind },
+      calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
+      exteriorPolygon: [],
+      perimeterLocked: false,
+    }));
+    setMessage("Reference uploaded. Add known horizontal and vertical scale lines before tracing.");
   }
 
   return (
@@ -511,10 +689,55 @@ export function TakeoffApp() {
             {floor.reference && <p className="takeoff-muted">{floor.reference.filename}</p>}
             {floor.authoringMode !== "grid_manual" && (
               <p className="takeoff-note">
-                The reference is shown under the grid for tracing. Set the design grid size first, then trace the conditioned exterior.
+                The reference is shown under the grid. Calibrate known dimensions first, then trace the conditioned exterior.
               </p>
             )}
           </section>
+
+          {floor.reference && (
+            <section className="takeoff-panel">
+              <div className="takeoff-panel-head">
+                <h2>Import Scale</h2>
+              </div>
+              <p className="takeoff-muted">
+                {workflowStep === "calibrate" ? "Click two endpoints for known dimensions on the preview." : "Scale setup complete."}
+              </p>
+              <div className="takeoff-form-actions">
+                <button className={workflowStep === "calibrate" && calibrationOrientation === "horizontal" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("horizontal"); }}>Horizontal</button>
+                <button className={workflowStep === "calibrate" && calibrationOrientation === "vertical" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("vertical"); }}>Vertical</button>
+                <button className={workflowStep === "calibrate" && calibrationOrientation === "any" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("any"); }}>Any</button>
+              </div>
+              {calibrationStart && <p className="takeoff-note">First point is set. Click the other end of the known dimension.</p>}
+              <div className="takeoff-scale-list">
+                {floor.calibration.lines.map((line) => {
+                  const measured = lineLength(line);
+                  const factor = measured > 0 && line.knownFeet > 0 ? line.knownFeet / measured : 0;
+                  return (
+                    <div key={line.id} className="takeoff-scale-row">
+                      <label>
+                        Label
+                        <input value={line.label} onChange={(event) => updateScaleLine(line.id, { label: event.target.value })} />
+                      </label>
+                      <label>
+                        Known ft
+                        <input type="number" min="0" step="0.1" value={line.knownFeet} onChange={(event) => updateScaleLine(line.id, { knownFeet: Number(event.target.value) })} />
+                      </label>
+                      <span>{measured.toFixed(1)} grid ft · {factor ? factor.toFixed(3) : "-"}x</span>
+                      <button onClick={() => removeScaleLine(line.id)}>Remove</button>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="takeoff-muted">
+                {pendingScaleFactor ? `Average scale correction: ${pendingScaleFactor.toFixed(3)}x` : "Add at least one known dimension."}
+              </p>
+              <div className="takeoff-form-actions">
+                <button className="toolbar-primary" onClick={applyCalibration}>Apply Scale</button>
+                <button onClick={skipCalibration}>Skip</button>
+                <button onClick={clearScaleLines}>Clear Lines</button>
+              </div>
+            </section>
+          )}
 
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
@@ -581,6 +804,21 @@ export function TakeoffApp() {
             {traceTool === "exterior" && !floor.perimeterLocked && (
               <p className="takeoff-note">Click the grid corners around the conditioned exterior. Lock it when the outline is closed.</p>
             )}
+            <label>
+              Expected floor area sf
+              <input
+                type="number"
+                min="0"
+                value={floor.calibration.expectedArea ?? ""}
+                onChange={(event) => updateExpectedArea(Number(event.target.value))}
+              />
+            </label>
+            <p className="takeoff-muted">
+              Computed {Math.round(computedFootprintArea)} sf
+              {floor.calibration.expectedArea ? ` · ${areaDeltaPct >= 0 ? "+" : ""}${areaDeltaPct.toFixed(1)}% vs expected` : ""}
+              {floor.calibration.areaConfirmed ? " · confirmed" : ""}
+            </p>
+            <button onClick={confirmFootprintArea}>Confirm Area</button>
           </section>
           </>
           )}
@@ -589,8 +827,11 @@ export function TakeoffApp() {
         <section className="takeoff-stage-panel">
           <div className="takeoff-stage-head">
             <div>
-              <h2>Plan Grid</h2>
-              <p>{Math.round(computedFootprintArea)} sf conditioned footprint · {floor.designGrid.width} x {floor.designGrid.depth} ft design grid</p>
+              <h2>{workflowStep === "calibrate" ? "Import Scale Setup" : "Plan Grid"}</h2>
+              <p>
+                {Math.round(computedFootprintArea)} sf conditioned footprint · {floor.designGrid.width} x {floor.designGrid.depth} ft design grid
+                {floor.calibration.confirmed ? ` · scale ${floor.calibration.appliedFactor}x` : ""}
+              </p>
             </div>
             <div className="takeoff-stage-actions">
               <div className="takeoff-stats">
@@ -635,7 +876,7 @@ export function TakeoffApp() {
               role="img"
               aria-label="Takeoff grid preview"
               onClick={handleCanvasClick}
-              style={{ cursor: traceTool === "exterior" && !floor.perimeterLocked ? "crosshair" : "default" }}
+              style={{ cursor: workflowStep === "calibrate" || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
             >
               <defs>
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
@@ -655,6 +896,29 @@ export function TakeoffApp() {
                   <text x={offsetX + point.x * scale + 6} y={offsetY + point.y * scale - 6} fontSize="10" fill="#1f2933">{index + 1}</text>
                 </g>
               ))}
+              {floor.calibration.lines.map((line, index) => (
+                <g key={line.id}>
+                  <line
+                    x1={offsetX + line.start.x * scale}
+                    y1={offsetY + line.start.y * scale}
+                    x2={offsetX + line.end.x * scale}
+                    y2={offsetY + line.end.y * scale}
+                    stroke="#b3432f"
+                    strokeWidth="2.5"
+                  />
+                  <circle cx={offsetX + line.start.x * scale} cy={offsetY + line.start.y * scale} r="4" fill="#b3432f" stroke="#ffffff" strokeWidth="1.5" />
+                  <circle cx={offsetX + line.end.x * scale} cy={offsetY + line.end.y * scale} r="4" fill="#b3432f" stroke="#ffffff" strokeWidth="1.5" />
+                  <text x={offsetX + ((line.start.x + line.end.x) / 2) * scale + 6} y={offsetY + ((line.start.y + line.end.y) / 2) * scale - 6} fontSize="11" fill="#7f2d20">
+                    {line.knownFeet || lineLength(line).toFixed(1)} ft {index + 1}
+                  </text>
+                </g>
+              ))}
+              {calibrationStart && (
+                <g>
+                  <circle cx={offsetX + calibrationStart.x * scale} cy={offsetY + calibrationStart.y * scale} r="5" fill="#b3432f" stroke="#ffffff" strokeWidth="1.5" />
+                  <text x={offsetX + calibrationStart.x * scale + 7} y={offsetY + calibrationStart.y * scale - 7} fontSize="11" fill="#7f2d20">start</text>
+                </g>
+              )}
               {floor.rooms.map((room, index) => (
                 <g key={room.id}>
                   <rect
