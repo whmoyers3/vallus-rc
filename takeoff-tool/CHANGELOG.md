@@ -79,3 +79,22 @@ Not yet implemented:
 - Exterior wall segmentation.
 - Window/door placement.
 - Boundary overlays and ceiling profile workflows.
+
+## 2026-06-21 - Design Grid and Exterior Trace Split
+
+Expanded the V1 takeoff route to separate the drafting canvas from the conditioned footprint.
+
+Implemented:
+
+- Independent design grid width/depth controls for large working areas.
+- Exterior polygon tracing over the grid with snap increments.
+- Lock, unlock, clear, and rectangle-seed controls for the exterior trace.
+- Conditioned footprint area calculation from the traced exterior polygon.
+- Room validation against the traced polygon when present.
+- Fit Grid and Fit Plan zoom actions.
+- PDF/image reference underlay using browser-native object/image preview.
+
+Notes:
+
+- The PDF is currently a visual underlay only; the traced polygon remains the calculation source of truth.
+- This does not yet include pdf.js page rendering, page selection, rotation, or calibration handles.

@@ -19,6 +19,10 @@ export type TakeoffFloor = {
   id: string;
   name: string;
   authoringMode: TakeoffAuthoringMode;
+  designGrid: {
+    width: number;
+    depth: number;
+  };
   scale: {
     feetPerGrid: number;
     gridSnapInches: number;
@@ -31,6 +35,8 @@ export type TakeoffFloor = {
     width: number;
     depth: number;
   };
+  exteriorPolygon: TakeoffPoint[];
+  perimeterLocked: boolean;
   rooms: TakeoffRectRoom[];
 };
 
@@ -45,4 +51,3 @@ export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
 };
-

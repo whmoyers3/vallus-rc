@@ -814,9 +814,33 @@ button.toolbar-primary:hover {
   overflow: auto;
 }
 
+.takeoff-drawing-layer {
+  position: relative;
+}
+
+.takeoff-reference-layer {
+  background: #ffffff;
+  border: 1px solid #d9e0e6;
+  box-sizing: border-box;
+  opacity: 0.72;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+}
+
+.takeoff-reference-layer img,
+.takeoff-reference-layer object {
+  display: block;
+  height: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
 .takeoff-canvas {
   display: block;
   min-width: 100%;
+  position: absolute;
+  inset: 0;
 }
 
 .takeoff-lower-grid {

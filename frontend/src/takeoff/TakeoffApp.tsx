@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type {
   TakeoffAuthoringMode,
   TakeoffFloor,
+  TakeoffPoint,
   TakeoffProject,
   TakeoffRectRoom,
   TakeoffValidationIssue,
@@ -23,11 +24,76 @@ function rectArea(rect: Pick<TakeoffRectRoom, "width" | "depth">) {
   return Math.max(0, rect.width) * Math.max(0, rect.depth);
 }
 
+function polygonArea(points: TakeoffPoint[]) {
+  if (points.length < 3) return 0;
+  const sum = points.reduce((total, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return total + point.x * next.y - next.x * point.y;
+  }, 0);
+  return Math.abs(sum) / 2;
+}
+
+function polygonBounds(points: TakeoffPoint[]) {
+  if (points.length === 0) return { x: 0, y: 0, width: 0, depth: 0 };
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return { x: minX, y: minY, width: maxX - minX, depth: maxY - minY };
+}
+
+function pointOnSegment(point: TakeoffPoint, a: TakeoffPoint, b: TakeoffPoint) {
+  const cross = (point.y - a.y) * (b.x - a.x) - (point.x - a.x) * (b.y - a.y);
+  if (Math.abs(cross) > 0.001) return false;
+  const dot = (point.x - a.x) * (b.x - a.x) + (point.y - a.y) * (b.y - a.y);
+  if (dot < -0.001) return false;
+  const squaredLength = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+  return dot <= squaredLength + 0.001;
+}
+
+function pointInPolygon(point: TakeoffPoint, polygon: TakeoffPoint[]) {
+  if (polygon.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const pi = polygon[i];
+    const pj = polygon[j];
+    if (pointOnSegment(point, pj, pi)) return true;
+    const intersects = pi.y > point.y !== pj.y > point.y && point.x < ((pj.x - pi.x) * (point.y - pi.y)) / (pj.y - pi.y) + pi.x;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function footprintArea(floor: TakeoffFloor) {
+  const tracedArea = polygonArea(floor.exteriorPolygon);
+  return tracedArea > 0 ? tracedArea : floor.conditionedPerimeter.width * floor.conditionedPerimeter.depth;
+}
+
+function footprintBounds(floor: TakeoffFloor) {
+  if (floor.exteriorPolygon.length >= 3) return polygonBounds(floor.exteriorPolygon);
+  return { x: 0, y: 0, width: floor.conditionedPerimeter.width, depth: floor.conditionedPerimeter.depth };
+}
+
+function roomCorners(room: TakeoffRectRoom): TakeoffPoint[] {
+  return [
+    { x: room.x, y: room.y },
+    { x: room.x + room.width, y: room.y },
+    { x: room.x + room.width, y: room.y + room.depth },
+    { x: room.x, y: room.y + room.depth },
+  ];
+}
+
 function overlaps(a: TakeoffRectRoom, b: TakeoffRectRoom) {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.depth && a.y + a.depth > b.y;
 }
 
 function insidePerimeter(room: TakeoffRectRoom, floor: TakeoffFloor) {
+  if (floor.exteriorPolygon.length >= 3) {
+    return room.width > 0 && room.depth > 0 && roomCorners(room).every((corner) => pointInPolygon(corner, floor.exteriorPolygon));
+  }
+
   return (
     room.x >= 0 &&
     room.y >= 0 &&
@@ -42,13 +108,14 @@ function findOpenRoomPosition(floor: TakeoffFloor, candidate: TakeoffRectRoom) {
   if (candidate.width <= 0 || candidate.depth <= 0) return null;
 
   const snapFeet = Math.max(0.25, floor.scale.gridSnapInches / 12);
-  const maxX = floor.conditionedPerimeter.width - candidate.width;
-  const maxY = floor.conditionedPerimeter.depth - candidate.depth;
+  const bounds = footprintBounds(floor);
+  const maxX = bounds.x + bounds.width - candidate.width;
+  const maxY = bounds.y + bounds.depth - candidate.depth;
 
   if (maxX < 0 || maxY < 0) return null;
 
-  for (let y = 0; y <= maxY + 0.001; y += snapFeet) {
-    for (let x = 0; x <= maxX + 0.001; x += snapFeet) {
+  for (let y = bounds.y; y <= maxY + 0.001; y += snapFeet) {
+    for (let x = bounds.x; x <= maxX + 0.001; x += snapFeet) {
       const room = { ...candidate, x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
       if (insidePerimeter(room, floor) && !floor.rooms.some((existing) => overlaps(existing, room))) {
         return { x: room.x, y: room.y };
@@ -61,11 +128,19 @@ function findOpenRoomPosition(floor: TakeoffFloor, candidate: TakeoffRectRoom) {
 
 function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
   const issues: TakeoffValidationIssue[] = [];
-  const footprintArea = floor.conditionedPerimeter.width * floor.conditionedPerimeter.depth;
+  const area = footprintArea(floor);
   const roomArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
 
-  if (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0) {
-    issues.push({ severity: "error", message: "Conditioned footprint dimensions are required." });
+  if (floor.designGrid.width <= 0 || floor.designGrid.depth <= 0) {
+    issues.push({ severity: "error", message: "Design grid dimensions are required." });
+  }
+
+  if (floor.exteriorPolygon.length > 0 && floor.exteriorPolygon.length < 3) {
+    issues.push({ severity: "warning", message: "Exterior trace needs at least 3 points before it can calculate conditioned area." });
+  }
+
+  if (floor.exteriorPolygon.length === 0 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) {
+    issues.push({ severity: "error", message: "Trace an exterior perimeter or provide fallback footprint dimensions." });
   }
 
   for (const room of floor.rooms) {
@@ -82,13 +157,13 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
     }
   }
 
-  const unassigned = footprintArea - roomArea;
-  if (footprintArea > 0 && floor.rooms.length === 0) {
+  const unassigned = area - roomArea;
+  if (area > 0 && floor.rooms.length === 0) {
     issues.push({
       severity: "warning",
-      message: `No rooms are assigned yet. Conditioned footprint is ${Math.round(footprintArea)} sf.`,
+      message: `No rooms are assigned yet. Conditioned footprint is ${Math.round(area)} sf.`,
     });
-  } else if (footprintArea > 0 && unassigned > 1) {
+  } else if (area > 0 && unassigned > 1) {
     issues.push({ severity: "warning", message: `${Math.round(unassigned)} sf of conditioned footprint remains unassigned.` });
   }
 
@@ -176,8 +251,11 @@ export function TakeoffApp() {
     id: "floor-1",
     name: "First Floor",
     authoringMode: "grid_manual",
+    designGrid: { width: 60, depth: 45 },
     scale: { feetPerGrid: 1, gridSnapInches: 6 },
     conditionedPerimeter: { width: 40, depth: 30 },
+    exteriorPolygon: [],
+    perimeterLocked: false,
     rooms: [
       { id: "room-1", name: "Great Room", x: 0, y: 0, width: 18, depth: 16, ceilingHeight: 9 },
       { id: "room-2", name: "Kitchen", x: 18, y: 0, width: 12, depth: 14, ceilingHeight: 9 },
@@ -188,6 +266,15 @@ export function TakeoffApp() {
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [zoom, setZoom] = useState(1);
+  const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
+  const [referenceUrl, setReferenceUrl] = useState("");
+  const canvasScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (referenceUrl) URL.revokeObjectURL(referenceUrl);
+    };
+  }, [referenceUrl]);
 
   const takeoffProject = useMemo<TakeoffProject>(
     () => ({
@@ -199,23 +286,25 @@ export function TakeoffApp() {
     [floor, frontDoorFaces, projectName],
   );
   const validation = useMemo(() => buildValidation(floor), [floor]);
-  const footprintArea = floor.conditionedPerimeter.width * floor.conditionedPerimeter.depth;
+  const computedFootprintArea = footprintArea(floor);
   const assignedArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
-  const unassignedArea = footprintArea - assignedArea;
+  const unassignedArea = computedFootprintArea - assignedArea;
   const payload = useMemo(() => buildVrcPayload(takeoffProject), [takeoffProject]);
+  const bounds = footprintBounds(floor);
 
   const canvasWidth = 720;
   const canvasHeight = 420;
   const baseScale = Math.min(
-    (canvasWidth - 56) / Math.max(floor.conditionedPerimeter.width, 1),
-    (canvasHeight - 56) / Math.max(floor.conditionedPerimeter.depth, 1),
+    (canvasWidth - 56) / Math.max(floor.designGrid.width, 1),
+    (canvasHeight - 56) / Math.max(floor.designGrid.depth, 1),
   );
   const scale = baseScale * zoom;
-  const drawingWidth = Math.max(canvasWidth, floor.conditionedPerimeter.width * scale + 56);
-  const drawingHeight = Math.max(canvasHeight, floor.conditionedPerimeter.depth * scale + 56);
+  const drawingWidth = Math.max(canvasWidth, floor.designGrid.width * scale + 56);
+  const drawingHeight = Math.max(canvasHeight, floor.designGrid.depth * scale + 56);
   const gridSize = Math.max(4, scale * floor.scale.feetPerGrid);
   const offsetX = 28;
   const offsetY = 28;
+  const exteriorPath = floor.exteriorPolygon.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ");
 
   function updateFloor(patch: Partial<TakeoffFloor>) {
     setFloor((current) => ({ ...current, ...patch }));
@@ -226,6 +315,92 @@ export function TakeoffApp() {
       ...current,
       conditionedPerimeter: { ...current.conditionedPerimeter, [field]: Math.max(0, value) },
     }));
+  }
+
+  function updateDesignGrid(field: "width" | "depth", value: number) {
+    setFloor((current) => ({
+      ...current,
+      designGrid: { ...current.designGrid, [field]: Math.max(0, value) },
+    }));
+  }
+
+  function addExteriorPoint(point: TakeoffPoint) {
+    setFloor((current) => {
+      if (current.perimeterLocked) return current;
+      return { ...current, exteriorPolygon: [...current.exteriorPolygon, point] };
+    });
+    setMessage(`Exterior point added at ${point.x} ft, ${point.y} ft.`);
+  }
+
+  function clearExteriorTrace() {
+    setFloor((current) => ({ ...current, exteriorPolygon: [], perimeterLocked: false }));
+    setTraceTool("exterior");
+    setMessage("Exterior trace cleared.");
+  }
+
+  function seedRectangularExterior() {
+    setFloor((current) => ({
+      ...current,
+      exteriorPolygon: [
+        { x: 0, y: 0 },
+        { x: current.conditionedPerimeter.width, y: 0 },
+        { x: current.conditionedPerimeter.width, y: current.conditionedPerimeter.depth },
+        { x: 0, y: current.conditionedPerimeter.depth },
+      ],
+      perimeterLocked: false,
+    }));
+    setTraceTool("exterior");
+    setMessage("Fallback rectangle copied into the exterior trace.");
+  }
+
+  function togglePerimeterLock() {
+    if (floor.exteriorPolygon.length < 3) {
+      setMessage("Add at least 3 exterior points before locking the perimeter.");
+      return;
+    }
+    setFloor((current) => ({ ...current, perimeterLocked: !current.perimeterLocked }));
+    setTraceTool(floor.perimeterLocked ? "exterior" : "select");
+    setMessage(floor.perimeterLocked ? "Exterior perimeter unlocked." : "Exterior perimeter locked.");
+  }
+
+  function fitGrid() {
+    setZoom(1);
+    requestAnimationFrame(() => {
+      if (!canvasScrollRef.current) return;
+      canvasScrollRef.current.scrollLeft = 0;
+      canvasScrollRef.current.scrollTop = 0;
+    });
+  }
+
+  function fitPlan() {
+    const planWidth = Math.max(bounds.width, 1);
+    const planDepth = Math.max(bounds.depth, 1);
+    const nextZoom = Math.min(4, Math.max(0.5, Math.min((canvasWidth - 56) / (planWidth * baseScale), (canvasHeight - 56) / (planDepth * baseScale))));
+    setZoom(Number(nextZoom.toFixed(2)));
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!canvasScrollRef.current) return;
+        canvasScrollRef.current.scrollLeft = Math.max(0, offsetX + bounds.x * baseScale * nextZoom - 24);
+        canvasScrollRef.current.scrollTop = Math.max(0, offsetY + bounds.y * baseScale * nextZoom - 24);
+      });
+    });
+  }
+
+  function handleCanvasClick(event: React.MouseEvent<SVGSVGElement>) {
+    if (traceTool !== "exterior" || floor.perimeterLocked) return;
+    const svg = event.currentTarget;
+    const transform = svg.getScreenCTM();
+    if (!transform) return;
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const svgPoint = point.matrixTransform(transform.inverse());
+    const snapFeet = Math.max(0.25, floor.scale.gridSnapInches / 12);
+    const rawX = (svgPoint.x - offsetX) / scale;
+    const rawY = (svgPoint.y - offsetY) / scale;
+    const x = Math.min(floor.designGrid.width, Math.max(0, Math.round(rawX / snapFeet) * snapFeet));
+    const y = Math.min(floor.designGrid.depth, Math.max(0, Math.round(rawY / snapFeet) * snapFeet));
+    addExteriorPoint({ x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) });
   }
 
   function addRoom() {
@@ -269,6 +444,8 @@ export function TakeoffApp() {
   function handleReference(file: File | undefined) {
     if (!file) return;
     const kind = file.type.includes("pdf") ? "pdf" : "image";
+    if (referenceUrl) URL.revokeObjectURL(referenceUrl);
+    setReferenceUrl(URL.createObjectURL(file));
     setFloor((current) => ({ ...current, reference: { filename: file.name, kind } }));
   }
 
@@ -334,15 +511,23 @@ export function TakeoffApp() {
             {floor.reference && <p className="takeoff-muted">{floor.reference.filename}</p>}
             {floor.authoringMode !== "grid_manual" && (
               <p className="takeoff-note">
-                Trace mode stores the uploaded reference in this scaffold. PDF/image rendering over the grid is the next build slice.
+                The reference is shown under the grid for tracing. Set the design grid size first, then trace the conditioned exterior.
               </p>
             )}
           </section>
 
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
-              <h2>Grid</h2>
+              <h2>Design Grid</h2>
             </div>
+            <label>
+              Grid width ft
+              <input type="number" min="1" value={floor.designGrid.width} onChange={(event) => updateDesignGrid("width", Number(event.target.value))} />
+            </label>
+            <label>
+              Grid depth ft
+              <input type="number" min="1" value={floor.designGrid.depth} onChange={(event) => updateDesignGrid("depth", Number(event.target.value))} />
+            </label>
             <label>
               Feet per grid
               <input
@@ -367,7 +552,7 @@ export function TakeoffApp() {
 
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
-              <h2>Footprint</h2>
+              <h2>Fallback Footprint</h2>
             </div>
             <label>
               Width ft
@@ -377,6 +562,25 @@ export function TakeoffApp() {
               Depth ft
               <input type="number" min="0" value={floor.conditionedPerimeter.depth} onChange={(event) => updatePerimeter("depth", Number(event.target.value))} />
             </label>
+            <button onClick={seedRectangularExterior}>Copy to Trace</button>
+            <p className="takeoff-muted">Used only until an exterior trace is drawn.</p>
+          </section>
+
+          <section className="takeoff-panel">
+            <div className="takeoff-panel-head">
+              <h2>Exterior Trace</h2>
+            </div>
+            <div className="takeoff-form-actions">
+              <button className={traceTool === "exterior" ? "toolbar-primary" : ""} onClick={() => setTraceTool("exterior")}>Trace</button>
+              <button onClick={togglePerimeterLock}>{floor.perimeterLocked ? "Unlock" : "Lock"}</button>
+              <button onClick={clearExteriorTrace}>Clear</button>
+            </div>
+            <p className="takeoff-muted">
+              {floor.exteriorPolygon.length} points · {floor.perimeterLocked ? "locked" : "editable"} · {Math.round(computedFootprintArea)} sf
+            </p>
+            {traceTool === "exterior" && !floor.perimeterLocked && (
+              <p className="takeoff-note">Click the grid corners around the conditioned exterior. Lock it when the outline is closed.</p>
+            )}
           </section>
           </>
           )}
@@ -386,7 +590,7 @@ export function TakeoffApp() {
           <div className="takeoff-stage-head">
             <div>
               <h2>Plan Grid</h2>
-              <p>{Math.round(footprintArea)} sf footprint</p>
+              <p>{Math.round(computedFootprintArea)} sf conditioned footprint · {floor.designGrid.width} x {floor.designGrid.depth} ft design grid</p>
             </div>
             <div className="takeoff-stage-actions">
               <div className="takeoff-stats">
@@ -396,14 +600,33 @@ export function TakeoffApp() {
               </div>
               <div className="takeoff-stage-tools" aria-label="Plan zoom controls">
                 <button onClick={() => setZoom((current) => Math.max(0.5, Number((current - 0.25).toFixed(2))))}>-</button>
-                <button onClick={() => setZoom(1)}>Fit</button>
+                <button onClick={fitGrid}>Fit Grid</button>
+                <button onClick={fitPlan}>Fit Plan</button>
                 <span>{Math.round(zoom * 100)}%</span>
                 <button onClick={() => setZoom((current) => Math.min(3, Number((current + 0.25).toFixed(2))))}>+</button>
               </div>
             </div>
           </div>
 
-          <div className="takeoff-canvas-scroll">
+          <div className="takeoff-canvas-scroll" ref={canvasScrollRef}>
+            <div className="takeoff-drawing-layer" style={{ width: drawingWidth, height: drawingHeight }}>
+              {referenceUrl && floor.reference && (
+                <div
+                  className="takeoff-reference-layer"
+                  style={{
+                    left: offsetX,
+                    top: offsetY,
+                    width: floor.designGrid.width * scale,
+                    height: floor.designGrid.depth * scale,
+                  }}
+                >
+                  {floor.reference.kind === "image" ? (
+                    <img src={referenceUrl} alt={`${floor.reference.filename} reference`} />
+                  ) : (
+                    <object data={referenceUrl} type="application/pdf" aria-label={`${floor.reference.filename} reference PDF`} />
+                  )}
+                </div>
+              )}
             <svg
               className="takeoff-canvas"
               viewBox={`0 0 ${drawingWidth} ${drawingHeight}`}
@@ -411,14 +634,27 @@ export function TakeoffApp() {
               height={drawingHeight}
               role="img"
               aria-label="Takeoff grid preview"
+              onClick={handleCanvasClick}
+              style={{ cursor: traceTool === "exterior" && !floor.perimeterLocked ? "crosshair" : "default" }}
             >
               <defs>
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
                   <path d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`} fill="none" stroke="#dce4ea" strokeWidth="1" />
                 </pattern>
               </defs>
-              <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill="#f8fafb" />
-              <rect x={offsetX} y={offsetY} width={floor.conditionedPerimeter.width * scale} height={floor.conditionedPerimeter.depth * scale} fill="url(#takeoff-grid-small)" stroke="#1f6fb2" strokeWidth="2" />
+              <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill={referenceUrl ? "transparent" : "#f8fafb"} />
+              <rect x={offsetX} y={offsetY} width={floor.designGrid.width * scale} height={floor.designGrid.depth * scale} fill="url(#takeoff-grid-small)" stroke="#b7c4cf" strokeWidth="1.5" />
+              {floor.exteriorPolygon.length >= 3 ? (
+                <polygon points={exteriorPath} fill="rgba(31, 111, 178, 0.08)" stroke="#1f6fb2" strokeWidth="2.5" />
+              ) : (
+                <rect x={offsetX} y={offsetY} width={floor.conditionedPerimeter.width * scale} height={floor.conditionedPerimeter.depth * scale} fill="rgba(31, 111, 178, 0.07)" stroke="#1f6fb2" strokeDasharray="6 5" strokeWidth="2" />
+              )}
+              {floor.exteriorPolygon.map((point, index) => (
+                <g key={`${point.x}-${point.y}-${index}`}>
+                  <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="4" fill="#1f6fb2" stroke="#ffffff" strokeWidth="1.5" />
+                  <text x={offsetX + point.x * scale + 6} y={offsetY + point.y * scale - 6} fontSize="10" fill="#1f2933">{index + 1}</text>
+                </g>
+              ))}
               {floor.rooms.map((room, index) => (
                 <g key={room.id}>
                   <rect
@@ -439,6 +675,7 @@ export function TakeoffApp() {
                 </g>
               ))}
             </svg>
+            </div>
           </div>
 
           <div className="takeoff-lower-grid">
