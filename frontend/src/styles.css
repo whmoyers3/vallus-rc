@@ -828,11 +828,11 @@ button.toolbar-primary:hover {
   position: absolute;
 }
 
-.takeoff-reference-layer img,
-.takeoff-reference-layer object {
+.takeoff-reference-layer img {
   display: block;
   height: 100%;
-  object-fit: contain;
+  object-fit: fill;
+  position: absolute;
   width: 100%;
 }
 

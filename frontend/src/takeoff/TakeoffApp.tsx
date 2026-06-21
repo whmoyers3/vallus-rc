@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import type {
   TakeoffAuthoringMode,
   TakeoffFloor,
@@ -9,6 +11,8 @@ import type {
   TakeoffValidationIssue,
 } from "./types";
 
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
 const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
@@ -16,6 +20,12 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "image_trace", label: "Image Trace" },
   { id: "grid_manual", label: "Grid Manual" },
 ];
+type WorkflowStep = "crop" | "calibrate" | "trace";
+type DragState = {
+  kind: "crop" | "room";
+  start: TakeoffPoint;
+  current: TakeoffPoint;
+} | null;
 
 function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
@@ -23,6 +33,17 @@ function nextId(prefix: string) {
 
 function rectArea(rect: Pick<TakeoffRectRoom, "width" | "depth">) {
   return Math.max(0, rect.width) * Math.max(0, rect.depth);
+}
+
+function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return {
+    x: Number(x.toFixed(3)),
+    y: Number(y.toFixed(3)),
+    width: Number(Math.abs(a.x - b.x).toFixed(3)),
+    depth: Number(Math.abs(a.y - b.y).toFixed(3)),
+  };
 }
 
 function lineLength(line: Pick<TakeoffScaleLine, "start" | "end">) {
@@ -303,10 +324,13 @@ export function TakeoffApp() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
-  const [workflowStep, setWorkflowStep] = useState<"calibrate" | "trace">("trace");
+  const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("trace");
   const [calibrationOrientation, setCalibrationOrientation] = useState<TakeoffScaleLine["orientation"]>("horizontal");
   const [calibrationStart, setCalibrationStart] = useState<TakeoffPoint | null>(null);
   const [referenceUrl, setReferenceUrl] = useState("");
+  const [referenceRenderStatus, setReferenceRenderStatus] = useState("");
+  const [dragState, setDragState] = useState<DragState>(null);
+  const [roomDrawMode, setRoomDrawMode] = useState(false);
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -334,6 +358,8 @@ export function TakeoffApp() {
   const areaDeltaPct = floor.calibration.expectedArea && computedFootprintArea > 0
     ? ((computedFootprintArea - floor.calibration.expectedArea) / floor.calibration.expectedArea) * 100
     : 0;
+  const activeDragRect = dragState ? rectFromPoints(dragState.start, dragState.current) : null;
+  const visibleCrop = floor.reference?.crop ?? { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
 
   const canvasWidth = 720;
   const canvasHeight = 420;
@@ -365,6 +391,22 @@ export function TakeoffApp() {
       ...current,
       designGrid: { ...current.designGrid, [field]: Math.max(0, value) },
     }));
+  }
+
+  async function renderPdfPreview(file: File) {
+    setReferenceRenderStatus("Rendering PDF preview...");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+    const page = await pdf.getPage(1);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Could not create PDF preview canvas.");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({ canvas, canvasContext: context, viewport }).promise;
+    setReferenceRenderStatus(`Rendered page 1 of ${pdf.numPages}.`);
+    return canvas.toDataURL("image/png");
   }
 
   function pointFromCanvasEvent(event: React.MouseEvent<SVGSVGElement>) {
@@ -497,6 +539,93 @@ export function TakeoffApp() {
     setMessage("Footprint area confirmed. You can continue assigning rooms.");
   }
 
+  function applyCrop(crop: { x: number; y: number; width: number; depth: number }) {
+    if (crop.width < 1 || crop.depth < 1) {
+      setMessage("Crop area is too small. Drag around the plan area you want to keep.");
+      return;
+    }
+    setFloor((current) => ({
+      ...current,
+      reference: current.reference ? { ...current.reference, crop } : current.reference,
+    }));
+    setWorkflowStep("calibrate");
+    setMessage("Crop applied. Add known dimension lines to set plan scale.");
+  }
+
+  function clearCrop() {
+    setFloor((current) => ({
+      ...current,
+      reference: current.reference
+        ? { ...current.reference, crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth } }
+        : current.reference,
+    }));
+    setWorkflowStep("crop");
+    setMessage("Crop reset. Drag a new crop around the plan area.");
+  }
+
+  function addDraggedRoom(rect: { x: number; y: number; width: number; depth: number }) {
+    if (rect.width < 1 || rect.depth < 1) {
+      setMessage("Drag a larger area to create a room.");
+      return;
+    }
+    const room: TakeoffRectRoom = {
+      id: nextId("room"),
+      name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      depth: rect.depth,
+      ceilingHeight: draftRoom.ceilingHeight,
+    };
+    if (!insidePerimeter(room, floor)) {
+      setMessage("Dragged room extends beyond the conditioned footprint.");
+      return;
+    }
+    const overlap = floor.rooms.find((existing) => overlaps(existing, room));
+    if (overlap) {
+      setMessage(`Dragged room overlaps ${overlap.name}.`);
+      return;
+    }
+    setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
+    setMessage(`${room.name} added.`);
+  }
+
+  function handleCanvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    const point = pointFromCanvasEvent(event);
+    if (!point) return;
+    if (workflowStep === "crop") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setDragState({ kind: "crop", start: point, current: point });
+      return;
+    }
+    if (workflowStep === "trace" && roomDrawMode) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setDragState({ kind: "room", start: point, current: point });
+    }
+  }
+
+  function handleCanvasPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (!dragState) return;
+    const point = pointFromCanvasEvent(event);
+    if (!point) return;
+    setDragState((current) => (current ? { ...current, current: point } : current));
+  }
+
+  function handleCanvasPointerUp(event: React.PointerEvent<SVGSVGElement>) {
+    if (!dragState) return;
+    const rect = rectFromPoints(dragState.start, dragState.current);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const kind = dragState.kind;
+    setDragState(null);
+    if (kind === "crop") {
+      applyCrop(rect);
+      return;
+    }
+    addDraggedRoom(rect);
+  }
+
   function addExteriorPoint(point: TakeoffPoint) {
     setFloor((current) => {
       if (current.perimeterLocked) return current;
@@ -608,23 +737,38 @@ export function TakeoffApp() {
     setFloor((current) => ({ ...current, rooms: current.rooms.filter((room) => room.id !== id) }));
   }
 
-  function handleReference(file: File | undefined) {
+  async function handleReference(file: File | undefined) {
     if (!file) return;
     const kind = file.type.includes("pdf") ? "pdf" : "image";
     if (referenceUrl) URL.revokeObjectURL(referenceUrl);
-    setReferenceUrl(URL.createObjectURL(file));
-    setWorkflowStep("calibrate");
+    try {
+      const nextReferenceUrl = kind === "pdf" ? await renderPdfPreview(file) : URL.createObjectURL(file);
+      setReferenceUrl(nextReferenceUrl);
+    } catch (error) {
+      setReferenceRenderStatus("Could not render the PDF preview.");
+      setMessage(error instanceof Error ? error.message : "Could not render the PDF preview.");
+      return;
+    }
+    setWorkflowStep("crop");
     setTraceTool("select");
+    setRoomDrawMode(false);
     setCalibrationStart(null);
+    setDragState(null);
+    setRightPanelOpen(false);
+    setZoom(1);
     setFloor((current) => ({
       ...current,
       authoringMode: kind === "pdf" ? "pdf_trace" : "image_trace",
-      reference: { filename: file.name, kind },
+      reference: {
+        filename: file.name,
+        kind,
+        crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth },
+      },
       calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
       exteriorPolygon: [],
       perimeterLocked: false,
     }));
-    setMessage("Reference uploaded. Add known horizontal and vertical scale lines before tracing.");
+    setMessage("Reference uploaded. Drag a crop around the plan area, then continue to scale setup.");
   }
 
   return (
@@ -687,6 +831,7 @@ export function TakeoffApp() {
               <input type="file" accept=".pdf,image/*" onChange={(event) => handleReference(event.target.files?.[0])} />
             </label>
             {floor.reference && <p className="takeoff-muted">{floor.reference.filename}</p>}
+            {referenceRenderStatus && <p className="takeoff-muted">{referenceRenderStatus}</p>}
             {floor.authoringMode !== "grid_manual" && (
               <p className="takeoff-note">
                 The reference is shown under the grid. Calibrate known dimensions first, then trace the conditioned exterior.
@@ -703,10 +848,12 @@ export function TakeoffApp() {
                 {workflowStep === "calibrate" ? "Click two endpoints for known dimensions on the preview." : "Scale setup complete."}
               </p>
               <div className="takeoff-form-actions">
+                <button className={workflowStep === "crop" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("crop"); setRoomDrawMode(false); }}>Crop</button>
                 <button className={workflowStep === "calibrate" && calibrationOrientation === "horizontal" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("horizontal"); }}>Horizontal</button>
                 <button className={workflowStep === "calibrate" && calibrationOrientation === "vertical" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("vertical"); }}>Vertical</button>
                 <button className={workflowStep === "calibrate" && calibrationOrientation === "any" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("any"); }}>Any</button>
               </div>
+              {workflowStep === "crop" && <p className="takeoff-note">Drag a rectangle around only the plan and visible dimensions. This removes title blocks and border clutter before scaling.</p>}
               {calibrationStart && <p className="takeoff-note">First point is set. Click the other end of the known dimension.</p>}
               <div className="takeoff-scale-list">
                 {floor.calibration.lines.map((line) => {
@@ -735,6 +882,7 @@ export function TakeoffApp() {
                 <button className="toolbar-primary" onClick={applyCalibration}>Apply Scale</button>
                 <button onClick={skipCalibration}>Skip</button>
                 <button onClick={clearScaleLines}>Clear Lines</button>
+                <button onClick={clearCrop}>Reset Crop</button>
               </div>
             </section>
           )}
@@ -827,7 +975,7 @@ export function TakeoffApp() {
         <section className="takeoff-stage-panel">
           <div className="takeoff-stage-head">
             <div>
-              <h2>{workflowStep === "calibrate" ? "Import Scale Setup" : "Plan Grid"}</h2>
+              <h2>{workflowStep === "crop" ? "Crop Plan Reference" : workflowStep === "calibrate" ? "Import Scale Setup" : "Plan Grid"}</h2>
               <p>
                 {Math.round(computedFootprintArea)} sf conditioned footprint · {floor.designGrid.width} x {floor.designGrid.depth} ft design grid
                 {floor.calibration.confirmed ? ` · scale ${floor.calibration.appliedFactor}x` : ""}
@@ -862,9 +1010,27 @@ export function TakeoffApp() {
                   }}
                 >
                   {floor.reference.kind === "image" ? (
-                    <img src={referenceUrl} alt={`${floor.reference.filename} reference`} />
+                    <img
+                      src={referenceUrl}
+                      alt={`${floor.reference.filename} reference`}
+                      style={{
+                        left: `${-(visibleCrop.x / Math.max(visibleCrop.width, 1)) * 100}%`,
+                        top: `${-(visibleCrop.y / Math.max(visibleCrop.depth, 1)) * 100}%`,
+                        width: `${(floor.designGrid.width / Math.max(visibleCrop.width, 1)) * 100}%`,
+                        height: `${(floor.designGrid.depth / Math.max(visibleCrop.depth, 1)) * 100}%`,
+                      }}
+                    />
                   ) : (
-                    <object data={referenceUrl} type="application/pdf" aria-label={`${floor.reference.filename} reference PDF`} />
+                    <img
+                      src={referenceUrl}
+                      alt={`${floor.reference.filename} rendered PDF reference`}
+                      style={{
+                        left: `${-(visibleCrop.x / Math.max(visibleCrop.width, 1)) * 100}%`,
+                        top: `${-(visibleCrop.y / Math.max(visibleCrop.depth, 1)) * 100}%`,
+                        width: `${(floor.designGrid.width / Math.max(visibleCrop.width, 1)) * 100}%`,
+                        height: `${(floor.designGrid.depth / Math.max(visibleCrop.depth, 1)) * 100}%`,
+                      }}
+                    />
                   )}
                 </div>
               )}
@@ -875,8 +1041,12 @@ export function TakeoffApp() {
               height={drawingHeight}
               role="img"
               aria-label="Takeoff grid preview"
+              onPointerDown={handleCanvasPointerDown}
+              onPointerMove={handleCanvasPointerMove}
+              onPointerUp={handleCanvasPointerUp}
+              onPointerCancel={() => setDragState(null)}
               onClick={handleCanvasClick}
-              style={{ cursor: workflowStep === "calibrate" || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
+              style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
             >
               <defs>
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
@@ -896,6 +1066,18 @@ export function TakeoffApp() {
                   <text x={offsetX + point.x * scale + 6} y={offsetY + point.y * scale - 6} fontSize="10" fill="#1f2933">{index + 1}</text>
                 </g>
               ))}
+              {activeDragRect && (
+                <rect
+                  x={offsetX + activeDragRect.x * scale}
+                  y={offsetY + activeDragRect.y * scale}
+                  width={activeDragRect.width * scale}
+                  height={activeDragRect.depth * scale}
+                  fill={dragState?.kind === "crop" ? "rgba(179, 67, 47, 0.12)" : "rgba(72, 128, 93, 0.16)"}
+                  stroke={dragState?.kind === "crop" ? "#b3432f" : "#2f7a4f"}
+                  strokeDasharray="6 4"
+                  strokeWidth="2"
+                />
+              )}
               {floor.calibration.lines.map((line, index) => (
                 <g key={line.id}>
                   <line
@@ -947,6 +1129,10 @@ export function TakeoffApp() {
               <div className="takeoff-panel-head">
                 <h2>New Room</h2>
               </div>
+              <div className="takeoff-form-actions">
+                <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setTraceTool("select"); }}>Draw Room</button>
+              </div>
+              {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle. Point-by-point room shapes are the next step.</p>}
               <div className="takeoff-room-form">
                 <label>Name<input value={draftRoom.name} onChange={(event) => setDraftRoom({ ...draftRoom, name: event.target.value })} /></label>
                 <label>X ft<input type="number" value={draftRoom.x} onChange={(event) => setDraftRoom({ ...draftRoom, x: Number(event.target.value) })} /></label>

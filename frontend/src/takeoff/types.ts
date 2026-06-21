@@ -39,6 +39,12 @@ export type TakeoffFloor = {
   reference?: {
     filename: string;
     kind: "pdf" | "image";
+    crop?: {
+      x: number;
+      y: number;
+      width: number;
+      depth: number;
+    };
   };
   calibration: {
     lines: TakeoffScaleLine[];

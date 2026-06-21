@@ -116,3 +116,20 @@ Notes:
 
 - Calibration lines are stored in takeoff JSON with the editable floor record.
 - The current PDF preview is still browser-native; pdf.js page rendering remains the recommended hardening step.
+
+## 2026-06-21 - Stable PDF Crop and Drag Room Start
+
+Reworked the PDF underlay so it no longer uses the browser's embedded PDF viewer.
+
+Implemented:
+
+- Added pdf.js rendering for page 1 of uploaded PDFs.
+- Rendered PDFs are displayed as a controlled image layer under the SVG grid.
+- Upload now starts in a crop step so the user can drag around the plan area and remove title-block/border clutter.
+- Cropped references stay anchored to the SVG overlay during zoom, Fit Grid, and Fit Plan.
+- Added a first drag-to-create room mode for rectangular room placement.
+
+Notes:
+
+- The pdf.js worker increases the frontend bundle; route-level code splitting is a future optimization.
+- Room drawing still needs point-by-point/polygon room geometry for non-rectangular spaces.
