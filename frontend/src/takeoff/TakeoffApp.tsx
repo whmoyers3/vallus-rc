@@ -882,10 +882,21 @@ export function TakeoffApp() {
 
   function availablePolygonFromRect(rect: PlanRect, ignoredRoomId?: string) {
     if (rect.width < 0.25 || rect.depth < 0.25) return null;
-    const rectPolygon = pointsToClipPolygon(rectToPoints(rect));
-    let available: MultiPolygon = [rectPolygon];
+    return availablePolygonFromPoints(rectToPoints(rect), ignoredRoomId);
+  }
+
+  function availablePolygonFromPoints(points: TakeoffPoint[], ignoredRoomId?: string) {
+    if (points.length < 3 || polygonArea(points) < 0.25) return null;
+    let available: MultiPolygon = [pointsToClipPolygon(points)];
     if (floor.exteriorPolygon.length >= 3) {
       available = intersection(available, pointsToClipPolygon(floor.exteriorPolygon));
+    } else if (floor.conditionedPerimeter.width > 0 && floor.conditionedPerimeter.depth > 0) {
+      available = intersection(available, pointsToClipPolygon(rectToPoints({
+        x: 0,
+        y: 0,
+        width: floor.conditionedPerimeter.width,
+        depth: floor.conditionedPerimeter.depth,
+      })));
     }
     const blockers = floor.rooms
       .filter((room) => room.id !== ignoredRoomId)
@@ -922,15 +933,6 @@ export function TakeoffApp() {
     }
     const points = clipPolygonToPoints(availablePolygon);
     const room = makeRoomFromPolygon(points);
-    if (!insidePerimeter(room, floor)) {
-      setMessage("Dragged room extends beyond the conditioned footprint.");
-      return;
-    }
-    const overlap = floor.rooms.find((existing) => overlaps(existing, room));
-    if (overlap) {
-      setMessage(`Dragged room overlaps ${overlap.name}.`);
-      return;
-    }
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
     setMessage(`${room.name} added as available polygon area.`);
   }
@@ -963,31 +965,23 @@ export function TakeoffApp() {
       setMessage("Polygon room needs at least 3 points.");
       return false;
     }
-    const bounds = polygonBounds(points);
-    const room: TakeoffRectRoom = {
-      id: nextId("room"),
-      name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      depth: bounds.depth,
-      ceilingHeight: draftRoom.ceilingHeight,
-      polygon: points,
-    };
-    if (!insidePerimeter(room, floor)) {
-      setMessage("Polygon room extends beyond the conditioned footprint.");
+    let availablePolygon: Polygon | null = null;
+    try {
+      availablePolygon = availablePolygonFromPoints(points);
+    } catch (error) {
+      setMessage("That polygon could not be resolved. Try clearing points and drawing the room with simpler edges.");
       return false;
     }
-    const overlap = floor.rooms.find((existing) => overlaps(existing, room));
-    if (overlap) {
-      setMessage(`Polygon room overlaps ${overlap.name}.`);
+    if (!availablePolygon) {
+      setMessage("That polygon does not enclose any open room area inside the conditioned footprint.");
       return false;
     }
+    const room = makeRoomFromPolygon(clipPolygonToPoints(availablePolygon));
     setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
     setRoomPolygonDraft([]);
     setRoomPolygonMode(false);
     setTraceTool("select");
-    setMessage(`${room.name} added.`);
+    setMessage(`${room.name} added as available polygon area.`);
     return true;
   }
 

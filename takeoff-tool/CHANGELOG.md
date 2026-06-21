@@ -234,3 +234,4 @@ Implemented:
 - Added a visible Close marker on the first polygon point.
 - Added a closing-edge preview and light fill once the polygon can be finished.
 - Successful polygon finish now exits polygon drawing mode so later clicks do not keep adding points.
+- Polygon finish now clips to the available conditioned footprint and subtracts existing rooms instead of silently blocking on overlaps.
