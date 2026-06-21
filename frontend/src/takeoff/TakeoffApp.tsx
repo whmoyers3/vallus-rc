@@ -68,6 +68,16 @@ function scaleLine(line: TakeoffScaleLine, factor: number): TakeoffScaleLine {
   return { ...line, start: scalePoint(line.start, factor), end: scalePoint(line.end, factor) };
 }
 
+function scaleRect<T extends { x: number; y: number; width: number; depth: number }>(rect: T, factor: number): T {
+  return {
+    ...rect,
+    x: Number((rect.x * factor).toFixed(3)),
+    y: Number((rect.y * factor).toFixed(3)),
+    width: Number((rect.width * factor).toFixed(3)),
+    depth: Number((rect.depth * factor).toFixed(3)),
+  };
+}
+
 function calibrationFactor(lines: TakeoffScaleLine[]) {
   const factors = lines
     .map((line) => {
@@ -502,6 +512,12 @@ export function TakeoffApp() {
       },
       exteriorPolygon: current.exteriorPolygon.map((point) => scalePoint(point, factor)),
       rooms: current.rooms.map((room) => scaleRoom(room, factor)),
+      reference: current.reference
+        ? {
+            ...current.reference,
+            crop: current.reference.crop ? scaleRect(current.reference.crop, factor) : current.reference.crop,
+          }
+        : current.reference,
       calibration: {
         ...current.calibration,
         lines: current.calibration.lines.map((line) => scaleLine(line, factor)),
