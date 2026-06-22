@@ -78,38 +78,11 @@ function makeInitialFloor(): TakeoffFloor {
     authoringMode: "grid_manual",
     designGrid: { width: 60, depth: 45 },
     scale: { feetPerGrid: 1, gridSnapInches: 6 },
-    conditionedPerimeter: { width: 40, depth: 30 },
+    conditionedPerimeter: { width: 0, depth: 0 },
     calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
     exteriorPolygon: [],
     perimeterLocked: false,
-    rooms: [
-      {
-        id: "room-1",
-        name: "Great Room",
-        x: 0,
-        y: 0,
-        width: 18,
-        depth: 16,
-        ceilingHeight: 9,
-        components: [
-          { id: "room-1-floor", surface: "floor", assembly: "F2", area: 288, label: "Slab" },
-          { id: "room-1-ceiling", surface: "ceiling", assembly: "C1", area: 288, label: "Flat ceiling" },
-        ],
-      },
-      {
-        id: "room-2",
-        name: "Kitchen",
-        x: 18,
-        y: 0,
-        width: 12,
-        depth: 14,
-        ceilingHeight: 9,
-        components: [
-          { id: "room-2-floor", surface: "floor", assembly: "F2", area: 168, label: "Slab" },
-          { id: "room-2-ceiling", surface: "ceiling", assembly: "C1", area: 168, label: "Flat ceiling" },
-        ],
-      },
-    ],
+    rooms: [],
   };
 }
 
@@ -676,7 +649,7 @@ export function TakeoffApp() {
   const [frontDoorFaces, setFrontDoorFaces] = useState<(typeof directionOptions)[number]>("S");
   const [componentSchedule, setComponentSchedule] = useState<TakeoffComponentDefinition[]>(() => defaultComponentSchedule);
   const [floor, setFloor] = useState<TakeoffFloor>(() => makeInitialFloor());
-  const [draftRoom, setDraftRoom] = useState({ name: "Bedroom", x: 0, y: 16, width: 12, depth: 12, ceilingHeight: 9 });
+  const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "S", makeInitialFloor(), defaultComponentSchedule)));
@@ -687,7 +660,6 @@ export function TakeoffApp() {
   const [savedTakeoffs, setSavedTakeoffs] = useState<SavedTakeoffRow[]>([]);
   const [componentScheduleOpen, setComponentScheduleOpen] = useState(false);
   const [componentSearch, setComponentSearch] = useState("");
-  const [componentScheduleTargetIndex, setComponentScheduleTargetIndex] = useState(0);
   const [pendingComponentAssignment, setPendingComponentAssignment] = useState<TakeoffComponentDefinition | null>(null);
   const [libraryComponents, setLibraryComponents] = useState<TakeoffComponentDefinition[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -850,7 +822,7 @@ export function TakeoffApp() {
     }));
   }
 
-  function applyComponentToScheduleSlot(component: TakeoffComponentDefinition, target: number | "new" = componentScheduleTargetIndex) {
+  function applyComponentToScheduleSlot(component: TakeoffComponentDefinition, target: number | "new") {
     setComponentSchedule((current) => {
       if (target === "new") {
         return [
@@ -912,9 +884,7 @@ export function TakeoffApp() {
   }
 
   function componentFromDraft(source: TakeoffComponentDefinition["source"]): TakeoffComponentDefinition {
-    const code = source === "library"
-      ? libraryCodeForCategory(componentDraft.category)
-      : (componentSchedule[componentScheduleTargetIndex]?.code ?? componentDraft.code).toUpperCase().trim();
+    const code = libraryCodeForCategory(componentDraft.category);
     return {
       id: nextId(`schedule-${code || "component"}`),
       code,
@@ -932,7 +902,7 @@ export function TakeoffApp() {
       setMessage("Component description is required.");
       return;
     }
-    applyComponentToScheduleSlot(component);
+    setPendingComponentAssignment(component);
   }
 
   async function saveDraftComponentToLibrary() {
@@ -953,9 +923,9 @@ export function TakeoffApp() {
         }),
       });
       if (!response.ok) throw new Error(await response.text());
-      applyComponentToScheduleSlot({ ...component, code: componentSchedule[componentScheduleTargetIndex]?.code ?? component.code });
       await loadComponentLibrary();
-      setMessage(`${componentSchedule[componentScheduleTargetIndex]?.code ?? "Selected slot"} values saved to the component library.`);
+      setPendingComponentAssignment(component);
+      setMessage("Component saved to the library. Choose where to assign it.");
     } catch (error) {
       setMessage(error instanceof Error ? `Could not save component: ${error.message}` : "Could not save component.");
     }
@@ -2444,14 +2414,13 @@ export function TakeoffApp() {
                   <span className="takeoff-muted">{componentSchedule.length} items</span>
                 </div>
                 <div className="takeoff-schedule-list">
-                  {componentSchedule.map((component, index) => (
+                  {componentSchedule.map((component) => (
                     <div key={component.id} className="takeoff-schedule-row">
                       <strong>{component.code}</strong>
                       <span>{component.category}</span>
                       <span>U {component.uValue ?? "-"}</span>
                       <span>{component.category === "Glass" ? `SHGC ${component.shgc ?? "-"}` : ""}</span>
                       <em>{component.description}</em>
-                      <button onClick={() => setComponentScheduleTargetIndex(index)}>Select Slot</button>
                     </div>
                   ))}
                 </div>
@@ -2473,8 +2442,7 @@ export function TakeoffApp() {
                 />
                 <div className="takeoff-schedule-list">
                   {filteredLibraryComponents.map((component) => (
-                    <div key={component.id} className="takeoff-schedule-row">
-                      <strong>{component.category}</strong>
+                    <div key={component.id} className="takeoff-schedule-row takeoff-schedule-row--library">
                       <span>{component.category}</span>
                       <span>U {component.uValue ?? "-"}</span>
                       <span>{component.category === "Glass" ? `SHGC ${component.shgc ?? "-"}` : ""}</span>
@@ -2492,14 +2460,6 @@ export function TakeoffApp() {
             <section className="takeoff-component-new">
               <h3>New Component</h3>
               <div className="takeoff-component-new-grid">
-                <label>
-                  Apply to slot
-                  <select value={componentScheduleTargetIndex} onChange={(event) => setComponentScheduleTargetIndex(Number(event.target.value))}>
-                    {componentSchedule.map((component, index) => (
-                      <option key={`${component.code}-${index}`} value={index}>{component.code} - {component.category}</option>
-                    ))}
-                  </select>
-                </label>
                 <label>
                   Library category
                   <select value={componentDraft.category} onChange={(event) => setComponentDraft((current) => ({ ...current, category: event.target.value as TakeoffComponentCategory, code: libraryCodeForCategory(event.target.value as TakeoffComponentCategory) }))}>

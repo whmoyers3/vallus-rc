@@ -695,7 +695,6 @@ function App() {
   const [assemblySearch, setAssemblySearch] = useState("");
   const [assemblyLibraryLoading, setAssemblyLibraryLoading] = useState(false);
   const [assemblyLibraryError, setAssemblyLibraryError] = useState<string | null>(null);
-  const [assemblyTargetIndex, setAssemblyTargetIndex] = useState(0);
   const [pendingAssemblyAssignment, setPendingAssemblyAssignment] = useState<AssemblyRow | null>(null);
   const [savingAssemblyKey, setSavingAssemblyKey] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
@@ -939,7 +938,6 @@ function App() {
       ...current,
       type_definitions: [...current.type_definitions, { code: "", category: "Wall", u_value: undefined, shgc: null, description: "" }]
     }));
-    setAssemblyTargetIndex(project.type_definitions.length);
     setLoads(null);
     setWorstCase(null);
     setIsDirty(true);
@@ -964,7 +962,6 @@ function App() {
       ...current,
       type_definitions: current.type_definitions.filter((_definition, definitionIndex) => definitionIndex !== index)
     }));
-    setAssemblyTargetIndex((currentIndex) => Math.max(0, Math.min(currentIndex > index ? currentIndex - 1 : currentIndex, project.type_definitions.length - 2)));
     setLoads(null);
     setWorstCase(null);
     setIsDirty(true);
@@ -2259,7 +2256,6 @@ function App() {
               <div className="assembly-library-list">
                 {filteredAssemblies.slice(0, 8).map((assembly) => (
                   <div className="assembly-library-row" key={assemblyRowKey(assembly)}>
-                    <strong>{codeCategory(assembly.code)}</strong>
                     <span>{assembly.label}</span>
                     <em>U {assembly.u_value ?? "-"}{assembly.shgc != null ? ` / SHGC ${assembly.shgc}` : ""}</em>
                     <button onClick={() => setPendingAssemblyAssignment(assembly)}>Use</button>
@@ -2296,7 +2292,6 @@ function App() {
                         <td><input value={definition.description ?? ""} onChange={(event) => updateTypeDefinition(index, { description: event.target.value })} /></td>
                         <td>
                           <div className="assembly-row-actions">
-                            <button onClick={() => setAssemblyTargetIndex(index)}>Select Slot</button>
                             <button onClick={() => saveTypeDefinitionToLibrary(definition, index)} disabled={savingAssemblyKey === saveKey}>
                               {savingAssemblyKey === saveKey ? "Saving..." : "Save to Library"}
                             </button>

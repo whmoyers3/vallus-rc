@@ -1070,6 +1070,10 @@ button.toolbar-primary:hover {
   padding: 7px 8px;
 }
 
+.takeoff-schedule-row--library {
+  grid-template-columns: 72px 64px 76px minmax(120px, 1fr) auto;
+}
+
 .takeoff-schedule-row:last-child {
   border-bottom: none;
 }
@@ -1711,7 +1715,7 @@ label {
   border-radius: 8px;
   display: grid;
   gap: 10px;
-  grid-template-columns: 64px minmax(220px, 1fr) minmax(130px, auto) auto;
+  grid-template-columns: minmax(220px, 1fr) minmax(130px, auto) auto;
   padding: 8px;
 }
 
