@@ -91,6 +91,27 @@ Acceptance criteria:
 - Floor and ceiling component totals show open or over-assigned area against measured geometry.
 - Simple partial floor/ceiling cases work until full boundary overlays arrive.
 
+## Phase 1.6 - Component Schedule And Library
+
+Goal: define the project-level component schedule before geometry-driven exterior components are placed.
+
+Deliverables:
+
+- Top-level Component Schedule control.
+- Search existing library components.
+- Add library components to the takeoff project schedule.
+- Create one-off project-only components.
+- Save new reusable components to the shared library.
+- Persist the project component schedule in editable takeoff JSON.
+- Let room component rows select from the project schedule.
+
+Acceptance criteria:
+
+- Schedule edits survive save/reopen.
+- Saved library components are available in future takeoffs.
+- Project payload preview uses scheduled U-values, SHGC values, and descriptions.
+- One-off components can be used without saving to the shared library.
+
 ## Phase 2 - Exterior Walls, Windows, And Doors
 
 Goal: produce useful room load components, not just floor areas.

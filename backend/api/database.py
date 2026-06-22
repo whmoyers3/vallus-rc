@@ -546,6 +546,16 @@ class Database:
         )
         return result.data or []
 
+    def create_assembly(self, payload: dict[str, Any]) -> dict[str, Any]:
+        row = {
+            "code": str(payload.get("code", "")).upper().strip(),
+            "u_value": payload.get("u_value"),
+            "shgc": payload.get("shgc"),
+            "label": str(payload.get("label", "")).strip(),
+        }
+        result = self._client.table("assemblies").upsert(row, on_conflict="code,u_value,shgc,label").execute()
+        return result.data[0] if result.data else row
+
     # ── Test Battery ──────────────────────────────────────────────────────────
 
     def list_battery(self) -> list[dict[str, Any]]:

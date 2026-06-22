@@ -4,6 +4,8 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import polygonClipping, { type MultiPolygon, type Polygon, type Ring } from "polygon-clipping";
 import type {
   TakeoffAuthoringMode,
+  TakeoffComponentCategory,
+  TakeoffComponentDefinition,
   TakeoffFloor,
   TakeoffPoint,
   TakeoffProject,
@@ -19,17 +21,22 @@ const { difference, intersection, union } = polygonClipping;
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
 const takeoffReferenceMaxBytes = 7 * 1024 * 1024;
-const surfaceAssemblyOptions = {
-  floor: [
-    { assembly: "F2", label: "Slab on grade" },
-    { assembly: "F1", label: "Framed / crawl / garage / cantilever" },
-  ],
-  ceiling: [
-    { assembly: "C1", label: "Flat ceiling" },
-    { assembly: "C2", label: "Vaulted ceiling" },
-    { assembly: "C3", label: "Custom ceiling" },
-  ],
-} as const;
+const componentCategories: TakeoffComponentCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
+const defaultComponentSchedule: TakeoffComponentDefinition[] = [
+  { id: "default-W1", code: "W1", category: "Wall", uValue: 0.077, description: "Above Grade 2x4 R-13 batt", source: "default" },
+  { id: "default-W2", code: "W2", category: "Wall", uValue: 0.067, description: "Basement Concrete + 2x4 R-13 batt", source: "default" },
+  { id: "default-W3", code: "W3", category: "Wall", uValue: 0.053, description: "Attic 2x6 R-19 batt", source: "default" },
+  { id: "default-D1", code: "D1", category: "Door", uValue: 0.5, description: "Exterior Door R-2", source: "default" },
+  { id: "default-D2", code: "D2", category: "Door", uValue: 0.37, description: "Garage Door R-2.7", source: "default" },
+  { id: "default-C1", code: "C1", category: "Ceiling", uValue: 0.033, description: "Flat Ceiling R-30 blown", source: "default" },
+  { id: "default-C2", code: "C2", category: "Ceiling", uValue: 0.033, description: "Vaulted R-30 batt", source: "default" },
+  { id: "default-C3", code: "C3", category: "Ceiling", uValue: 0.033, description: "Custom ceiling", source: "default" },
+  { id: "default-F1", code: "F1", category: "Floor", uValue: 0.053, description: "Framed floor R-19 batt", source: "default" },
+  { id: "default-F2", code: "F2", category: "Floor", uValue: 0.1, description: "Slab on grade", source: "default" },
+  { id: "default-G1", code: "G1", category: "Glass", uValue: 0.32, shgc: 0.22, description: "Double Insulated All types Blinds/Draperies", source: "default" },
+  { id: "default-G2", code: "G2", category: "Glass", uValue: 0.32, shgc: 0.22, description: "Glass type 2", source: "default" },
+  { id: "default-G3", code: "G3", category: "Glass", uValue: 0.32, shgc: 0.22, description: "Glass type 3", source: "default" },
+];
 const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "pdf_trace", label: "PDF Trace" },
   { id: "image_trace", label: "Image Trace" },
@@ -110,11 +117,13 @@ function makeTakeoffProject(
   name: string,
   frontDoorFaces: TakeoffProject["frontDoorFaces"],
   floor: TakeoffFloor,
+  componentSchedule: TakeoffComponentDefinition[],
 ): TakeoffProject {
   return {
     schemaVersion: "takeoff.v1",
     name,
     frontDoorFaces,
+    componentSchedule,
     floors: [floor],
   };
 }
@@ -478,6 +487,16 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
 
 function buildVrcPayload(project: TakeoffProject) {
   const floor = project.floors[0];
+  const schedule = project.componentSchedule?.length ? project.componentSchedule : defaultComponentSchedule;
+  const assemblyMap = Object.fromEntries(schedule.map((component) => [
+    component.code,
+    {
+      code: component.code,
+      u_value: component.uValue,
+      shgc: component.category === "Glass" ? component.shgc ?? null : null,
+      description: component.description,
+    },
+  ]));
   const rooms = floor.rooms.map((room) => ({
     name: room.name,
     floor_area: rectArea(room),
@@ -525,19 +544,7 @@ function buildVrcPayload(project: TakeoffProject) {
       },
       selected_system_tons: 1,
       selected_system_kw: 5,
-      assemblies: {
-        C1: { code: "C1", u_value: 0.033, description: "Flat Ceiling R-30 blown" },
-        C2: { code: "C2", u_value: 0.033, description: "Vaulted R-30 batt" },
-        C3: { code: "C3", u_value: 0.033, description: "Custom ceiling" },
-        F1: { code: "F1", u_value: 0.053, description: "Framed floor R-19 batt" },
-        F2: { code: "F2", u_value: 0.1, description: "Slab on grade" },
-        W1: { code: "W1", u_value: 0.077, description: "Above Grade 2x4 R-13 batt" },
-        W2: { code: "W2", u_value: 0.067, description: "Basement Concrete + 2x4 R-13 batt" },
-        W3: { code: "W3", u_value: 0.053, description: "Attic 2x6 R-19 batt" },
-        G1: { code: "G1", u_value: 0.32, shgc: 0.22, description: "Double Insulated All types Blinds/Draperies" },
-        G2: { code: "G2", u_value: 0.32, shgc: 0.22, description: "Glass type 2" },
-        G3: { code: "G3", u_value: 0.32, shgc: 0.22, description: "Glass type 3" },
-      },
+      assemblies: assemblyMap,
       levels: [
         {
           name: floor.name,
@@ -595,6 +602,7 @@ function normalizeTakeoffProject(rawProject: Partial<TakeoffProject>): TakeoffPr
     rawProject.name || "Takeoff V1 Draft",
     frontDoorFaces,
     normalizeFloor(rawProject.floors?.[0]),
+    rawProject.componentSchedule?.length ? rawProject.componentSchedule : defaultComponentSchedule,
   );
 }
 
@@ -634,19 +642,44 @@ function formatBytes(bytes?: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function categoryFromCode(code: string): TakeoffComponentCategory {
+  const first = code.trim().toUpperCase()[0];
+  if (first === "G") return "Glass";
+  if (first === "D") return "Door";
+  if (first === "C" || first === "R") return "Ceiling";
+  if (first === "F") return "Floor";
+  return "Wall";
+}
+
+function scheduleIdFor(component: Pick<TakeoffComponentDefinition, "code" | "uValue" | "shgc" | "description">) {
+  return `${component.code}-${component.uValue ?? "x"}-${component.shgc ?? "x"}-${component.description}`.replace(/\s+/g, "-");
+}
+
 export function TakeoffApp() {
   const [projectName, setProjectName] = useState("Takeoff V1 Draft");
   const [frontDoorFaces, setFrontDoorFaces] = useState<(typeof directionOptions)[number]>("S");
+  const [componentSchedule, setComponentSchedule] = useState<TakeoffComponentDefinition[]>(() => defaultComponentSchedule);
   const [floor, setFloor] = useState<TakeoffFloor>(() => makeInitialFloor());
   const [draftRoom, setDraftRoom] = useState({ name: "Bedroom", x: 0, y: 16, width: 12, depth: 12, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
-  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "S", makeInitialFloor())));
+  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "S", makeInitialFloor(), defaultComponentSchedule)));
   const [saveLoading, setSaveLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
   const [openDialogLoading, setOpenDialogLoading] = useState(false);
   const [openDialogError, setOpenDialogError] = useState("");
   const [savedTakeoffs, setSavedTakeoffs] = useState<SavedTakeoffRow[]>([]);
+  const [componentScheduleOpen, setComponentScheduleOpen] = useState(false);
+  const [componentSearch, setComponentSearch] = useState("");
+  const [libraryComponents, setLibraryComponents] = useState<TakeoffComponentDefinition[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [componentDraft, setComponentDraft] = useState<Omit<TakeoffComponentDefinition, "id" | "source">>({
+    code: "C1",
+    category: "Ceiling",
+    uValue: 0.033,
+    shgc: null,
+    description: "",
+  });
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [zoom, setZoom] = useState(1);
@@ -675,8 +708,8 @@ export function TakeoffApp() {
   }, [referenceUrl]);
 
   const takeoffProject = useMemo<TakeoffProject>(
-    () => makeTakeoffProject(projectName, frontDoorFaces, floor),
-    [floor, frontDoorFaces, projectName],
+    () => makeTakeoffProject(projectName, frontDoorFaces, floor, componentSchedule),
+    [componentSchedule, floor, frontDoorFaces, projectName],
   );
   const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
   const serializedTakeoff = useMemo(() => takeoffSnapshot(persistableTakeoff), [persistableTakeoff]);
@@ -687,6 +720,13 @@ export function TakeoffApp() {
   const unassignedArea = computedFootprintArea - assignedArea;
   const payload = useMemo(() => buildVrcPayload(takeoffProject), [takeoffProject]);
   const selectedRoom = floor.rooms.find((room) => room.id === selectedRoomId) ?? null;
+  const floorScheduleOptions = componentSchedule.filter((component) => component.category === "Floor");
+  const ceilingScheduleOptions = componentSchedule.filter((component) => component.category === "Ceiling");
+  const filteredLibraryComponents = libraryComponents.filter((component) => {
+    const needle = componentSearch.trim().toLowerCase();
+    if (!needle) return true;
+    return `${component.code} ${component.description} ${component.category}`.toLowerCase().includes(needle);
+  });
   const bounds = footprintBounds(floor);
   const pendingScaleFactor = calibrationFactor(floor.calibration.lines);
   const areaDeltaPct = floor.calibration.expectedArea && computedFootprintArea > 0
@@ -785,6 +825,92 @@ export function TakeoffApp() {
           : room
       )),
     }));
+  }
+
+  function addComponentToSchedule(component: TakeoffComponentDefinition) {
+    setComponentSchedule((current) => {
+      const normalized = { ...component, code: component.code.toUpperCase().trim() };
+      if (!normalized.code) return current;
+      const withoutSameCode = current.filter((existing) => existing.code !== normalized.code);
+      return [...withoutSameCode, normalized].sort((a, b) => a.code.localeCompare(b.code));
+    });
+    setMessage(`${component.code} added to the takeoff component schedule.`);
+  }
+
+  async function loadComponentLibrary() {
+    setLibraryLoading(true);
+    try {
+      const rows: Array<{ code: string; u_value?: number | null; shgc?: number | null; label: string }> = await fetch("/api/assemblies").then((response) => {
+        if (!response.ok) throw new Error("Could not load component library.");
+        return response.json();
+      });
+      setLibraryComponents(rows.map((row) => ({
+        id: scheduleIdFor({ code: row.code, uValue: row.u_value ?? undefined, shgc: row.shgc ?? null, description: row.label }),
+        code: row.code,
+        category: categoryFromCode(row.code),
+        uValue: row.u_value ?? undefined,
+        shgc: row.shgc ?? null,
+        description: row.label,
+        source: "library",
+      })));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load component library.");
+    } finally {
+      setLibraryLoading(false);
+    }
+  }
+
+  function openComponentSchedule() {
+    setComponentScheduleOpen(true);
+    void loadComponentLibrary();
+  }
+
+  function componentFromDraft(source: TakeoffComponentDefinition["source"]): TakeoffComponentDefinition {
+    const code = componentDraft.code.toUpperCase().trim();
+    return {
+      id: nextId(`schedule-${code || "component"}`),
+      code,
+      category: componentDraft.category,
+      uValue: componentDraft.uValue,
+      shgc: componentDraft.category === "Glass" ? componentDraft.shgc ?? null : null,
+      description: componentDraft.description.trim(),
+      source,
+    };
+  }
+
+  function addDraftComponentToSchedule() {
+    const component = componentFromDraft("one_off");
+    if (!component.code || !component.description) {
+      setMessage("Component code and description are required.");
+      return;
+    }
+    addComponentToSchedule(component);
+  }
+
+  async function saveDraftComponentToLibrary() {
+    const component = componentFromDraft("library");
+    if (!component.code || !component.description) {
+      setMessage("Component code and description are required.");
+      return;
+    }
+    try {
+      const response = await fetch("/api/assemblies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: component.code,
+          u_value: component.uValue,
+          shgc: component.category === "Glass" ? component.shgc : null,
+          label: component.description,
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      addComponentToSchedule(component);
+      await loadComponentLibrary();
+      setMessage(`${component.code} saved to the component library.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? `Could not save component: ${error.message}` : "Could not save component.");
+    }
   }
 
   function updatePerimeter(field: "width" | "depth", value: number) {
@@ -1460,10 +1586,11 @@ export function TakeoffApp() {
         setReferenceRenderStatus(`Reference restored: ${loadedReference.filename}`);
       } else {
         setReferenceUrl("");
-        setReferenceRenderStatus(loadedReference ? "Reference metadata reopened, but the stored file was not available." : "");
+      setReferenceRenderStatus(loadedReference ? "Reference metadata reopened, but the stored file was not available." : "");
       }
       setProjectName(loadedProject.name);
       setFrontDoorFaces(loadedProject.frontDoorFaces);
+      setComponentSchedule(loadedProject.componentSchedule?.length ? loadedProject.componentSchedule : defaultComponentSchedule);
       setFloor(loadedProject.floors[0]);
       setTakeoffId(id);
       setSavedSnapshot(takeoffSnapshot(persistableTakeoffProject(loadedProject)));
@@ -1563,6 +1690,7 @@ export function TakeoffApp() {
           </p>
         </div>
         <div className="takeoff-toolbar-actions">
+          <button onClick={openComponentSchedule}>Component Schedule</button>
           <button onClick={openTakeoffList}>Open</button>
           <button className="toolbar-primary" onClick={saveTakeoff} disabled={saveLoading}>
             {saveLoading ? "Saving..." : takeoffId ? "Save" : "Save Draft"}
@@ -2202,8 +2330,8 @@ export function TakeoffApp() {
                                 value={component.assembly}
                                 onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
                               >
-                                {surfaceAssemblyOptions[surface].map((option) => (
-                                  <option key={option.assembly} value={option.assembly}>{option.assembly} - {option.label}</option>
+                                {(surface === "floor" ? floorScheduleOptions : ceilingScheduleOptions).map((option) => (
+                                  <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
                                 ))}
                               </select>
                               <input
@@ -2254,6 +2382,101 @@ export function TakeoffApp() {
           )}
         </aside>
       </section>
+      {componentScheduleOpen && (
+        <div className="modal-backdrop open-dialog-backdrop" onClick={() => setComponentScheduleOpen(false)}>
+          <div className="modal takeoff-component-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Component Schedule</h2>
+              <button className="modal-close" onClick={() => setComponentScheduleOpen(false)}>x</button>
+            </div>
+            <div className="takeoff-schedule-grid">
+              <section>
+                <div className="takeoff-component-head">
+                  <h3>Project Schedule</h3>
+                  <span className="takeoff-muted">{componentSchedule.length} items</span>
+                </div>
+                <div className="takeoff-schedule-list">
+                  {componentSchedule.map((component) => (
+                    <div key={component.id} className="takeoff-schedule-row">
+                      <strong>{component.code}</strong>
+                      <span>{component.category}</span>
+                      <span>U {component.uValue ?? "-"}</span>
+                      <span>{component.category === "Glass" ? `SHGC ${component.shgc ?? "-"}` : ""}</span>
+                      <em>{component.description}</em>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <div className="takeoff-component-head">
+                  <h3>Library</h3>
+                  <button onClick={loadComponentLibrary}>{libraryLoading ? "Loading..." : "Refresh"}</button>
+                </div>
+                <input
+                  className="takeoff-schedule-search"
+                  value={componentSearch}
+                  placeholder="Search code or description"
+                  onChange={(event) => setComponentSearch(event.target.value)}
+                />
+                <div className="takeoff-schedule-list">
+                  {filteredLibraryComponents.map((component) => (
+                    <div key={component.id} className="takeoff-schedule-row">
+                      <strong>{component.code}</strong>
+                      <span>{component.category}</span>
+                      <span>U {component.uValue ?? "-"}</span>
+                      <span>{component.category === "Glass" ? `SHGC ${component.shgc ?? "-"}` : ""}</span>
+                      <em>{component.description}</em>
+                      <button onClick={() => addComponentToSchedule(component)}>Use</button>
+                    </div>
+                  ))}
+                  {!libraryLoading && filteredLibraryComponents.length === 0 && (
+                    <p className="modal-empty">No matching library components.</p>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <section className="takeoff-component-new">
+              <h3>New Component</h3>
+              <div className="takeoff-component-new-grid">
+                <label>
+                  Code
+                  <input value={componentDraft.code} onChange={(event) => setComponentDraft((current) => ({ ...current, code: event.target.value.toUpperCase(), category: categoryFromCode(event.target.value) }))} />
+                </label>
+                <label>
+                  Category
+                  <select value={componentDraft.category} onChange={(event) => setComponentDraft((current) => ({ ...current, category: event.target.value as TakeoffComponentCategory }))}>
+                    {componentCategories.map((category) => <option key={category} value={category}>{category}</option>)}
+                  </select>
+                </label>
+                <label>
+                  U-value
+                  <input type="number" step="0.001" value={componentDraft.uValue ?? ""} onChange={(event) => setComponentDraft((current) => ({ ...current, uValue: event.target.value === "" ? undefined : Number(event.target.value) }))} />
+                </label>
+                <label>
+                  SHGC
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={componentDraft.shgc ?? ""}
+                    disabled={componentDraft.category !== "Glass"}
+                    onChange={(event) => setComponentDraft((current) => ({ ...current, shgc: event.target.value === "" ? null : Number(event.target.value) }))}
+                  />
+                </label>
+                <label>
+                  Description
+                  <input value={componentDraft.description} onChange={(event) => setComponentDraft((current) => ({ ...current, description: event.target.value }))} />
+                </label>
+              </div>
+              <div className="takeoff-form-actions">
+                <button onClick={addDraftComponentToSchedule}>Add One-Off</button>
+                <button className="toolbar-primary" onClick={saveDraftComponentToLibrary}>Save To Library</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
       {openDialog && (
         <div className="modal-backdrop open-dialog-backdrop" onClick={() => setOpenDialog(false)}>
           <div className="modal open-dialog-modal" onClick={(event) => event.stopPropagation()}>

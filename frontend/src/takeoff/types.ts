@@ -13,6 +13,18 @@ export type TakeoffRoomComponent = {
   label?: string;
 };
 
+export type TakeoffComponentCategory = "Wall" | "Door" | "Ceiling" | "Floor" | "Glass";
+
+export type TakeoffComponentDefinition = {
+  id: string;
+  code: string;
+  category: TakeoffComponentCategory;
+  uValue?: number;
+  shgc?: number | null;
+  description: string;
+  source: "default" | "library" | "one_off";
+};
+
 export type TakeoffRectRoom = {
   id: string;
   name: string;
@@ -92,6 +104,7 @@ export type TakeoffProject = {
   schemaVersion: "takeoff.v1";
   name: string;
   frontDoorFaces: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
+  componentSchedule?: TakeoffComponentDefinition[];
   floors: TakeoffFloor[];
 };
 

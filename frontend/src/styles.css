@@ -1035,6 +1035,69 @@ button.toolbar-primary:hover {
   padding: 5px 6px;
 }
 
+.takeoff-component-modal {
+  max-width: 1080px;
+  width: min(1080px, 92vw);
+}
+
+.takeoff-schedule-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.takeoff-schedule-search {
+  box-sizing: border-box;
+  font: inherit;
+  margin-bottom: 8px;
+  padding: 7px 8px;
+  width: 100%;
+}
+
+.takeoff-schedule-list {
+  border: 1px solid #e1e7ec;
+  border-radius: 6px;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.takeoff-schedule-row {
+  align-items: center;
+  border-bottom: 1px solid #eef2f5;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 52px 72px 64px 76px minmax(120px, 1fr) auto;
+  padding: 7px 8px;
+}
+
+.takeoff-schedule-row:last-child {
+  border-bottom: none;
+}
+
+.takeoff-schedule-row span,
+.takeoff-schedule-row em {
+  color: #66727e;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.takeoff-component-new {
+  border-top: 1px solid #e1e7ec;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.takeoff-component-new h3 {
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+.takeoff-component-new-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 90px 120px 100px 100px minmax(180px, 1fr);
+}
+
 .takeoff-code {
   background: #f7f9fb;
   border: 1px solid #e1e7ec;

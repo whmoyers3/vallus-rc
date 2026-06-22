@@ -257,3 +257,18 @@ Implemented:
 Notes:
 
 - This is not the full boundary-overlay or 3D ceiling workflow; it is the editable room profile layer needed before Phase 2 windows/doors and later boundary phases.
+
+## 2026-06-21 - Phase 1.6 Component Schedule
+
+Added the first component schedule and library workflow.
+
+Implemented:
+
+- Added a top-level Component Schedule button on the takeoff toolbar.
+- Added a project schedule modal with current scheduled components.
+- Added searchable library components from the existing `assemblies` table.
+- Added one-off component entry for project-only definitions.
+- Added save-to-library support through `/api/assemblies`.
+- Persisted the project component schedule in takeoff JSON.
+- Room component rows now select floor/ceiling assemblies from the project schedule.
+- Payload preview now uses scheduled U-values, SHGC values, and descriptions instead of fixed takeoff defaults.

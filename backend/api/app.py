@@ -58,6 +58,13 @@ class PdfImportPayload(BaseModel):
     data_base64: str
 
 
+class AssemblyPayload(BaseModel):
+    code: str
+    u_value: Optional[float] = None
+    shgc: Optional[float] = None
+    label: str
+
+
 TAKEOFF_REFERENCE_MAX_BYTES = 7 * 1024 * 1024
 TAKEOFF_REFERENCE_MIME_TYPES = {
     "application/pdf",
@@ -203,6 +210,15 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
     @api.get("/api/assemblies")
     def list_assemblies() -> list[dict[str, Any]]:
         return database.list_assemblies()
+
+    @api.post("/api/assemblies", status_code=201)
+    def create_assembly(payload: AssemblyPayload) -> dict[str, Any]:
+        code = payload.code.upper().strip()
+        if not code:
+            raise HTTPException(status_code=422, detail="Assembly code is required.")
+        if not payload.label.strip():
+            raise HTTPException(status_code=422, detail="Assembly description is required.")
+        return database.create_assembly({**payload.model_dump(), "code": code})
 
     # ── Import ────────────────────────────────────────────────────────────────
 
