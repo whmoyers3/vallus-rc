@@ -283,6 +283,9 @@ Implemented:
 - Wall/window/door rows capture assembly, direction, label, and area.
 - Window rows export as glass line items in the payload preview.
 - Wall and door rows export as opaque directional line items.
+- Window and door direction choices are limited to the room's detected exterior/load-bearing directions.
+- Payload export subtracts same-direction window and door opening area from gross wall area.
+- Validation flags openings assigned to non-exterior directions or openings that exceed same-direction wall area.
 
 Still pending:
 

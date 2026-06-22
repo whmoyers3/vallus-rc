@@ -222,6 +222,42 @@ function componentNeedsDirection(surface: TakeoffRoomComponent["surface"]) {
   return surface === "wall" || surface === "glass" || surface === "door";
 }
 
+function openingAreaByDirection(room: TakeoffRectRoom) {
+  const openings = new Map<(typeof directionOptions)[number], number>();
+  for (const component of roomComponents(room)) {
+    if ((component.surface !== "glass" && component.surface !== "door") || !isCompassDirection(component.direction)) continue;
+    openings.set(component.direction, (openings.get(component.direction) ?? 0) + Math.max(0, component.area || 0));
+  }
+  return openings;
+}
+
+function wallAreaByDirection(room: TakeoffRectRoom) {
+  const walls = new Map<(typeof directionOptions)[number], number>();
+  for (const component of roomComponents(room)) {
+    if (component.surface !== "wall" || !isCompassDirection(component.direction)) continue;
+    walls.set(component.direction, (walls.get(component.direction) ?? 0) + Math.max(0, component.area || 0));
+  }
+  return walls;
+}
+
+function payloadComponentsForRoom(room: TakeoffRectRoom) {
+  const remainingOpenings = new Map(openingAreaByDirection(room));
+  return roomComponents(room)
+    .map((component) => {
+      if (component.surface !== "wall" || !isCompassDirection(component.direction)) return component;
+      const remaining = remainingOpenings.get(component.direction) ?? 0;
+      const grossArea = Math.max(0, component.area || 0);
+      const subtract = Math.min(grossArea, remaining);
+      remainingOpenings.set(component.direction, Math.max(0, remaining - subtract));
+      return {
+        ...component,
+        area: Number(Math.max(0, grossArea - subtract).toFixed(3)),
+        label: subtract > 0 ? `${component.label || "Exterior wall"} net of openings` : component.label,
+      };
+    })
+    .filter((component) => Math.max(0, component.area || 0) > 0);
+}
+
 function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
   const x = Math.min(a.x, b.x);
   const y = Math.min(a.y, b.y);
@@ -372,6 +408,64 @@ function pointInRoom(point: TakeoffPoint, room: TakeoffRectRoom) {
   return point.x >= room.x && point.x <= room.x + room.width && point.y >= room.y && point.y <= room.y + room.depth;
 }
 
+function pointsToEdges(points: TakeoffPoint[]) {
+  return points.map((point, index) => ({ a: point, b: points[(index + 1) % points.length] })).filter(({ a, b }) => distance(a, b) > 0.001);
+}
+
+function compassFromVector(dx: number, dy: number): (typeof directionOptions)[number] {
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  const normalized = (angle + 360) % 360;
+  if (normalized >= 337.5 || normalized < 22.5) return "E";
+  if (normalized < 67.5) return "SE";
+  if (normalized < 112.5) return "S";
+  if (normalized < 157.5) return "SW";
+  if (normalized < 202.5) return "W";
+  if (normalized < 247.5) return "NW";
+  if (normalized < 292.5) return "N";
+  return "NE";
+}
+
+function exteriorRingPoints(floor: TakeoffFloor) {
+  if (floor.exteriorPolygon.length >= 3) return floor.exteriorPolygon;
+  const bounds = footprintBounds(floor);
+  return rectToPoints({ x: bounds.x, y: bounds.y, width: bounds.width, depth: bounds.depth });
+}
+
+function roomExteriorDirections(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  const exteriorPoints = exteriorRingPoints(floor);
+  if (exteriorPoints.length < 3) return [] as Array<(typeof directionOptions)[number]>;
+  const center = {
+    x: exteriorPoints.reduce((sum, point) => sum + point.x, 0) / exteriorPoints.length,
+    y: exteriorPoints.reduce((sum, point) => sum + point.y, 0) / exteriorPoints.length,
+  };
+  const exteriorEdges = pointsToEdges(exteriorPoints);
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const directions = new Set<(typeof directionOptions)[number]>();
+
+  for (const roomEdge of pointsToEdges(roomCorners(room))) {
+    const samples = [
+      roomEdge.a,
+      roomEdge.b,
+      { x: (roomEdge.a.x + roomEdge.b.x) / 2, y: (roomEdge.a.y + roomEdge.b.y) / 2 },
+    ];
+    for (const exteriorEdge of exteriorEdges) {
+      if (samples.some((sample) => distance(sample, closestPointOnSegment(sample, exteriorEdge.a, exteriorEdge.b)) <= tolerance)) {
+        const midpoint = {
+          x: (exteriorEdge.a.x + exteriorEdge.b.x) / 2,
+          y: (exteriorEdge.a.y + exteriorEdge.b.y) / 2,
+        };
+        directions.add(compassFromVector(midpoint.x - center.x, midpoint.y - center.y));
+      }
+    }
+  }
+
+  return directionOptions.filter((direction) => directions.has(direction));
+}
+
+function isCompassDirection(value: TakeoffRoomComponent["direction"] | undefined): value is (typeof directionOptions)[number] {
+  return !!value && (directionOptions as readonly string[]).includes(value);
+}
+
 function overlaps(a: TakeoffRectRoom, b: TakeoffRectRoom) {
   if (a.polygon || b.polygon) {
     return intersection(roomToClipPolygon(a), roomToClipPolygon(b)).some((polygon) => polygonArea(clipPolygonToPoints(polygon)) > 0.25);
@@ -443,6 +537,9 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
     const roomArea = rectArea(room);
     const floorArea = componentAreaTotal(room, "floor");
     const ceilingArea = componentAreaTotal(room, "ceiling");
+    const exteriorDirections = roomExteriorDirections(floor, room);
+    const openingAreas = openingAreaByDirection(room);
+    const wallAreas = wallAreaByDirection(room);
     if (floorArea > roomArea + 0.5) {
       issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.` });
     }
@@ -456,8 +553,27 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
       if (componentNeedsDirection(component.surface) && !component.direction) {
         issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${componentSurfaceLabel(component.surface).toLowerCase()} component with no direction.` });
       }
+      if (
+        componentNeedsDirection(component.surface) &&
+        isCompassDirection(component.direction) &&
+        !exteriorDirections.includes(component.direction)
+      ) {
+        issues.push({
+          severity: "error",
+          message: `${room.name || "Room"} cannot assign a ${componentSurfaceLabel(component.surface).toLowerCase()} to ${component.direction}; detected exterior/load-bearing directions: ${exteriorDirections.join(", ") || "none"}.`,
+        });
+      }
       if (component.area <= 0) {
         issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${component.surface} component with no area.` });
+      }
+    }
+    for (const [direction, openingArea] of openingAreas) {
+      const wallArea = wallAreas.get(direction) ?? 0;
+      if (openingArea > wallArea + 0.5) {
+        issues.push({
+          severity: "error",
+          message: `${room.name || "Room"} has ${Math.round(openingArea)} sf of windows/doors on ${direction}, exceeding ${Math.round(wallArea)} sf of assigned wall area.`,
+        });
       }
     }
     if (floorArea < roomArea - 0.5) {
@@ -512,7 +628,7 @@ function buildVrcPayload(project: TakeoffProject) {
     zone_id: "zone-default",
   }));
   const lineItems = floor.rooms.flatMap((room) => {
-    return roomComponents(room).map((component) => ({
+    return payloadComponentsForRoom(room).map((component) => ({
       name: `${room.name} ${component.label || component.assembly}`,
       kind: componentPayloadKind(component.surface),
       room_name: room.name,
@@ -829,9 +945,13 @@ export function TakeoffApp() {
         const assignedArea = componentAreaTotal(room, surface);
         const remainingArea = Math.max(0, roomArea - assignedArea);
         const components = roomComponents(room);
+        const component = defaultComponent(surface, remainingArea || roomArea);
+        if (componentNeedsDirection(surface)) {
+          component.direction = roomExteriorDirections(current, room)[0];
+        }
         return {
           ...room,
-          components: [...components, defaultComponent(surface, remainingArea || roomArea)],
+          components: [...components, component],
         };
       }),
     }));
@@ -2349,6 +2469,14 @@ export function TakeoffApp() {
             </div>
             {selectedRoom ? (
               <>
+                {(() => {
+                  const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
+                  return (
+                    <p className="takeoff-muted">
+                      Exterior/load-bearing directions: {exteriorDirections.join(", ") || "none detected"}
+                    </p>
+                  );
+                })()}
                 <label>
                   Name
                   <input value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
@@ -2369,6 +2497,7 @@ export function TakeoffApp() {
                   const delta = roomArea - assigned;
                   const isAreaChecked = surface === "floor" || surface === "ceiling";
                   const options = scheduleOptionsBySurface[surface];
+                  const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
                   return (
                     <div key={surface} className="takeoff-component-editor">
                       <div className="takeoff-component-head">
@@ -2382,7 +2511,7 @@ export function TakeoffApp() {
                         </p>
                       ) : (
                         <p className="takeoff-component-total">
-                          {Math.round(assigned)} sf total · enter area manually until click-to-place openings is enabled.
+                          {Math.round(assigned)} sf total · {surface === "wall" ? "wall area is gross; same-direction windows/doors subtract in payload." : "enter area manually until click-to-place openings is enabled."}
                         </p>
                       )}
                       {roomSurfaceComponents(selectedRoom, surface).length === 0 ? (
@@ -2405,9 +2534,7 @@ export function TakeoffApp() {
                                   onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
                                 >
                                   <option value="">Direction</option>
-                                  {directionOptions.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
-                                  {surface === "glass" && <option value="Shaded">Shaded</option>}
-                                  {surface === "glass" && <option value="Skylight">Skylight</option>}
+                                  {exteriorDirections.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
                                 </select>
                               )}
                               <input
