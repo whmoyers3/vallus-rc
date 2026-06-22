@@ -295,6 +295,7 @@ Implemented:
 - Placed opening markers can now be clicked to edit type, component, size, or label, or remove the opening from the wall.
 - Placed opening markers can be dragged along their assigned exterior wall segment without moving to a different room.
 - Added a room-level Wall / Opening Reconciliation card showing gross wall area, glass area, door area, and net wall area by direction.
+- Improved Room Profile side-panel scaling so reconciliation rows and component remove buttons fit inside the panel.
 
 Still pending:
 
