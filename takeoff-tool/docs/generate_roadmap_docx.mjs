@@ -23,7 +23,7 @@ const {
   WidthType,
 } = require("docx");
 
-const outPath = path.resolve("takeoff-tool/docs/VRC_Takeoff_Tool_Roadmap.docx");
+const outPath = path.resolve("takeoff-tool/docs/Baseline_Takeoff_Tool_Roadmap.docx");
 
 const border = { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" };
 const borders = { top: border, bottom: border, left: border, right: border };
@@ -129,13 +129,13 @@ function phaseTable(rows) {
 }
 
 const children = [
-  p("VRC Takeoff Tool Roadmap", {
+  p("Baseline Takeoff Tool Roadmap", {
     size: 36,
     bold: true,
     alignment: AlignmentType.CENTER,
     after: 80,
   }),
-  p("Plan PDF tracing, room partitioning, envelope takeoff, and VRC payload generation", {
+  p("Plan PDF tracing, room partitioning, envelope takeoff, and Baseline payload generation", {
     size: 22,
     italics: true,
     alignment: AlignmentType.CENTER,
@@ -149,8 +149,8 @@ const children = [
   new TableOfContents("Table of Contents", { hyperlink: true, headingStyleRange: "1-3" }),
 
   h1("1. Executive Summary"),
-  p("The VRC Takeoff Tool is a planned web-based authoring workflow for creating room-by-room load calculation inputs from plan PDFs. The PDF is only a tracing background. The editable takeoff JSON is the geometry source of truth. The generated VRC payload and Markdown are the calculation/export products."),
-  p("The recommended implementation is a nested module inside the existing Web App Load Calculation repository, not a separate repository yet. This keeps the takeoff tool close to the VRC engine, Markdown importer, assembly definitions, Supabase storage, and existing unit/zone data model."),
+  p("The Baseline Takeoff Tool is a planned web-based authoring workflow for creating room-by-room load calculation inputs from plan PDFs. The PDF is only a tracing background. The editable takeoff JSON is the geometry source of truth. The generated Baseline payload and Markdown are the calculation/export products."),
+  p("The recommended implementation is a nested module inside the existing Web App Load Calculation repository, not a separate repository yet. This keeps the takeoff tool close to the Baseline engine, Markdown importer, assembly definitions, Supabase storage, and existing unit/zone data model."),
 
   h1("2. Product Goals"),
   bullet("Upload or reference PDF plan pages and calibrate scale."),
@@ -161,11 +161,11 @@ const children = [
   bullet("Support multiple floors and cross-floor overlays."),
   bullet("Assign rooms across HVAC units, zones, and thermostats."),
   bullet("Save and reopen editable takeoff JSON."),
-  bullet("Generate VRC-compatible calculation payloads and Markdown."),
+  bullet("Generate Baseline-compatible calculation payloads and Markdown."),
   bullet("Provide a blank scaled grid/manual drafting fallback for skewed or unreliable plan references."),
 
   h1("3. Delivery Strategy"),
-  p("Build the takeoff tool as a route, tab, or module inside the existing VRC web app first. Use GitHub branches and Vercel preview deployments as the preferred verification environment."),
+  p("Build the takeoff tool as a route, tab, or module inside the existing Baseline web app first. Use GitHub branches and Vercel preview deployments as the preferred verification environment."),
   p("Localhost may be used for quick developer checks, but it should not be the main user validation path. The user prefers the extra time of pushing to GitHub and refreshing after a Vercel build over starting and stopping local servers."),
   bullet("Keep early takeoff work feature-gated or isolated behind a route/tab."),
   bullet("Run local build/tests when practical to catch obvious breakage."),
@@ -174,7 +174,7 @@ const children = [
   bullet("Merge or promote only after the hosted preview is accurate and workable."),
 
   h1("4. Repository And Storage Recommendation"),
-  p("Keep the tool inside the existing VRC repository first. Use this planning folder for agent instructions and roadmap context, then place production code in backend, frontend, and supabase folders as implementation begins."),
+  p("Keep the tool inside the existing Baseline repository first. Use this planning folder for agent instructions and roadmap context, then place production code in backend, frontend, and supabase folders as implementation begins."),
   codeBlock([
     "WEBAPP - Load Calculation Software/",
     "  takeoff-tool/              planning and agent instructions",
@@ -186,13 +186,13 @@ const children = [
   p("Store editable takeoff JSON separately from calculation payloads. Link takeoff records to calculations records in Supabase. Store plan PDFs and rendered page images in Supabase Storage, with references in takeoff JSON."),
   codeBlock([
     "takeoff_json -> editable geometry and visual state",
-    "payload_json -> executable VRC calculation input",
+    "payload_json -> executable Baseline calculation input",
     "Markdown -> import/export bridge compatible with existing importer",
     "PDF/page image -> visual tracing background only",
   ]),
 
   h1("5. Input Modes"),
-  p("The tool should support three authoring modes that all generate the same takeoff JSON and VRC payload. The mode changes how geometry is created, not how loads are calculated."),
+  p("The tool should support three authoring modes that all generate the same takeoff JSON and Baseline payload. The mode changes how geometry is created, not how loads are calculated."),
   bullet("PDF trace mode: preferred. Upload or select a clean floor-plan PDF page, calibrate scale, and trace over it."),
   bullet("Image trace mode: fallback for screenshots or raster plan images. Manual calibration and a second scale check are required."),
   bullet("Grid/manual mode: fallback for skewed, stretched, low-quality, or unavailable plan pages. Draw on a blank scaled grid, enter exact dimensions, snap to increments, and optionally place a translucent plan reference as a visual guide."),
@@ -227,7 +227,7 @@ const children = [
   h2("Phase 0 - Contract And Prototype Spike"),
   bullet("Define takeoff JSON schema version v1."),
   bullet("Define geometry-to-payload and Markdown export mapping."),
-  bullet("Create a hand-written fixture and prove it can generate valid VRC payload and Markdown."),
+  bullet("Create a hand-written fixture and prove it can generate valid Baseline payload and Markdown."),
   bullet("Add a feature-gated or isolated takeoff route/tab shell suitable for Vercel preview verification."),
 
   h2("Phase 1 - Single-Floor Manual Takeoff MVP"),
@@ -267,7 +267,7 @@ const children = [
 
   h1("10. Future Session Instructions"),
   p("Future coding sessions should start by reading takeoff-tool/AGENTS.md, takeoff-tool/README.md, takeoff-tool/ROADMAP.md, takeoff-tool/DEPLOYMENT.md, takeoff-tool/CHANGELOG.md, CLAUDE.md, CONTEXT.md, backend/api/markdown_import.py, backend/engine/calculator.py, backend/api/serialization.py, and supabase/schema.sql."),
-  p("Implementation should preserve the boundary between editable takeoff geometry and executable VRC payloads. The load engine should not become a geometry editor."),
+  p("Implementation should preserve the boundary between editable takeoff geometry and executable Baseline payloads. The load engine should not become a geometry editor."),
 
   h1("11. Initial Open Questions"),
   bullet("Should generated wall components be exported as segment rows or aggregate rows per room/orientation/boundary?"),
@@ -344,7 +344,7 @@ const doc = new Document({
           children: [
             new Paragraph({
               alignment: AlignmentType.RIGHT,
-              children: [new TextRun({ text: "VRC Takeoff Tool", size: 18, color: "666666" })],
+              children: [new TextRun({ text: "Baseline Takeoff Tool", size: 18, color: "666666" })],
             }),
           ],
         }),

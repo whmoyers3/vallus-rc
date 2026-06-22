@@ -235,7 +235,7 @@ def _comparison_from_markdown(text: str) -> dict[str, Any] | None:
         if not row or row[0] in {"-", "—"}:
             continue
         # Normalize R1/R2 -> C1/C2 to match the engine's codes, so Salas ceiling
-        # components line up with VRC in the detail-report match key.
+        # components line up with Baseline in the detail-report match key.
         code = _normalized_code(row[0])
         if not code:
             continue

@@ -1,6 +1,6 @@
 """Build a component-level variance report across the test battery.
 
-Compares VRC engine output to Salas O'Brien's per-component BTU/hr values
+Compares Baseline engine output to Salas O'Brien's per-component BTU/hr values
 extracted at PDF import time.  Output is a JSON file consumed by an analysis
 skill — not a UI feature.
 """
@@ -66,7 +66,7 @@ def _assembly_spec_key(type_code: str, u_value: float | None, cltd_or_clf: float
 
 
 def _vrc_spec_for_line(item: LineItem, lr: LineResult) -> tuple | None:
-    """Derive the assembly spec key for a VRC line result.
+    """Derive the assembly spec key for a Baseline line result.
 
     Returns None for items that should be excluded (infiltration, lighting,
     people, appliances).
@@ -110,7 +110,7 @@ def _build_room_variance(
         if isinstance(comp, dict)
     )
 
-    # Group VRC lines by assembly spec
+    # Group Baseline lines by assembly spec
     vrc_by_spec: dict[tuple, dict[str, float]] = {}
     for item, lr in vrc_lines:
         spec = _vrc_spec_for_line(item, lr)

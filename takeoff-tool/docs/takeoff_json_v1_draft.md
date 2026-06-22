@@ -1,6 +1,6 @@
 # Takeoff JSON v1 Draft
 
-This is a draft shape for the editable takeoff project. It is intentionally separate from the generated VRC payload.
+This is a draft shape for the editable takeoff project. It is intentionally separate from the generated Baseline payload.
 
 ```json
 {

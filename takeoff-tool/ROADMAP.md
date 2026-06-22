@@ -1,12 +1,12 @@
-# VRC Takeoff Tool Roadmap
+# Baseline Takeoff Tool Roadmap
 
 ## Roadmap Status
 
-This roadmap captures the product/design decisions developed in planning sessions. It is intended for future VRC development sessions and should be updated as implementation decisions become real code.
+This roadmap captures the product/design decisions developed in planning sessions. It is intended for future Baseline development sessions and should be updated as implementation decisions become real code.
 
 ## Delivery Strategy
 
-Build the takeoff tool as a tab/route/module inside the existing VRC web app first. Use GitHub branches and Vercel preview deployments as the preferred verification environment.
+Build the takeoff tool as a tab/route/module inside the existing Baseline web app first. Use GitHub branches and Vercel preview deployments as the preferred verification environment.
 
 Localhost may be used for quick developer checks, but the planned workflow should not require the user to start and stop local servers. Each meaningful implementation phase should end with:
 
@@ -28,10 +28,10 @@ Deliverables:
 - Define geometry-to-payload mapping.
 - Define Markdown export mapping compatible with `backend/api/markdown_import.py`.
 - Create a hand-written takeoff JSON fixture.
-- Generate a VRC payload from that fixture.
+- Generate a Baseline payload from that fixture.
 - Generate Markdown from that fixture.
 - Verify generated payload can be calculated.
-- Verify generated Markdown can import back into VRC.
+- Verify generated Markdown can import back into Baseline.
 - Add a feature-gated or isolated takeoff route/tab shell suitable for Vercel preview verification.
 
 Acceptance criteria:
@@ -65,7 +65,7 @@ Acceptance criteria:
 - Sum of room areas equals conditioned footprint within tolerance.
 - User cannot create overlapping rooms.
 - Saved takeoff can be reopened and edited.
-- Generated project links to a VRC calculation record.
+- Generated project links to a Baseline calculation record.
 - Grid/manual mode can create the same perimeter and room partition data without a PDF background.
 
 ## Phase 1.5 - Room Profiles And Basic Load Surfaces

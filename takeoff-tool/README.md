@@ -1,10 +1,10 @@
-# VRC Takeoff Tool
+# Baseline Takeoff Tool
 
-The VRC Takeoff Tool is a planned web-based authoring workflow for creating room-by-room load calculation inputs from plan PDFs. It will sit beside the existing VRC load calculation app and generate both editable takeoff JSON and VRC-compatible calculation payloads/Markdown.
+The Baseline Takeoff Tool is a planned web-based authoring workflow for creating room-by-room load calculation inputs from plan PDFs. It will sit beside the existing Baseline load calculation app and generate both editable takeoff JSON and Baseline-compatible calculation payloads/Markdown.
 
 ## Problem
 
-Today, VRC can import Markdown created from Salas O'Brien resload PDFs and can also calculate from manually entered room/component data. The missing piece is a guided plan takeoff workflow that lets a user build those same room/component inputs visually from a floor plan.
+Today, Baseline can import Markdown created from Salas O'Brien resload PDFs and can also calculate from manually entered room/component data. The missing piece is a guided plan takeoff workflow that lets a user build those same room/component inputs visually from a floor plan.
 
 The goal is not full automatic plan recognition. The goal is a fast, accurate, auditable manual takeoff assistant.
 
@@ -20,7 +20,7 @@ The goal is not full automatic plan recognition. The goal is a fast, accurate, a
 - Support multiple floors and cross-floor overlays.
 - Assign rooms across HVAC units and zones.
 - Save and reopen editable takeoff JSON.
-- Generate VRC calculation payloads and Markdown compatible with the existing importer.
+- Generate Baseline calculation payloads and Markdown compatible with the existing importer.
 - Provide a blank scaled grid/manual drafting mode for skewed or unreliable plan references.
 
 ## Non-Goals For Early Versions
@@ -73,7 +73,7 @@ This `takeoff-tool/` folder is the planning and agent-instruction workspace. The
 9. Adjust ceiling heights and ceiling profiles.
 10. Assign rooms to units/zones.
 11. Run validation.
-12. Generate VRC payload and Markdown.
+12. Generate Baseline payload and Markdown.
 13. Save linked calculation and editable takeoff JSON.
 ```
 
@@ -93,10 +93,10 @@ This remains a good web-app fit. Browser canvas/SVG layers can handle PDF render
 
 ## Current Decision
 
-Build inside the existing VRC project first. Keep the geometry model separate from the engine payload, and link takeoff projects to calculation records in Supabase.
+Build inside the existing Baseline project first. Keep the geometry model separate from the engine payload, and link takeoff projects to calculation records in Supabase.
 
 ## Deployment And Verification
 
-The preferred workflow is to build takeoff features as a tab/route/module in the existing VRC app, push changes to GitHub, and verify them on a Vercel preview deployment. Localhost can still be used for quick developer checks, but future sessions should not depend on localhost as the main validation workflow.
+The preferred workflow is to build takeoff features as a tab/route/module in the existing Baseline app, push changes to GitHub, and verify them on a Vercel preview deployment. Localhost can still be used for quick developer checks, but future sessions should not depend on localhost as the main validation workflow.
 
 This approach costs a little more time per iteration, but it verifies the app in the same hosted environment the user actually works in.

@@ -1,4 +1,4 @@
-"""Report generation for VRC (Vallus Residential Calculator)."""
+"""Report generation for Baseline (Vallus Residential Calculator)."""
 
 from .pdf import generate_resload_pdf
 

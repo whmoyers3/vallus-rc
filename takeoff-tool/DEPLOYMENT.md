@@ -22,7 +22,7 @@ The user prefers the extra time of pushing to GitHub and waiting for a Vercel bu
 
 ## Product Placement
 
-Build the takeoff tool inside the existing VRC web app first:
+Build the takeoff tool inside the existing Baseline web app first:
 
 - as a route, tab, or module
 - sharing the existing Supabase connection and calculation APIs

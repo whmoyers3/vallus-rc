@@ -494,7 +494,7 @@ function buildVrcPayload(project: TakeoffProject) {
     project: {
       name: project.name,
       location: "",
-      description: "Generated from VRC Takeoff Tool",
+      description: "Generated from Baseline Takeoff Tool",
       building_type: "single_family",
       design_conditions: {
         outdoor_cooling_db: 95,

@@ -1,6 +1,6 @@
 """Residual (non-envelope) load audit for the Salas test battery.
 
-Compares VRC's infiltration, lighting, people, and appliance loads against the
+Compares Baseline's infiltration, lighting, people, and appliance loads against the
 residual implied by Salas's room totals minus their reported component loads.
 """
 
@@ -44,7 +44,7 @@ def _record_label(record: dict[str, Any], payload: dict[str, Any]) -> str:
 
 
 def _classify_line(item: LineItem | None, lr: LineResult) -> str:
-    """Classify a VRC line result as envelope or a specific residual category."""
+    """Classify a Baseline line result as envelope or a specific residual category."""
     name_lower = lr.name.lower()
     if name_lower.startswith("auto infiltration - "):
         return "infiltration"
@@ -78,7 +78,7 @@ def _build_project_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
     snapshot = record.get("comparison_snapshot") or {}
     project_name = _record_label(record, payload)
 
-    # Index VRC line results by room, with their source items
+    # Index Baseline line results by room, with their source items
     vrc_by_room: dict[str, list[tuple[LineItem | None, LineResult]]] = {}
     for level, level_result in zip(project.levels, result.levels):
         paired = list(zip(level.line_items, level_result.line_results))
@@ -111,7 +111,7 @@ def _build_project_rows(record: dict[str, Any]) -> list[dict[str, Any]]:
         salas_residual_cool = salas_cool_total - salas_comp_cool
         salas_residual_heat = salas_heat_total - salas_comp_heat
 
-        # VRC breakdown by category
+        # Baseline breakdown by category
         vrc_loads: dict[str, dict[str, float]] = {
             "infiltration": {"cool": 0.0, "heat": 0.0},
             "lighting": {"cool": 0.0, "heat": 0.0},

@@ -1,16 +1,16 @@
-# VRC Takeoff Tool - Agent Instructions
+# Baseline Takeoff Tool - Agent Instructions
 
 ## Mission
 
-Build a web-based plan takeoff authoring tool for VRC. The tool lets users upload or reference a plan PDF page, trace conditioned space, partition it into non-overlapping rooms, place windows and doors, assign boundary conditions, and generate the exact room/component inputs expected by the existing VRC load calculation engine and Markdown importer.
+Build a web-based plan takeoff authoring tool for Baseline. The tool lets users upload or reference a plan PDF page, trace conditioned space, partition it into non-overlapping rooms, place windows and doors, assign boundary conditions, and generate the exact room/component inputs expected by the existing Baseline load calculation engine and Markdown importer.
 
-This is not a general CAD system. The plan image is a tracing background; the editable takeoff JSON is the geometry source of truth; the generated VRC payload and Markdown are the calculation/export products.
+This is not a general CAD system. The plan image is a tracing background; the editable takeoff JSON is the geometry source of truth; the generated Baseline payload and Markdown are the calculation/export products.
 
 ## Repository Placement
 
-This folder is intentionally nested inside the existing VRC project because the takeoff tool must share:
+This folder is intentionally nested inside the existing Baseline project because the takeoff tool must share:
 
-- the VRC engine payload contract in `backend/engine/models.py`
+- the Baseline engine payload contract in `backend/engine/models.py`
 - the payload serializer in `backend/api/serialization.py`
 - the Markdown import/export expectations in `backend/api/markdown_import.py`
 - the assembly catalog and CLTD/SHGC conventions in `backend/engine/constants.py`
@@ -31,7 +31,7 @@ When building takeoff features:
 4. Verify behavior on the Vercel preview URL.
 5. Promote/merge only after the preview is accurate and workable.
 
-The production VRC site should not receive unfinished takeoff work directly. Use preview deployments or feature-gated routes/tabs for early validation.
+The production Baseline site should not receive unfinished takeoff work directly. Use preview deployments or feature-gated routes/tabs for early validation.
 
 ## Core Product Rules
 
@@ -57,7 +57,7 @@ takeoff_json
   -> editable geometry, pages, floors, rooms, openings, overlays, validation state
 
 generated payload_json
-  -> VRC calculation input, stored in calculations.payload_json
+  -> Baseline calculation input, stored in calculations.payload_json
 
 generated Markdown
   -> import/export bridge compatible with the current Markdown importer
@@ -71,7 +71,7 @@ Preferred Supabase model:
 calculations
   id
   payload_json
-  existing VRC fields
+  existing Baseline fields
 
 takeoff_projects
   id
@@ -108,9 +108,9 @@ The JSON should preserve enough information to reopen and edit a project without
 - validation results and unresolved issues
 - drafting mode: PDF/page trace, image trace, or blank grid/manual
 
-## Generated VRC Payload Rules
+## Generated Baseline Payload Rules
 
-Generated payloads should use the existing VRC model:
+Generated payloads should use the existing Baseline model:
 
 - rooms: `name`, `floor_area`, `ceiling_height`, `volume`, `lighting_area`, `unit_id`, `zone_id`
 - line items:

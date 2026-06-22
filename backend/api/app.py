@@ -1,4 +1,4 @@
-"""FastAPI application for VRC (Vallus Residential Calculator)."""
+"""FastAPI application for Baseline (Vallus Residential Calculator)."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ TAKEOFF_REFERENCE_MIME_TYPES = {
 # ── Filename helpers ──────────────────────────────────────────────────────────
 
 def _vrc_filename(description: str) -> str:
-    """Build a VRC PDF filename.
+    """Build a Baseline PDF filename.
 
     Pattern: ``{description}-vrc.pdf``
     e.g. ``Hickory C Slab-vrc.pdf``, ``Ash B Slab CBonus ACH50-vrc.pdf``
@@ -116,7 +116,7 @@ def _make_auth_middleware(app_password: str):
         return Response(
             content="Unauthorized",
             status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="VRC"'},
+            headers={"WWW-Authenticate": 'Basic realm="Baseline"'},
         )
 
     return require_password
@@ -176,7 +176,7 @@ def _make_supabase_auth_middleware(database: Database):
 
 def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
     database = Database()
-    api = FastAPI(title="VRC API")
+    api = FastAPI(title="Baseline API")
 
     app_password = os.getenv("APP_PASSWORD", "")
     supabase_anon_key = os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY", "")

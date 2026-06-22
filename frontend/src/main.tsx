@@ -693,6 +693,7 @@ function App() {
   const [worstCase, setWorstCase] = useState<WorstCaseResult | null>(null);
   const [assemblies, setAssemblies] = useState<AssemblyRow[]>([]);
   const [assemblySearch, setAssemblySearch] = useState("");
+  const [assemblyLibraryOpen, setAssemblyLibraryOpen] = useState(false);
   const [assemblyLibraryLoading, setAssemblyLibraryLoading] = useState(false);
   const [assemblyLibraryError, setAssemblyLibraryError] = useState<string | null>(null);
   const [pendingAssemblyAssignment, setPendingAssemblyAssignment] = useState<AssemblyRow | null>(null);
@@ -840,6 +841,12 @@ function App() {
 
   function scrollToSection(id: string) {
     document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function openComponentLibrary() {
+    setAssemblyLibraryOpen(true);
+    if (!assemblies.length) void loadAssemblyLibrary();
+    requestAnimationFrame(() => scrollToSection("envelope-assemblies"));
   }
 
   function scrollToRoomCard(index: number) {
@@ -1870,7 +1877,7 @@ function App() {
 
   const navItems = [
     { id: "project-settings",    label: "Project Settings",    icon: "⚙", status: hasRequiredFieldError ? "error" : null },
-    { id: "envelope-assemblies", label: "Envelope Assemblies", icon: "▦", status: null },
+    { id: "envelope-assemblies", label: "Component Library & Assemblies", icon: "▦", status: null },
     { id: "units-zones",         label: "Units & Zones",       icon: "◫", status: null },
     { id: "rooms",               label: "Rooms",               icon: "⌂", status: hasRoomAssignmentError ? "error" : null },
     { id: "load-summary",        label: "Load Summary",        icon: "≡", status: loads ? "ok" : null },
@@ -1883,7 +1890,7 @@ function App() {
       <aside className="left-nav" onMouseEnter={() => {}} onMouseLeave={() => {}}>
         <div className="left-nav-header">
           <img src="/logo.png" className="left-nav-logo-img" alt="Baseline" />
-          <span className="left-nav-logo">VRC</span>
+          <span className="left-nav-logo">Baseline</span>
           <button
             className="left-nav-pin-btn"
             onClick={() => setNavPinned((v) => !v)}
@@ -2049,10 +2056,10 @@ function App() {
                     : (() => {
                         const d = importFidelity.details ?? {};
                         const issues: string[] = [];
-                        if (d.orientation_match === false) issues.push(`Orientation: VRC=${d.vrc_orientation} Salas=${d.salas_orientation}`);
-                        if (d.floor_area_match === false) issues.push(`Floor area: VRC=${d.vrc_floor_area} Salas=${d.salas_floor_area}`);
-                        if (d.volume_match === false) issues.push(`Volume: VRC=${d.vrc_volume} Salas=${d.salas_volume}`);
-                        if (d.room_count_match === false) issues.push(`Rooms: VRC=${d.vrc_room_count} Salas=${d.salas_room_count}`);
+                        if (d.orientation_match === false) issues.push(`Orientation: Baseline=${d.vrc_orientation} Salas=${d.salas_orientation}`);
+                        if (d.floor_area_match === false) issues.push(`Floor area: Baseline=${d.vrc_floor_area} Salas=${d.salas_floor_area}`);
+                        if (d.volume_match === false) issues.push(`Volume: Baseline=${d.vrc_volume} Salas=${d.salas_volume}`);
+                        if (d.room_count_match === false) issues.push(`Rooms: Baseline=${d.vrc_room_count} Salas=${d.salas_room_count}`);
                         return issues.length ? issues.join(" | ") : "Import fidelity check failed.";
                       })()
                 }
@@ -2069,6 +2076,7 @@ function App() {
             {batteryStatus === "added" && (
               <button className="button battery-btn battery-btn-added" onClick={refreshBatteryCopy} title="Refresh the test battery copy from this project">↻ Battery</button>
             )}
+            <button className="button" onClick={openComponentLibrary}>Component Library</button>
             <a className="button" href="/#/takeoff">Takeoff</a>
             <a className="button" href="/#/admin">Admin</a>
           </div>
@@ -2230,15 +2238,22 @@ function App() {
 
         <section id="section-envelope-assemblies" data-section="envelope-assemblies" className="panel">
           <div className="panel-head">
-            <h3>Envelope Assemblies</h3>
+            <h3>Component Library & Assemblies</h3>
             <div className="button-row">
+              {!collapsedPanels.has("type-inputs") && (
+                <button className="toolbar-primary" onClick={() => {
+                  setAssemblyLibraryOpen((open) => !open);
+                  if (!assemblyLibraryOpen && !assemblies.length) void loadAssemblyLibrary();
+                }}>
+                  {assemblyLibraryOpen ? "Hide Component Library" : "Show Component Library"}
+                </button>
+              )}
               {!collapsedPanels.has("type-inputs") && <button onClick={addTypeDefinition}>Add Type</button>}
-              {!collapsedPanels.has("type-inputs") && <button onClick={loadAssemblyLibrary} disabled={assemblyLibraryLoading}>{assemblyLibraryLoading ? "Loading..." : "Refresh Library"}</button>}
               <button className="panel-toggle" onClick={() => togglePanel("type-inputs")}>{collapsedPanels.has("type-inputs") ? "Show ▾" : "Hide ▴"}</button>
             </div>
           </div>
           {!collapsedPanels.has("type-inputs") && <>
-            <div className="assembly-library-panel">
+            {assemblyLibraryOpen && <div className="assembly-library-panel">
               <div className="assembly-library-head">
                 <label>Shared library search
                   <input
@@ -2248,6 +2263,7 @@ function App() {
                   />
                 </label>
                 <span>{assemblies.length} saved</span>
+                <button onClick={loadAssemblyLibrary} disabled={assemblyLibraryLoading}>{assemblyLibraryLoading ? "Loading..." : "Refresh Library"}</button>
               </div>
               <p className="assembly-library-hint">
                 Click Use to choose a project slot like W1, W2, or G1, or create the next available slot.
@@ -2263,7 +2279,7 @@ function App() {
                 ))}
                 {!filteredAssemblies.length && <p className="modal-empty">{assemblyLibraryLoading ? "Loading library..." : "No shared components found."}</p>}
               </div>
-            </div>
+            </div>}
             <div className="component-table-wrap">
               <table>
                 <thead>
@@ -3159,7 +3175,7 @@ function ProjectLibrary({ onOpen }: { onOpen: (id: number, row: SavedProject) =>
   function sourceLabel(source: string) {
     if (source === "salas_import") return "Salas Import";
     if (source === "test_battery") return "Test Battery";
-    return "VRC";
+    return "Baseline";
   }
 
   function planLabel(row: SavedProject) {
@@ -3212,7 +3228,7 @@ function ProjectLibrary({ onOpen }: { onOpen: (id: number, row: SavedProject) =>
             style={{ width: 160, flexShrink: 0 }}
           >
             <option value="">All sources</option>
-            <option value="vrc">VRC</option>
+            <option value="vrc">Baseline</option>
             <option value="salas_import">Salas Import</option>
             <option value="test_battery">Test Battery</option>
           </select>
@@ -3524,7 +3540,7 @@ function FidelityBadges({ details }: { details: Record<string, unknown> | null |
   if (details.floor_area_match === false) {
     badges.push(
       <span key="area" className="badge badge-amber" style={{ fontSize: 10 }}
-        title={`Area: VRC ${details.vrc_floor_area} sf vs Salas ${details.salas_floor_area} sf`}>
+        title={`Area: Baseline ${details.vrc_floor_area} sf vs Salas ${details.salas_floor_area} sf`}>
         Area Δ
       </span>
     );
@@ -3532,7 +3548,7 @@ function FidelityBadges({ details }: { details: Record<string, unknown> | null |
   if (details.volume_match === false) {
     badges.push(
       <span key="vol" className="badge badge-amber" style={{ fontSize: 10 }}
-        title={`Volume: VRC ${details.vrc_volume} cf vs Salas ${details.salas_volume} cf`}>
+        title={`Volume: Baseline ${details.vrc_volume} cf vs Salas ${details.salas_volume} cf`}>
         Vol Δ
       </span>
     );
@@ -3540,7 +3556,7 @@ function FidelityBadges({ details }: { details: Record<string, unknown> | null |
   if (details.room_count_match === false) {
     badges.push(
       <span key="rooms" className="badge badge-amber" style={{ fontSize: 10 }}
-        title={`Rooms: VRC ${details.vrc_room_count} vs Salas ${details.salas_room_count}`}>
+        title={`Rooms: Baseline ${details.vrc_room_count} vs Salas ${details.salas_room_count}`}>
         Rooms Δ
       </span>
     );
@@ -4262,10 +4278,10 @@ function AdminPanel() {
                               <thead>
                                 <tr style={{ color: "#666", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                                   <th style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Room</th>
-                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>VRC Cool</th>
+                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Baseline Cool</th>
                                   <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Salas Cool</th>
                                   <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Δ Cool</th>
-                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>VRC Heat</th>
+                                  <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Baseline Heat</th>
                                   <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Salas Heat</th>
                                   <th style={{ textAlign: "right", padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}>Δ Heat</th>
                                   <th style={{ padding: "4px 8px", borderBottom: "1px solid #e0e0e0" }}></th>
@@ -4402,10 +4418,10 @@ function AdminPanel() {
                             <thead>
                               <tr style={{ color: "#999", fontSize: 10, textTransform: "uppercase" }}>
                                 <th style={{ textAlign: "left", padding: "3px 6px" }}>Room</th>
-                                <th style={{ textAlign: "right", padding: "3px 6px" }}>VRC Cool</th>
+                                <th style={{ textAlign: "right", padding: "3px 6px" }}>Baseline Cool</th>
                                 <th style={{ textAlign: "right", padding: "3px 6px" }}>Salas Cool</th>
                                 <th style={{ textAlign: "right", padding: "3px 6px" }}>Δ</th>
-                                <th style={{ textAlign: "right", padding: "3px 6px" }}>VRC Heat</th>
+                                <th style={{ textAlign: "right", padding: "3px 6px" }}>Baseline Heat</th>
                                 <th style={{ textAlign: "right", padding: "3px 6px" }}>Salas Heat</th>
                                 <th style={{ textAlign: "right", padding: "3px 6px" }}>Δ</th>
                               </tr>
@@ -5690,7 +5706,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   }
 
   if (loading) {
-    return <main className="auth-root"><div className="auth-card"><h1>VRC</h1><p>Loading session...</p></div></main>;
+    return <main className="auth-root"><div className="auth-card"><h1>Baseline</h1><p>Loading session...</p></div></main>;
   }
 
   if (!config || config.mode === "none" || config.mode === "basic") {
@@ -5704,7 +5720,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
           <div className="auth-brand">
             <img src="/logo.png" alt="Baseline" />
             <div>
-              <h1>VRC</h1>
+              <h1>Baseline</h1>
               <p>Sign in with your staff account.</p>
             </div>
           </div>

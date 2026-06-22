@@ -1,4 +1,4 @@
-"""Supabase persistence layer for VRC.
+"""Supabase persistence layer for Baseline.
 
 Replaces the local SQLite database.  Requires environment variables:
   SUPABASE_URL              — your project URL from the Supabase dashboard
@@ -178,7 +178,7 @@ def _compute_comparison_snapshot(payload: dict[str, Any]) -> dict[str, Any] | No
 
 
 def _compute_import_fidelity(payload: dict[str, Any]) -> tuple[bool | None, dict[str, Any] | None]:
-    """Compare VRC inputs against Salas reference values from the PDF."""
+    """Compare Baseline inputs against Salas reference values from the PDF."""
     p = payload.get("project", {})
     meta = p.get("metadata", {})
     salas = meta.get("salas_obrien_comparison")
@@ -630,7 +630,7 @@ class Database:
         details = source.get("import_fidelity_details") or {}
         if details.get("orientation_match") is False:
             raise BatteryError(
-                f"Orientation mismatch: VRC has {details.get('vrc_orientation')}, "
+                f"Orientation mismatch: Baseline has {details.get('vrc_orientation')}, "
                 f"Salas reference is {details.get('salas_orientation')}. "
                 "Fix front_door_faces before adding to battery."
             )

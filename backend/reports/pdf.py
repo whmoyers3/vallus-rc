@@ -1,4 +1,4 @@
-"""PDF report generation for VRC (Vallus Residential Calculator).
+"""PDF report generation for Baseline (Vallus Residential Calculator).
 
 Report model:
   1. Overall Unit / Home Summary
@@ -297,10 +297,10 @@ def _comparison_section(project: Project, result: ProjectResult) -> list:
     if not comparison:
         return []
 
-    flowables: list = [Spacer(1, 8), _section_title("VRC vs. SALAS O'BRIEN COMPARISON"), Spacer(1, 6)]
+    flowables: list = [Spacer(1, 8), _section_title("Baseline vs. SALAS O'BRIEN COMPARISON"), Spacer(1, 6)]
     house = comparison.get("house", {})
     total_rows = [
-        ["Metric", "ResLoad", "Salas O'Brien", "Delta"],
+        ["Metric", "Baseline", "Salas O'Brien", "Delta"],
         [
             "Total Cooling",
             f"{_fmt_int(result.sensible_cooling)} Btu/hr",
@@ -554,7 +554,7 @@ def generate_resload_pdf(
     project: Project,
     result: ProjectResult,
 ) -> bytes:
-    """Generate the VRC load calculation PDF and return it as bytes.
+    """Generate the Baseline load calculation PDF and return it as bytes.
 
     Uses io.BytesIO so no temporary file is written to disk — safe for
     serverless environments where the filesystem may be read-only.
