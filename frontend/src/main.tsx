@@ -843,12 +843,6 @@ function App() {
     document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function openComponentLibrary() {
-    setAssemblyLibraryOpen(true);
-    if (!assemblies.length) void loadAssemblyLibrary();
-    requestAnimationFrame(() => scrollToSection("envelope-assemblies"));
-  }
-
   function scrollToRoomCard(index: number) {
     document.getElementById(`room-card-${index}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
     // Also expand the room if it's collapsed
@@ -2076,7 +2070,6 @@ function App() {
             {batteryStatus === "added" && (
               <button className="button battery-btn battery-btn-added" onClick={refreshBatteryCopy} title="Refresh the test battery copy from this project">↻ Battery</button>
             )}
-            <button className="button" onClick={openComponentLibrary}>Component Library</button>
             <a className="button" href="/#/takeoff">Takeoff</a>
             <a className="button" href="/#/admin">Admin</a>
           </div>
