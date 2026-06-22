@@ -17,6 +17,19 @@ export type TakeoffRoomComponent = {
   placement?: TakeoffPoint;
 };
 
+export type TakeoffAdjacentSpaceKind = "garage" | "attic" | "crawl" | "exterior";
+
+export type TakeoffAdjacentSpace = {
+  id: string;
+  name: string;
+  kind: TakeoffAdjacentSpaceKind;
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  polygon?: TakeoffPoint[];
+};
+
 export type TakeoffComponentCategory = "Wall" | "Door" | "Ceiling" | "Floor" | "Glass";
 
 export type TakeoffComponentDefinition = {
@@ -97,6 +110,7 @@ export type TakeoffFloor = {
   exteriorPolygon: TakeoffPoint[];
   perimeterLocked: boolean;
   rooms: TakeoffRectRoom[];
+  adjacentSpaces?: TakeoffAdjacentSpace[];
   attributedSlices?: Array<{
     id: string;
     roomId: string;

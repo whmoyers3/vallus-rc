@@ -3,6 +3,8 @@ import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import polygonClipping, { type MultiPolygon, type Polygon, type Ring } from "polygon-clipping";
 import type {
+  TakeoffAdjacentSpace,
+  TakeoffAdjacentSpaceKind,
   TakeoffAuthoringMode,
   TakeoffComponentCategory,
   TakeoffComponentDefinition,
@@ -46,7 +48,7 @@ type WorkflowStep = "crop" | "calibrate" | "trace";
 type MovablePointTarget = { type: "exterior"; index: number } | { type: "room"; roomId: string; index: number };
 type OpeningMoveTarget = { roomId: string; componentId: string };
 type DragState = {
-  kind: "crop" | "room" | "subtract" | "move-point" | "move-opening";
+  kind: "crop" | "room" | "subtract" | "adjacent" | "move-point" | "move-opening";
   start: TakeoffPoint;
   current: TakeoffPoint;
   target?: MovablePointTarget;
@@ -64,9 +66,16 @@ type PendingOpeningTarget = {
   roomName: string;
   direction: (typeof directionOptions)[number];
   placement: TakeoffPoint;
+  adjacentKinds: TakeoffAdjacentSpaceKind[];
 } | null;
 type EditingOpeningTarget = OpeningMoveTarget | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
+const adjacentSpaceKinds: Array<{ id: TakeoffAdjacentSpaceKind; label: string }> = [
+  { id: "garage", label: "Garage" },
+  { id: "attic", label: "Attic" },
+  { id: "crawl", label: "Crawl space" },
+  { id: "exterior", label: "Exterior" },
+];
 type SavedTakeoffRow = {
   id: number;
   calculation_id?: number | null;
@@ -99,6 +108,7 @@ function makeInitialFloor(): TakeoffFloor {
     exteriorPolygon: [],
     perimeterLocked: false,
     rooms: [],
+    adjacentSpaces: [],
   };
 }
 
@@ -277,6 +287,7 @@ function roomWallReconciliation(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const assignedWalls = wallAreaByDirection(room);
   const windows = componentAreaBySurfaceAndDirection(room, "glass");
   const doors = componentAreaBySurfaceAndDirection(room, "door");
+  const adjacent = adjacentKindsByDirection(floor, room);
   return directionOptions
     .map((direction) => {
       const assignedGross = assignedWalls.get(direction) ?? 0;
@@ -294,6 +305,7 @@ function roomWallReconciliation(floor: TakeoffFloor, room: TakeoffRectRoom) {
         doorArea,
         openingArea,
         netArea: Math.max(0, grossArea - openingArea),
+        adjacentKinds: adjacent.get(direction) ?? [],
         isAssigned: assignedGross > 0,
         isOverOpened: openingArea > grossArea + 0.5,
       };
@@ -347,6 +359,17 @@ function scaleRoom(room: TakeoffRectRoom, factor: number): TakeoffRectRoom {
     depth: Number((room.depth * factor).toFixed(3)),
     polygon: room.polygon?.map((point) => scalePoint(point, factor)),
     areaAdjustment: room.areaAdjustment ? Number((room.areaAdjustment * factor * factor).toFixed(3)) : room.areaAdjustment,
+  };
+}
+
+function scaleAdjacentSpace(space: TakeoffAdjacentSpace, factor: number): TakeoffAdjacentSpace {
+  return {
+    ...space,
+    x: Number((space.x * factor).toFixed(3)),
+    y: Number((space.y * factor).toFixed(3)),
+    width: Number((space.width * factor).toFixed(3)),
+    depth: Number((space.depth * factor).toFixed(3)),
+    polygon: space.polygon?.map((point) => scalePoint(point, factor)),
   };
 }
 
@@ -449,6 +472,11 @@ function roomCorners(room: TakeoffRectRoom): TakeoffPoint[] {
     { x: room.x + room.width, y: room.y + room.depth },
     { x: room.x, y: room.y + room.depth },
   ];
+}
+
+function adjacentSpaceCorners(space: TakeoffAdjacentSpace): TakeoffPoint[] {
+  if (space.polygon && space.polygon.length >= 3) return space.polygon;
+  return rectToPoints(space);
 }
 
 function roomCenter(room: TakeoffRectRoom) {
@@ -619,6 +647,31 @@ function roomExteriorSegments(floor: TakeoffFloor, room: TakeoffRectRoom) {
   return segments;
 }
 
+function adjacentKindsForSegment(floor: TakeoffFloor, segment: { a: TakeoffPoint; b: TakeoffPoint }) {
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const kinds = new Set<TakeoffAdjacentSpaceKind>();
+  for (const space of floor.adjacentSpaces ?? []) {
+    for (const adjacentEdge of pointsToEdges(adjacentSpaceCorners(space))) {
+      if (sharedSegmentLength(segment, adjacentEdge, tolerance) > 0.25) {
+        kinds.add(space.kind);
+      }
+    }
+  }
+  return Array.from(kinds);
+}
+
+function adjacentKindsByDirection(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  const byDirection = new Map<(typeof directionOptions)[number], TakeoffAdjacentSpaceKind[]>();
+  for (const segment of roomExteriorSegments(floor, room)) {
+    const kinds = adjacentKindsForSegment(floor, segment);
+    if (kinds.length === 0) continue;
+    const existing = new Set(byDirection.get(segment.direction) ?? []);
+    kinds.forEach((kind) => existing.add(kind));
+    byDirection.set(segment.direction, Array.from(existing));
+  }
+  return byDirection;
+}
+
 function isCompassDirection(value: TakeoffRoomComponent["direction"] | undefined): value is (typeof directionOptions)[number] {
   return !!value && (directionOptions as readonly string[]).includes(value);
 }
@@ -722,6 +775,17 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
       }
       if (component.area <= 0) {
         issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${component.surface} component with no area.` });
+      }
+      if (component.surface === "glass" && component.placement && isCompassDirection(component.direction)) {
+        const garageAdjacent = roomExteriorSegments(floor, room)
+          .filter((segment) => segment.direction === component.direction)
+          .some((segment) =>
+            distance(closestPointOnSegment(component.placement!, segment.a, segment.b), component.placement!) <= Math.max(1.5, floor.scale.feetPerGrid * 1.5) &&
+            adjacentKindsForSegment(floor, segment).includes("garage")
+          );
+        if (garageAdjacent) {
+          issues.push({ severity: "error", message: `${room.name || "Room"} has glass on a garage-adjacent ${component.direction} wall.` });
+        }
       }
     }
     for (const [direction, openingArea] of openingAreas) {
@@ -847,6 +911,20 @@ function roomColor(index: number) {
   return colors[index % colors.length];
 }
 
+function adjacentSpaceLabel(kind: TakeoffAdjacentSpaceKind) {
+  return adjacentSpaceKinds.find((entry) => entry.id === kind)?.label ?? "Adjacent";
+}
+
+function adjacentSpaceColor(kind: TakeoffAdjacentSpaceKind) {
+  const colors: Record<TakeoffAdjacentSpaceKind, { fill: string; stroke: string }> = {
+    garage: { fill: "rgba(138, 101, 50, 0.22)", stroke: "#8a6532" },
+    attic: { fill: "rgba(117, 91, 145, 0.18)", stroke: "#755b91" },
+    crawl: { fill: "rgba(73, 119, 117, 0.18)", stroke: "#497775" },
+    exterior: { fill: "rgba(93, 106, 118, 0.14)", stroke: "#5d6a76" },
+  };
+  return colors[kind];
+}
+
 function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFloor {
   const fallback = makeInitialFloor();
   if (!rawFloor) return fallback;
@@ -868,6 +946,7 @@ function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFlo
     exteriorPolygon: rawFloor.exteriorPolygon ?? [],
     perimeterLocked: Boolean(rawFloor.perimeterLocked),
     rooms: rawFloor.rooms ?? [],
+    adjacentSpaces: rawFloor.adjacentSpaces ?? [],
     attributedSlices: rawFloor.attributedSlices ?? [],
   };
 }
@@ -988,6 +1067,8 @@ export function TakeoffApp() {
   const [roomDrawMode, setRoomDrawMode] = useState(false);
   const [roomPolygonMode, setRoomPolygonMode] = useState(false);
   const [roomPolygonDraft, setRoomPolygonDraft] = useState<TakeoffPoint[]>([]);
+  const [adjacentDrawMode, setAdjacentDrawMode] = useState(false);
+  const [adjacentSpaceKind, setAdjacentSpaceKind] = useState<TakeoffAdjacentSpaceKind>("garage");
   const [subtractMode, setSubtractMode] = useState(false);
   const [subtractRoomId, setSubtractRoomId] = useState("");
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
@@ -1195,6 +1276,7 @@ export function TakeoffApp() {
     setTraceTool("select");
     setRoomDrawMode(false);
     setRoomPolygonMode(false);
+    setAdjacentDrawMode(false);
     setSubtractMode(false);
     setMessage("Openings mode active. Click an exterior wall segment, then confirm the component and size.");
   }
@@ -1238,6 +1320,7 @@ export function TakeoffApp() {
         return {
           room,
           segment,
+          adjacentKinds: adjacentKindsForSegment(floor, segment),
           closest,
           distance: distance(point, closest),
         };
@@ -1267,6 +1350,7 @@ export function TakeoffApp() {
         x: Number(target.closest.x.toFixed(3)),
         y: Number(target.closest.y.toFixed(3)),
       },
+      adjacentKinds: target.adjacentKinds,
     });
     setSelectedRoomId(target.room.id);
     setMessage(`Detected ${target.room.name} ${target.segment.direction} wall. Confirm the opening details.`);
@@ -1278,6 +1362,10 @@ export function TakeoffApp() {
     const area = Number(Math.max(0, openingPlacement.width * openingPlacement.height).toFixed(2));
     if (area <= 0) {
       setMessage("Enter a positive width and height before placing an opening.");
+      return false;
+    }
+    if (openingPlacement.surface === "glass" && pendingOpeningTarget.adjacentKinds.includes("garage")) {
+      setMessage("Glass cannot be placed on a garage-adjacent wall. Change the opening to a door or choose a different wall.");
       return false;
     }
     const component: TakeoffRoomComponent = {
@@ -1331,6 +1419,17 @@ export function TakeoffApp() {
     if (area <= 0) {
       setMessage("Enter a positive width and height before updating an opening.");
       return false;
+    }
+    const editingRoom = floor.rooms.find((room) => room.id === editingOpeningTarget.roomId);
+    const editingComponent = editingRoom ? roomComponents(editingRoom).find((component) => component.id === editingOpeningTarget.componentId) : null;
+    if (openingPlacement.surface === "glass" && editingRoom && editingComponent?.placement) {
+      const garageAdjacent = roomExteriorSegments(floor, editingRoom)
+        .filter((segment) => segment.direction === editingComponent.direction)
+        .some((segment) => distance(closestPointOnSegment(editingComponent.placement!, segment.a, segment.b), editingComponent.placement!) <= Math.max(1.5, floor.scale.feetPerGrid * 1.5) && adjacentKindsForSegment(floor, segment).includes("garage"));
+      if (garageAdjacent) {
+        setMessage("Glass cannot be assigned to a garage-adjacent wall. Keep this opening as a door or move it to a different exterior wall.");
+        return false;
+      }
     }
     setFloor((current) => ({
       ...current,
@@ -1710,6 +1809,7 @@ export function TakeoffApp() {
       },
       exteriorPolygon: current.exteriorPolygon.map((point) => scalePoint(point, factor)),
       rooms: current.rooms.map((room) => scaleRoom(room, factor)),
+      adjacentSpaces: current.adjacentSpaces?.map((space) => scaleAdjacentSpace(space, factor)) ?? [],
       reference: current.reference
         ? {
             ...current.reference,
@@ -1840,6 +1940,35 @@ export function TakeoffApp() {
     setMessage(`${room.name} added as available polygon area.`);
   }
 
+  function addDraggedAdjacentSpace(rect: PlanRect) {
+    if (rect.width < 1 || rect.depth < 1) {
+      setMessage("Drag a larger area to create an adjacent space.");
+      return;
+    }
+    const label = adjacentSpaceKinds.find((kind) => kind.id === adjacentSpaceKind)?.label ?? "Adjacent";
+    const space: TakeoffAdjacentSpace = {
+      id: nextId("adjacent"),
+      name: `${label} ${(floor.adjacentSpaces?.filter((existing) => existing.kind === adjacentSpaceKind).length ?? 0) + 1}`,
+      kind: adjacentSpaceKind,
+      ...rect,
+    };
+    const touchesExterior = floor.rooms.some((room) =>
+      roomExteriorSegments(floor, room).some((segment) =>
+        pointsToEdges(adjacentSpaceCorners(space)).some((edge) =>
+          sharedSegmentLength(segment, edge, Math.max(0.35, floor.scale.feetPerGrid * 0.35)) > 0.25
+        )
+      )
+    );
+    setFloor((current) => ({ ...current, adjacentSpaces: [...(current.adjacentSpaces ?? []), space] }));
+    setMessage(touchesExterior
+      ? `${space.name} added. Shared walls will be tagged in room reconciliation.`
+      : `${space.name} added. It does not appear to touch a conditioned exterior wall yet.`);
+  }
+
+  function removeAdjacentSpace(id: string) {
+    setFloor((current) => ({ ...current, adjacentSpaces: (current.adjacentSpaces ?? []).filter((space) => space.id !== id) }));
+  }
+
   function subtractDraggedShape(rect: PlanRect) {
     const roomId = subtractRoomId || floor.rooms[0]?.id;
     const targetRoom = floor.rooms.find((room) => room.id === roomId);
@@ -1955,6 +2084,11 @@ export function TakeoffApp() {
       setDragState({ kind: "subtract", start: point, current: point });
       return;
     }
+    if (workflowStep === "trace" && adjacentDrawMode) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setDragState({ kind: "adjacent", start: point, current: point });
+      return;
+    }
     if (workflowStep === "trace" && roomDrawMode) {
       event.currentTarget.setPointerCapture(event.pointerId);
       setDragState({ kind: "room", start: point, current: point });
@@ -1999,6 +2133,10 @@ export function TakeoffApp() {
     }
     if (kind === "subtract") {
       subtractDraggedShape(rect);
+      return;
+    }
+    if (kind === "adjacent") {
+      addDraggedAdjacentSpace(rect);
       return;
     }
     addDraggedRoom(rect);
@@ -2210,6 +2348,7 @@ export function TakeoffApp() {
       setOpenDialog(false);
       setCalibrationStart(null);
       setRoomPolygonDraft([]);
+      setAdjacentDrawMode(false);
       setOpeningModeActive(false);
       setOpeningPlacement(null);
       setPendingOpeningTarget(null);
@@ -2271,6 +2410,7 @@ export function TakeoffApp() {
     setWorkflowStep("crop");
     setTraceTool("select");
     setRoomDrawMode(false);
+    setAdjacentDrawMode(false);
     setCalibrationStart(null);
     setOpeningModeActive(false);
     setOpeningPlacement(null);
@@ -2594,7 +2734,7 @@ export function TakeoffApp() {
               onPointerUp={handleCanvasPointerUp}
               onPointerCancel={() => setDragState(null)}
               onClick={handleCanvasClick}
-              style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || openingModeActive || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
+              style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || adjacentDrawMode || openingModeActive || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
             >
               <defs>
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
@@ -2632,8 +2772,8 @@ export function TakeoffApp() {
                   y={offsetY + activeDragRect.y * scale}
                   width={activeDragRect.width * scale}
                   height={activeDragRect.depth * scale}
-                  fill={dragState?.kind === "crop" || dragState?.kind === "subtract" ? "rgba(179, 67, 47, 0.12)" : "rgba(72, 128, 93, 0.16)"}
-                  stroke={dragState?.kind === "crop" || dragState?.kind === "subtract" ? "#b3432f" : "#2f7a4f"}
+                  fill={dragState?.kind === "crop" || dragState?.kind === "subtract" ? "rgba(179, 67, 47, 0.12)" : dragState?.kind === "adjacent" ? "rgba(130, 97, 47, 0.16)" : "rgba(72, 128, 93, 0.16)"}
+                  stroke={dragState?.kind === "crop" || dragState?.kind === "subtract" ? "#b3432f" : dragState?.kind === "adjacent" ? "#8a6532" : "#2f7a4f"}
                   strokeDasharray="6 4"
                   strokeWidth="2"
                 />
@@ -2661,6 +2801,35 @@ export function TakeoffApp() {
                   <text x={offsetX + calibrationStart.x * scale + 7} y={offsetY + calibrationStart.y * scale - 7} fontSize="11" fill="#7f2d20">start</text>
                 </g>
               )}
+              {(floor.adjacentSpaces ?? []).map((space) => {
+                const color = adjacentSpaceColor(space.kind);
+                const points = adjacentSpaceCorners(space);
+                const center = {
+                  x: points.reduce((sum, point) => sum + point.x, 0) / Math.max(points.length, 1),
+                  y: points.reduce((sum, point) => sum + point.y, 0) / Math.max(points.length, 1),
+                };
+                return (
+                  <g key={space.id} pointerEvents="none">
+                    <polygon
+                      points={points.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
+                      fill={color.fill}
+                      stroke={color.stroke}
+                      strokeDasharray="7 4"
+                      strokeWidth="2"
+                    />
+                    <text
+                      x={offsetX + center.x * scale}
+                      y={offsetY + center.y * scale}
+                      fontSize="11"
+                      fill={color.stroke}
+                      fontWeight="700"
+                      textAnchor="middle"
+                    >
+                      {space.name}
+                    </text>
+                  </g>
+                );
+              })}
               {floor.rooms.map((room, index) => (
                 <g
                   key={room.id}
@@ -2870,9 +3039,9 @@ export function TakeoffApp() {
                 <h2>New Room</h2>
               </div>
               <div className="takeoff-form-actions">
-                <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
-                <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
-                <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setTraceTool("select"); }}>Subtract</button>
+                <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
+                <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
+                <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setAdjacentDrawMode(false); setTraceTool("select"); }}>Subtract</button>
                 {roomPolygonDraft.length >= 3 && <button className="toolbar-primary" onClick={() => finishPolygonRoom()}>Finish Polygon</button>}
                 {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
               </div>
@@ -2902,6 +3071,45 @@ export function TakeoffApp() {
                 <button onClick={moveDraftRoomToOpenSpot}>Find Open Spot</button>
               </div>
               {message && <p className="takeoff-message">{message}</p>}
+            </section>
+
+            <section className="takeoff-panel">
+              <div className="takeoff-panel-head">
+                <h2>Adjacent Spaces</h2>
+              </div>
+              <div className="takeoff-form-actions">
+                <select value={adjacentSpaceKind} onChange={(event) => setAdjacentSpaceKind(event.target.value as TakeoffAdjacentSpaceKind)}>
+                  {adjacentSpaceKinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}
+                </select>
+                <button
+                  className={adjacentDrawMode ? "toolbar-primary" : ""}
+                  onClick={() => {
+                    setWorkflowStep("trace");
+                    setAdjacentDrawMode((current) => !current);
+                    setRoomDrawMode(false);
+                    setRoomPolygonMode(false);
+                    setSubtractMode(false);
+                    setTraceTool("select");
+                  }}
+                >
+                  {adjacentDrawMode ? "Stop Drawing" : "Draw Adjacent"}
+                </button>
+              </div>
+              {adjacentDrawMode ? (
+                <p className="takeoff-note">Drag a rectangle along the outside of conditioned space to tag a garage, attic, crawl space, or exterior-adjacent area.</p>
+              ) : (
+                <p className="takeoff-muted">Adjacent spaces tag exterior wall treatment without adding conditioned room area.</p>
+              )}
+              {(floor.adjacentSpaces ?? []).length > 0 && (
+                <div className="takeoff-adjacent-list">
+                  {(floor.adjacentSpaces ?? []).map((space) => (
+                    <div key={space.id} className="takeoff-adjacent-row">
+                      <span><strong>{space.name}</strong> · {Math.round(space.width * space.depth)} sf · {adjacentSpaceLabel(space.kind)}</span>
+                      <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             <section className="takeoff-panel">
@@ -3054,6 +3262,7 @@ export function TakeoffApp() {
                                   <small>
                                     {entry.isAssigned ? "Assigned gross" : "Suggested gross"} {Math.round(entry.grossArea)} sf
                                     {!entry.isAssigned && entry.suggestedGross > 0 ? " · apply wall component before export" : ""}
+                                    {entry.adjacentKinds.length > 0 ? ` · adjacent ${entry.adjacentKinds.map(adjacentSpaceLabel).join(", ")}` : ""}
                                   </small>
                                 </div>
                                 <span>{Math.round(entry.grossArea)} sf gross</span>
@@ -3193,6 +3402,7 @@ export function TakeoffApp() {
           : null;
         const targetRoomName = pendingOpeningTarget?.roomName ?? editingRoom?.name ?? "room";
         const targetDirection = pendingOpeningTarget?.direction ?? editingComponent?.direction ?? "wall";
+        const targetAdjacent = pendingOpeningTarget?.adjacentKinds ?? [];
         const selectedDefinition = scheduleOptionsBySurface[openingPlacement.surface].find((option) => option.code === openingPlacement.assembly);
         return (
           <div className="modal-backdrop open-dialog-backdrop" onClick={closeOpeningDialog}>
@@ -3203,6 +3413,7 @@ export function TakeoffApp() {
               </div>
               <p className="takeoff-muted">
                 Assigned to <strong>{targetRoomName}</strong> on the <strong>{targetDirection}</strong> wall.
+                {targetAdjacent.length > 0 ? ` Adjacent: ${targetAdjacent.map(adjacentSpaceLabel).join(", ")}.` : ""}
               </p>
               <div className="takeoff-opening-grid">
                 <label>

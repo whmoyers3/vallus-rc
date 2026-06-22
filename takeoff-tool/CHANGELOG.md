@@ -296,7 +296,9 @@ Implemented:
 - Placed opening markers can be dragged along their assigned exterior wall segment without moving to a different room.
 - Added a room-level Wall / Opening Reconciliation card showing gross wall area, glass area, door area, and net wall area by direction.
 - Improved Room Profile side-panel scaling so reconciliation rows and component remove buttons fit inside the panel.
+- Added adjacent-space tagging for garage, attic, crawl space, and exterior areas on the plan grid.
+- Garage-adjacent walls are shown in room reconciliation and glass placement/editing is blocked or flagged on garage-adjacent walls.
 
 Still pending:
 
-- Opening validation against exterior-only placement and garage restrictions.
+- More detailed adjacent-space export treatment for attic/crawl/garage wall assemblies.

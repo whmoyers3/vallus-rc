@@ -916,6 +916,29 @@ button.toolbar-primary:hover {
   padding-top: 10px;
 }
 
+.takeoff-adjacent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.takeoff-adjacent-row {
+  align-items: center;
+  border: 1px solid #e1e7ec;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 7px 8px;
+}
+
+.takeoff-adjacent-row span {
+  color: #405060;
+  font-size: 12px;
+  min-width: 0;
+}
+
 .takeoff-svg-input {
   border: 1px solid #94a3b8;
   border-radius: 5px;
