@@ -1049,12 +1049,12 @@ button.toolbar-primary:hover {
 
 .takeoff-component-row {
   display: grid;
-  gap: 5px;
-  grid-template-columns: minmax(88px, 1.1fr) minmax(72px, 1fr) 64px auto;
+  gap: 5px 6px;
+  grid-template-columns: minmax(104px, 1.2fr) minmax(80px, 1fr) 72px minmax(78px, auto);
 }
 
 .takeoff-component-row--directional {
-  grid-template-columns: minmax(88px, 1.1fr) 76px minmax(72px, 1fr) 64px auto;
+  grid-template-columns: minmax(104px, 1.2fr) 76px minmax(80px, 1fr) 72px minmax(78px, auto);
 }
 
 .takeoff-component-row input,
@@ -1063,6 +1063,23 @@ button.toolbar-primary:hover {
   font-size: 12px;
   min-width: 0;
   padding: 5px 6px;
+}
+
+.takeoff-component-row button {
+  min-width: 78px;
+  white-space: nowrap;
+}
+
+.takeoff-component-meta {
+  color: #657384;
+  font-size: 11px;
+  grid-column: 1 / -1;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.takeoff-component-meta strong {
+  color: #344558;
 }
 
 .takeoff-component-modal {
@@ -1087,7 +1104,11 @@ button.toolbar-primary:hover {
 }
 
 .takeoff-opening-grid label:nth-child(2),
-.takeoff-opening-grid label:nth-child(5) {
+.takeoff-opening-grid label:nth-child(6) {
+  grid-column: 1 / -1;
+}
+
+.takeoff-opening-component-meta {
   grid-column: 1 / -1;
 }
 

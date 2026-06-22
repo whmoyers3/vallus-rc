@@ -44,11 +44,13 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
 ];
 type WorkflowStep = "crop" | "calibrate" | "trace";
 type MovablePointTarget = { type: "exterior"; index: number } | { type: "room"; roomId: string; index: number };
+type OpeningMoveTarget = { roomId: string; componentId: string };
 type DragState = {
-  kind: "crop" | "room" | "subtract" | "move-point";
+  kind: "crop" | "room" | "subtract" | "move-point" | "move-opening";
   start: TakeoffPoint;
   current: TakeoffPoint;
   target?: MovablePointTarget;
+  openingTarget?: OpeningMoveTarget;
 } | null;
 type OpeningPlacement = {
   surface: "glass" | "door";
@@ -63,6 +65,7 @@ type PendingOpeningTarget = {
   direction: (typeof directionOptions)[number];
   placement: TakeoffPoint;
 } | null;
+type EditingOpeningTarget = OpeningMoveTarget | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
 type SavedTakeoffRow = {
   id: number;
@@ -233,6 +236,13 @@ function componentPayloadKind(surface: TakeoffRoomComponent["surface"]) {
 
 function componentNeedsDirection(surface: TakeoffRoomComponent["surface"]) {
   return surface === "wall" || surface === "glass" || surface === "door";
+}
+
+function componentThermalSummary(component: TakeoffComponentDefinition | undefined) {
+  if (!component) return "No schedule values found.";
+  const values = [`U-value ${component.uValue ?? "-"}`, `U-factor ${component.uValue ?? "-"}`];
+  if (component.category === "Glass") values.push(`SHGC ${component.shgc ?? "-"}`);
+  return values.join(" · ");
 }
 
 function openingAreaByDirection(room: TakeoffRectRoom) {
@@ -947,9 +957,13 @@ export function TakeoffApp() {
   const [sliceRoomId, setSliceRoomId] = useState("");
   const [suggestedWallAssembly, setSuggestedWallAssembly] = useState("W1");
   const [openingPlacement, setOpeningPlacement] = useState<OpeningPlacement>(null);
+  const [openingModeActive, setOpeningModeActive] = useState(false);
   const [pendingOpeningTarget, setPendingOpeningTarget] = useState<PendingOpeningTarget>(null);
+  const [editingOpeningTarget, setEditingOpeningTarget] = useState<EditingOpeningTarget>(null);
+  const [selectedOpening, setSelectedOpening] = useState<OpeningMoveTarget | null>(null);
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressNextCanvasClickRef = useRef(false);
+  const openingDragMovedRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -1091,6 +1105,7 @@ export function TakeoffApp() {
           : room
       )),
     }));
+    setSelectedOpening((current) => (current?.roomId === roomId && current.componentId === componentId ? null : current));
   }
 
   function applySuggestedWallArea(roomId: string, suggestion: { direction: TakeoffRoomComponent["direction"]; area: number }, assembly: string) {
@@ -1128,6 +1143,9 @@ export function TakeoffApp() {
 
   function startOpeningPlacement(surface: "glass" | "door" = "glass") {
     const option = scheduleOptionsBySurface[surface][0];
+    setOpeningModeActive(true);
+    setPendingOpeningTarget(null);
+    setEditingOpeningTarget(null);
     setOpeningPlacement({
       surface,
       assembly: option?.code ?? (surface === "glass" ? "G1" : "D1"),
@@ -1141,6 +1159,20 @@ export function TakeoffApp() {
     setRoomPolygonMode(false);
     setSubtractMode(false);
     setMessage("Openings mode active. Click an exterior wall segment, then confirm the component and size.");
+  }
+
+  function stopOpeningPlacement() {
+    setOpeningModeActive(false);
+    setPendingOpeningTarget(null);
+    setEditingOpeningTarget(null);
+    setOpeningPlacement(null);
+    setMessage("Openings mode stopped.");
+  }
+
+  function closeOpeningDialog() {
+    setPendingOpeningTarget(null);
+    setEditingOpeningTarget(null);
+    if (!openingModeActive) setOpeningPlacement(null);
   }
 
   function updateOpeningPlacement(patch: Partial<NonNullable<OpeningPlacement>>) {
@@ -1215,6 +1247,8 @@ export function TakeoffApp() {
       surface: openingPlacement.surface,
       assembly: openingPlacement.assembly,
       area,
+      width: openingPlacement.width,
+      height: openingPlacement.height,
       direction: pendingOpeningTarget.direction,
       label: openingPlacement.label || (openingPlacement.surface === "glass" ? "Window" : "Door"),
       placement: pendingOpeningTarget.placement,
@@ -1230,7 +1264,106 @@ export function TakeoffApp() {
     setSelectedRoomId(pendingOpeningTarget.roomId);
     setMessage(`${component.label} placed on ${pendingOpeningTarget.roomName} ${pendingOpeningTarget.direction} wall (${area} sf).`);
     setPendingOpeningTarget(null);
+    setSelectedOpening({ roomId: pendingOpeningTarget.roomId, componentId: component.id });
     return true;
+  }
+
+  function openOpeningEditor(room: TakeoffRectRoom, component: TakeoffRoomComponent) {
+    if (component.surface !== "glass" && component.surface !== "door") return;
+    const fallbackHeight = component.surface === "glass" ? 5 : 6.67;
+    const width = component.width ?? Number((Math.max(0, component.area || 0) / fallbackHeight).toFixed(2));
+    const height = component.height ?? fallbackHeight;
+    setOpeningModeActive(false);
+    setPendingOpeningTarget(null);
+    setEditingOpeningTarget({ roomId: room.id, componentId: component.id });
+    setSelectedOpening({ roomId: room.id, componentId: component.id });
+    setSelectedRoomId(room.id);
+    setOpeningPlacement({
+      surface: component.surface,
+      assembly: component.assembly,
+      width,
+      height,
+      label: component.label || (component.surface === "glass" ? "Window" : "Door"),
+    });
+  }
+
+  function confirmOpeningEdit() {
+    if (!openingPlacement || !editingOpeningTarget) return false;
+    const area = Number(Math.max(0, openingPlacement.width * openingPlacement.height).toFixed(2));
+    if (area <= 0) {
+      setMessage("Enter a positive width and height before updating an opening.");
+      return false;
+    }
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => (
+        room.id === editingOpeningTarget.roomId
+          ? {
+              ...room,
+              components: roomComponents(room).map((component) => (
+                component.id === editingOpeningTarget.componentId
+                  ? {
+                      ...component,
+                      surface: openingPlacement.surface,
+                      assembly: openingPlacement.assembly,
+                      area,
+                      width: openingPlacement.width,
+                      height: openingPlacement.height,
+                      label: openingPlacement.label || (openingPlacement.surface === "glass" ? "Window" : "Door"),
+                    }
+                  : component
+              )),
+            }
+          : room
+      )),
+    }));
+    setMessage(`${openingPlacement.label || "Opening"} updated (${area} sf).`);
+    setEditingOpeningTarget(null);
+    setOpeningPlacement(null);
+    return true;
+  }
+
+  function projectedOpeningPlacement(currentFloor: TakeoffFloor, point: TakeoffPoint, room: TakeoffRectRoom, component: TakeoffRoomComponent) {
+    if (!isCompassDirection(component.direction)) return null;
+    const candidates = roomExteriorSegments(currentFloor, room)
+      .filter((segment) => segment.direction === component.direction)
+      .map((segment) => {
+        const closest = closestPointOnSegment(point, segment.a, segment.b);
+        return { closest, distance: distance(point, closest) };
+      })
+      .sort((a, b) => a.distance - b.distance);
+    const closest = candidates[0]?.closest;
+    return closest ? { x: Number(closest.x.toFixed(3)), y: Number(closest.y.toFixed(3)) } : null;
+  }
+
+  function moveOpening(target: OpeningMoveTarget | undefined, point: TakeoffPoint) {
+    if (!target) return;
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== target.roomId) return room;
+        const component = roomComponents(room).find((existing) => existing.id === target.componentId);
+        if (!component) return room;
+        const placement = projectedOpeningPlacement(current, point, room, component);
+        if (!placement) return room;
+        return {
+          ...room,
+          components: roomComponents(room).map((existing) => (
+            existing.id === target.componentId ? { ...existing, placement } : existing
+          )),
+        };
+      }),
+    }));
+  }
+
+  function removeSelectedOpening() {
+    if (!selectedOpening) return;
+    const room = floor.rooms.find((candidate) => candidate.id === selectedOpening.roomId);
+    const component = room ? roomComponents(room).find((candidate) => candidate.id === selectedOpening.componentId) : null;
+    removeRoomComponent(selectedOpening.roomId, selectedOpening.componentId);
+    setEditingOpeningTarget(null);
+    setOpeningPlacement(null);
+    setMessage(component ? `${component.label || "Opening"} removed from ${room?.name || "room"}.` : "Opening removed.");
   }
 
   function applyComponentToScheduleSlot(component: TakeoffComponentDefinition, target: number | "new") {
@@ -1797,6 +1930,9 @@ export function TakeoffApp() {
     if (dragState.kind === "move-point") {
       movePoint(dragState.target, point);
     }
+    if (dragState.kind === "move-opening") {
+      moveOpening(dragState.openingTarget, point);
+    }
     setDragState((current) => (current ? { ...current, current: point } : current));
   }
 
@@ -1811,6 +1947,12 @@ export function TakeoffApp() {
     suppressNextCanvasClickRef.current = true;
     if (kind === "move-point") {
       setMessage("Point moved.");
+      return;
+    }
+    if (kind === "move-opening") {
+      const moved = lineLength({ start: dragState.start, end: dragState.current }) > 0.15;
+      openingDragMovedRef.current = moved;
+      setMessage(moved ? "Opening moved along its assigned wall." : "Opening selected.");
       return;
     }
     if (kind === "crop") {
@@ -1898,7 +2040,7 @@ export function TakeoffApp() {
       addCalibrationPoint(point);
       return;
     }
-    if (workflowStep === "trace" && openingPlacement) {
+    if (workflowStep === "trace" && openingModeActive) {
       placeOpeningAt(point);
       return;
     }
@@ -2030,8 +2172,11 @@ export function TakeoffApp() {
       setOpenDialog(false);
       setCalibrationStart(null);
       setRoomPolygonDraft([]);
+      setOpeningModeActive(false);
       setOpeningPlacement(null);
       setPendingOpeningTarget(null);
+      setEditingOpeningTarget(null);
+      setSelectedOpening(null);
       setDragState(null);
       setWorkflowStep("trace");
       setTraceTool("select");
@@ -2089,8 +2234,11 @@ export function TakeoffApp() {
     setTraceTool("select");
     setRoomDrawMode(false);
     setCalibrationStart(null);
+    setOpeningModeActive(false);
     setOpeningPlacement(null);
     setPendingOpeningTarget(null);
+    setEditingOpeningTarget(null);
+    setSelectedOpening(null);
     setDragState(null);
     setRightPanelOpen(false);
     setZoom(1);
@@ -2408,7 +2556,7 @@ export function TakeoffApp() {
               onPointerUp={handleCanvasPointerUp}
               onPointerCancel={() => setDragState(null)}
               onClick={handleCanvasClick}
-              style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || openingPlacement || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
+              style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || openingModeActive || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
             >
               <defs>
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
@@ -2479,11 +2627,11 @@ export function TakeoffApp() {
                 <g
                   key={room.id}
                   onClick={(event) => {
-                    if (openingPlacement) return;
+                    if (openingModeActive) return;
                     event.stopPropagation();
                     setSelectedRoomId(room.id);
                   }}
-                  style={{ cursor: openingPlacement ? "crosshair" : "pointer" }}
+                  style={{ cursor: openingModeActive ? "crosshair" : "pointer" }}
                 >
                   {room.polygon && room.polygon.length >= 3 ? (
                     <polygon
@@ -2535,7 +2683,7 @@ export function TakeoffApp() {
                       fill="#1f2933"
                       textAnchor="middle"
                       onClick={(event) => {
-                        if (openingPlacement) return;
+                        if (openingModeActive) return;
                         event.stopPropagation();
                         setEditingRoomId(room.id);
                       }}
@@ -2547,8 +2695,33 @@ export function TakeoffApp() {
                   <text x={offsetX + roomCenter(room).x * scale} y={offsetY + roomCenter(room).y * scale + 16} fontSize="11" fill="#465667" textAnchor="middle">
                     {Math.round(rectArea(room))} sf
                   </text>
-                  {roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door")).filter((component) => component.placement).map((component) => (
-                    <g key={`${room.id}-${component.id}-marker`} pointerEvents="none">
+                  {roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door")).filter((component) => component.placement).map((component) => {
+                    const isSelectedOpening = selectedOpening?.roomId === room.id && selectedOpening.componentId === component.id;
+                    return (
+                    <g
+                      key={`${room.id}-${component.id}-marker`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (openingDragMovedRef.current) {
+                          openingDragMovedRef.current = false;
+                          return;
+                        }
+                        if (openingModeActive) return;
+                        openOpeningEditor(room, component);
+                      }}
+                      onPointerDown={(event) => {
+                        if (openingModeActive) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const placement = component.placement;
+                        if (!placement) return;
+                        const target = { roomId: room.id, componentId: component.id };
+                        setSelectedOpening(target);
+                        setDragState({ kind: "move-opening", start: placement, current: placement, openingTarget: target });
+                      }}
+                      style={{ cursor: openingModeActive ? "crosshair" : "grab" }}
+                    >
                       <rect
                         x={offsetX + (component.placement?.x ?? 0) * scale - 8}
                         y={offsetY + (component.placement?.y ?? 0) * scale - 8}
@@ -2556,8 +2729,8 @@ export function TakeoffApp() {
                         height="16"
                         rx="3"
                         fill={component.surface === "glass" ? "#ffffff" : "#2b4c6f"}
-                        stroke={component.surface === "glass" ? "#1f6fb2" : "#ffffff"}
-                        strokeWidth="1.8"
+                        stroke={isSelectedOpening ? "#b3432f" : component.surface === "glass" ? "#1f6fb2" : "#ffffff"}
+                        strokeWidth={isSelectedOpening ? "2.5" : "1.8"}
                       />
                       <text
                         x={offsetX + (component.placement?.x ?? 0) * scale}
@@ -2570,7 +2743,8 @@ export function TakeoffApp() {
                         {component.surface === "glass" ? "G" : "D"}
                       </text>
                     </g>
-                  ))}
+                    );
+                  })}
                 </g>
               ))}
               {roomPolygonDraft.length > 0 && (
@@ -2697,11 +2871,11 @@ export function TakeoffApp() {
                 <h2>Openings</h2>
               </div>
               <div className="takeoff-form-actions">
-                <button className={openingPlacement ? "toolbar-primary" : ""} onClick={() => (openingPlacement ? setOpeningPlacement(null) : startOpeningPlacement())}>
-                  {openingPlacement ? "Stop Placing" : "Place Opening"}
+                <button className={openingModeActive ? "toolbar-primary" : ""} onClick={() => (openingModeActive ? stopOpeningPlacement() : startOpeningPlacement())}>
+                  {openingModeActive ? "Stop Placing" : "Place Opening"}
                 </button>
               </div>
-              {openingPlacement ? (
+              {openingModeActive ? (
                 <p className="takeoff-note">
                   Click the plan on an exterior wall. The tool will identify the room and wall facing, then ask which door or glass component to place.
                 </p>
@@ -2849,42 +3023,50 @@ export function TakeoffApp() {
                         <p className="takeoff-muted">No {componentSurfaceLabel(surface).toLowerCase()} load components.</p>
                       ) : (
                         <div className="takeoff-component-list">
-                          {roomSurfaceComponents(selectedRoom, surface).map((component) => (
-                            <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""}`}>
-                              <select
-                                value={component.assembly}
-                                onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
-                              >
-                                {options.map((option) => (
-                                  <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                                ))}
-                              </select>
-                              {componentNeedsDirection(surface) && (
+                          {roomSurfaceComponents(selectedRoom, surface).map((component) => {
+                            const selectedDefinition = options.find((option) => option.code === component.assembly);
+                            return (
+                              <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""}`}>
                                 <select
-                                  value={component.direction ?? ""}
-                                  onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
+                                  value={component.assembly}
+                                  onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
                                 >
-                                  <option value="">Direction</option>
-                                  {exteriorDirections.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
+                                  {options.map((option) => (
+                                    <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                                  ))}
                                 </select>
-                              )}
-                              <input
-                                aria-label={`${surface} component label`}
-                                value={component.label ?? ""}
-                                placeholder="Label"
-                                onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { label: event.target.value })}
-                              />
-                              <input
-                                aria-label={`${surface} component area`}
-                                type="number"
-                                min="0"
-                                step="1"
-                                value={component.area}
-                                onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { area: Number(event.target.value) })}
-                              />
-                              <button onClick={() => removeRoomComponent(selectedRoom.id, component.id)}>Remove</button>
-                            </div>
-                          ))}
+                                {componentNeedsDirection(surface) && (
+                                  <select
+                                    value={component.direction ?? ""}
+                                    onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
+                                  >
+                                    <option value="">Direction</option>
+                                    {exteriorDirections.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
+                                  </select>
+                                )}
+                                <input
+                                  aria-label={`${surface} component label`}
+                                  value={component.label ?? ""}
+                                  placeholder="Label"
+                                  onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { label: event.target.value })}
+                                />
+                                <input
+                                  aria-label={`${surface} component area`}
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  value={component.area}
+                                  onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { area: Number(event.target.value) })}
+                                />
+                                <button onClick={() => removeRoomComponent(selectedRoom.id, component.id)}>Remove</button>
+                                <p className="takeoff-component-meta">
+                                  <strong>{selectedDefinition?.code ?? component.assembly}</strong>
+                                  {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
+                                  {" · "}{componentThermalSummary(selectedDefinition)}
+                                </p>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -2916,77 +3098,94 @@ export function TakeoffApp() {
           )}
         </aside>
       </section>
-      {pendingOpeningTarget && openingPlacement && (
-        <div className="modal-backdrop open-dialog-backdrop" onClick={() => setPendingOpeningTarget(null)}>
-          <div className="modal takeoff-opening-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-head">
-              <h2>What opening are you placing here?</h2>
-              <button className="modal-close" onClick={() => setPendingOpeningTarget(null)}>x</button>
-            </div>
-            <p className="takeoff-muted">
-              Assigned to <strong>{pendingOpeningTarget.roomName}</strong> on the <strong>{pendingOpeningTarget.direction}</strong> wall.
-            </p>
-            <div className="takeoff-opening-grid">
-              <label>
-                Type
-                <select
-                  value={openingPlacement.surface}
-                  onChange={(event) => updateOpeningPlacement({ surface: event.target.value as "glass" | "door" })}
-                >
-                  <option value="glass">Glass / Window</option>
-                  <option value="door">Door</option>
-                </select>
-              </label>
-              <label>
-                Component
-                <select
-                  value={openingPlacement.assembly}
-                  onChange={(event) => updateOpeningPlacement({ assembly: event.target.value })}
-                >
-                  {scheduleOptionsBySurface[openingPlacement.surface].map((option) => (
-                    <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Width ft
-                <input
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  value={openingPlacement.width}
-                  onChange={(event) => updateOpeningPlacement({ width: Number(event.target.value) })}
-                />
-              </label>
-              <label>
-                Height ft
-                <input
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  value={openingPlacement.height}
-                  onChange={(event) => updateOpeningPlacement({ height: Number(event.target.value) })}
-                />
-              </label>
-              <label>
-                Label
-                <input
-                  value={openingPlacement.label}
-                  onChange={(event) => updateOpeningPlacement({ label: event.target.value })}
-                />
-              </label>
-              <div className="takeoff-opening-area">
-                <span>Area</span>
-                <strong>{Number((openingPlacement.width * openingPlacement.height).toFixed(2))} sf</strong>
+      {(pendingOpeningTarget || editingOpeningTarget) && openingPlacement && (() => {
+        const editingRoom = editingOpeningTarget ? floor.rooms.find((room) => room.id === editingOpeningTarget.roomId) : null;
+        const editingComponent = editingRoom && editingOpeningTarget
+          ? roomComponents(editingRoom).find((component) => component.id === editingOpeningTarget.componentId)
+          : null;
+        const targetRoomName = pendingOpeningTarget?.roomName ?? editingRoom?.name ?? "room";
+        const targetDirection = pendingOpeningTarget?.direction ?? editingComponent?.direction ?? "wall";
+        const selectedDefinition = scheduleOptionsBySurface[openingPlacement.surface].find((option) => option.code === openingPlacement.assembly);
+        return (
+          <div className="modal-backdrop open-dialog-backdrop" onClick={closeOpeningDialog}>
+            <div className="modal takeoff-opening-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head">
+                <h2>{editingOpeningTarget ? "Edit opening" : "What opening are you placing here?"}</h2>
+                <button className="modal-close" onClick={closeOpeningDialog}>x</button>
+              </div>
+              <p className="takeoff-muted">
+                Assigned to <strong>{targetRoomName}</strong> on the <strong>{targetDirection}</strong> wall.
+              </p>
+              <div className="takeoff-opening-grid">
+                <label>
+                  Type
+                  <select
+                    value={openingPlacement.surface}
+                    onChange={(event) => updateOpeningPlacement({ surface: event.target.value as "glass" | "door" })}
+                  >
+                    <option value="glass">Glass / Window</option>
+                    <option value="door">Door</option>
+                  </select>
+                </label>
+                <label>
+                  Component
+                  <select
+                    value={openingPlacement.assembly}
+                    onChange={(event) => updateOpeningPlacement({ assembly: event.target.value })}
+                  >
+                    {scheduleOptionsBySurface[openingPlacement.surface].map((option) => (
+                      <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                    ))}
+                  </select>
+                </label>
+                <p className="takeoff-component-meta takeoff-opening-component-meta">
+                  <strong>{selectedDefinition?.code ?? openingPlacement.assembly}</strong>
+                  {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
+                  {" · "}{componentThermalSummary(selectedDefinition)}
+                </p>
+                <label>
+                  Width ft
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={openingPlacement.width}
+                    onChange={(event) => updateOpeningPlacement({ width: Number(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  Height ft
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={openingPlacement.height}
+                    onChange={(event) => updateOpeningPlacement({ height: Number(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  Label
+                  <input
+                    value={openingPlacement.label}
+                    onChange={(event) => updateOpeningPlacement({ label: event.target.value })}
+                  />
+                </label>
+                <div className="takeoff-opening-area">
+                  <span>Area</span>
+                  <strong>{Number((openingPlacement.width * openingPlacement.height).toFixed(2))} sf</strong>
+                </div>
+              </div>
+              <div className="takeoff-form-actions">
+                <button className="toolbar-primary" onClick={editingOpeningTarget ? confirmOpeningEdit : confirmOpeningPlacement}>
+                  {editingOpeningTarget ? "Update Opening" : "Confirm Opening"}
+                </button>
+                {editingOpeningTarget && <button onClick={removeSelectedOpening}>Remove Opening</button>}
+                <button onClick={closeOpeningDialog}>Cancel</button>
               </div>
             </div>
-            <div className="takeoff-form-actions">
-              <button className="toolbar-primary" onClick={confirmOpeningPlacement}>Confirm Opening</button>
-              <button onClick={() => setPendingOpeningTarget(null)}>Cancel</button>
-            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
       {componentScheduleOpen && (
         <div className="modal-backdrop open-dialog-backdrop" onClick={() => setComponentScheduleOpen(false)}>
           <div className="modal takeoff-component-modal" onClick={(event) => event.stopPropagation()}>

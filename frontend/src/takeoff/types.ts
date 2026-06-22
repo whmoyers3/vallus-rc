@@ -10,6 +10,8 @@ export type TakeoffRoomComponent = {
   surface: "floor" | "ceiling" | "wall" | "glass" | "door";
   assembly: string;
   area: number;
+  width?: number;
+  height?: number;
   direction?: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
   label?: string;
   placement?: TakeoffPoint;

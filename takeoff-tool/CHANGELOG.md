@@ -291,6 +291,9 @@ Implemented:
 - Added plan-grid opening placement mode.
 - Clicking an exterior room edge now identifies the room and wall facing, then opens a confirmation dialog for glass/door type, component, size, and label.
 - Confirmed openings are stored on the room profile with a drawing marker and reopenable placement point.
+- Component assignment views now show the selected component description, U-value, U-factor, and SHGC where applicable.
+- Placed opening markers can now be clicked to edit type, component, size, or label, or remove the opening from the wall.
+- Placed opening markers can be dragged along their assigned exterior wall segment without moving to a different room.
 
 Still pending:
 
