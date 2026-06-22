@@ -181,17 +181,45 @@ function componentAreaTotal(room: TakeoffRectRoom, surface: TakeoffRoomComponent
 }
 
 function defaultComponent(surface: TakeoffRoomComponent["surface"], area: number): TakeoffRoomComponent {
+  const defaults: Record<TakeoffRoomComponent["surface"], { assembly: string; label: string; direction?: TakeoffRoomComponent["direction"] }> = {
+    floor: { assembly: "F2", label: "Slab" },
+    ceiling: { assembly: "C1", label: "Flat ceiling" },
+    wall: { assembly: "W1", label: "Exterior wall", direction: "S" },
+    glass: { assembly: "G1", label: "Window", direction: "S" },
+    door: { assembly: "D1", label: "Door", direction: "S" },
+  };
+  const fallback = defaults[surface];
   return {
     id: nextId(`component-${surface}`),
     surface,
-    assembly: surface === "floor" ? "F2" : "C1",
+    assembly: fallback.assembly,
     area: Math.max(0, Math.round(area)),
-    label: surface === "floor" ? "Slab" : "Flat ceiling",
+    direction: fallback.direction,
+    label: fallback.label,
   };
 }
 
 function defaultRoomComponents(area: number): TakeoffRoomComponent[] {
   return [defaultComponent("floor", area), defaultComponent("ceiling", area)];
+}
+
+function componentSurfaceLabel(surface: TakeoffRoomComponent["surface"]) {
+  const labels: Record<TakeoffRoomComponent["surface"], string> = {
+    floor: "Floor",
+    ceiling: "Ceiling",
+    wall: "Wall",
+    glass: "Window",
+    door: "Door",
+  };
+  return labels[surface];
+}
+
+function componentPayloadKind(surface: TakeoffRoomComponent["surface"]) {
+  return surface === "glass" ? "glass" : "opaque";
+}
+
+function componentNeedsDirection(surface: TakeoffRoomComponent["surface"]) {
+  return surface === "wall" || surface === "glass" || surface === "door";
 }
 
 function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
@@ -425,6 +453,9 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
       if (!component.assembly) {
         issues.push({ severity: "error", message: `${room.name || "Room"} has a component with no assembly code.` });
       }
+      if (componentNeedsDirection(component.surface) && !component.direction) {
+        issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${componentSurfaceLabel(component.surface).toLowerCase()} component with no direction.` });
+      }
       if (component.area <= 0) {
         issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${component.surface} component with no area.` });
       }
@@ -483,9 +514,10 @@ function buildVrcPayload(project: TakeoffProject) {
   const lineItems = floor.rooms.flatMap((room) => {
     return roomComponents(room).map((component) => ({
       name: `${room.name} ${component.label || component.assembly}`,
-      kind: "opaque",
+      kind: componentPayloadKind(component.surface),
       room_name: room.name,
       assembly: component.assembly,
+      direction: component.direction,
       area: component.area,
     }));
   });
@@ -712,6 +744,13 @@ export function TakeoffApp() {
   const selectedRoom = floor.rooms.find((room) => room.id === selectedRoomId) ?? null;
   const floorScheduleOptions = componentSchedule.filter((component) => component.category === "Floor");
   const ceilingScheduleOptions = componentSchedule.filter((component) => component.category === "Ceiling");
+  const scheduleOptionsBySurface = {
+    floor: floorScheduleOptions,
+    ceiling: ceilingScheduleOptions,
+    wall: componentSchedule.filter((component) => component.category === "Wall"),
+    glass: componentSchedule.filter((component) => component.category === "Glass"),
+    door: componentSchedule.filter((component) => component.category === "Door"),
+  } satisfies Record<TakeoffRoomComponent["surface"], TakeoffComponentDefinition[]>;
   const filteredLibraryComponents = libraryComponents.filter((component) => {
     const needle = componentSearch.trim().toLowerCase();
     const matchesSearch = !needle || `${component.code} ${component.description} ${component.category}`.toLowerCase().includes(needle);
@@ -2324,34 +2363,53 @@ export function TakeoffApp() {
                     onChange={(event) => updateRoom(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
                   />
                 </label>
-                {(["floor", "ceiling"] as const).map((surface) => {
+                {(["floor", "ceiling", "wall", "glass", "door"] as const).map((surface) => {
                   const roomArea = rectArea(selectedRoom);
                   const assigned = componentAreaTotal(selectedRoom, surface);
                   const delta = roomArea - assigned;
+                  const isAreaChecked = surface === "floor" || surface === "ceiling";
+                  const options = scheduleOptionsBySurface[surface];
                   return (
                     <div key={surface} className="takeoff-component-editor">
                       <div className="takeoff-component-head">
-                        <h3>{surface === "floor" ? "Floor Components" : "Ceiling Components"}</h3>
+                        <h3>{componentSurfaceLabel(surface)} Components</h3>
                         <button onClick={() => addRoomComponent(selectedRoom.id, surface)}>Add</button>
                       </div>
-                      <p className={assigned > roomArea + 0.5 ? "takeoff-component-total takeoff-component-total--error" : "takeoff-component-total"}>
-                        Assigned {Math.round(assigned)} / {Math.round(roomArea)} sf
-                        {Math.abs(delta) > 0.5 ? ` · ${delta > 0 ? Math.round(delta) + " sf open" : Math.round(Math.abs(delta)) + " sf over"}` : " · balanced"}
-                      </p>
+                      {isAreaChecked ? (
+                        <p className={assigned > roomArea + 0.5 ? "takeoff-component-total takeoff-component-total--error" : "takeoff-component-total"}>
+                          Assigned {Math.round(assigned)} / {Math.round(roomArea)} sf
+                          {Math.abs(delta) > 0.5 ? ` · ${delta > 0 ? Math.round(delta) + " sf open" : Math.round(Math.abs(delta)) + " sf over"}` : " · balanced"}
+                        </p>
+                      ) : (
+                        <p className="takeoff-component-total">
+                          {Math.round(assigned)} sf total · enter area manually until click-to-place openings is enabled.
+                        </p>
+                      )}
                       {roomSurfaceComponents(selectedRoom, surface).length === 0 ? (
-                        <p className="takeoff-muted">No {surface} load components.</p>
+                        <p className="takeoff-muted">No {componentSurfaceLabel(surface).toLowerCase()} load components.</p>
                       ) : (
                         <div className="takeoff-component-list">
                           {roomSurfaceComponents(selectedRoom, surface).map((component) => (
-                            <div key={component.id} className="takeoff-component-row">
+                            <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""}`}>
                               <select
                                 value={component.assembly}
                                 onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
                               >
-                                {(surface === "floor" ? floorScheduleOptions : ceilingScheduleOptions).map((option) => (
+                                {options.map((option) => (
                                   <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
                                 ))}
                               </select>
+                              {componentNeedsDirection(surface) && (
+                                <select
+                                  value={component.direction ?? ""}
+                                  onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
+                                >
+                                  <option value="">Direction</option>
+                                  {directionOptions.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
+                                  {surface === "glass" && <option value="Shaded">Shaded</option>}
+                                  {surface === "glass" && <option value="Skylight">Skylight</option>}
+                                </select>
+                              )}
                               <input
                                 aria-label={`${surface} component label`}
                                 value={component.label ?? ""}

@@ -1027,6 +1027,10 @@ button.toolbar-primary:hover {
   grid-template-columns: minmax(88px, 1.1fr) minmax(72px, 1fr) 64px auto;
 }
 
+.takeoff-component-row--directional {
+  grid-template-columns: minmax(88px, 1.1fr) 76px minmax(72px, 1fr) 64px auto;
+}
+
 .takeoff-component-row input,
 .takeoff-component-row select {
   font: inherit;

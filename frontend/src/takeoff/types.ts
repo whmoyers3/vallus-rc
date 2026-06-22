@@ -7,9 +7,10 @@ export type TakeoffPoint = {
 
 export type TakeoffRoomComponent = {
   id: string;
-  surface: "floor" | "ceiling";
+  surface: "floor" | "ceiling" | "wall" | "glass" | "door";
   assembly: string;
   area: number;
+  direction?: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW" | "Shaded" | "Skylight";
   label?: string;
 };
 

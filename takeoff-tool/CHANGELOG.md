@@ -272,3 +272,20 @@ Implemented:
 - Persisted the project component schedule in takeoff JSON.
 - Room component rows now select floor/ceiling assemblies from the project schedule.
 - Payload preview now uses scheduled U-values, SHGC values, and descriptions instead of fixed takeoff defaults.
+
+## 2026-06-22 - Phase 2 Manual Envelope Rows
+
+Started the Phase 2 wall/window/door workflow with the manual data foundation.
+
+Implemented:
+
+- Room profiles can now add wall, window, and door component rows.
+- Wall/window/door rows capture assembly, direction, label, and area.
+- Window rows export as glass line items in the payload preview.
+- Wall and door rows export as opaque directional line items.
+
+Still pending:
+
+- Click-to-place opening mode on exterior wall segments.
+- Automatic room/direction assignment from the selected wall segment.
+- Opening validation against exterior-only placement and garage restrictions.

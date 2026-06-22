@@ -122,6 +122,7 @@ Deliverables:
 - Segment orientation from north/front reference.
 - Assign exterior wall segments to rooms.
 - Window schedule panel for predefined and custom glass.
+- Manual room-profile fallback for wall, window, and door rows before click-to-place is complete.
 - Click-to-place windows on exterior conditioned walls.
 - Door schedule panel for exterior, garage, and custom doors.
 - Prevent ordinary windows in garage/exterior spaces.
