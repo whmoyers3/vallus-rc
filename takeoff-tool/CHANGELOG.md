@@ -288,9 +288,10 @@ Implemented:
 - Suggested wall areas can be approved into editable wall component rows by assembly type.
 - Payload export subtracts same-direction window and door opening area from gross wall area.
 - Validation flags openings assigned to non-exterior directions or openings that exceed same-direction wall area.
+- Added plan-grid opening placement mode.
+- Clicking an exterior room edge now identifies the room and wall facing, then opens a confirmation dialog for glass/door type, component, size, and label.
+- Confirmed openings are stored on the room profile with a drawing marker and reopenable placement point.
 
 Still pending:
 
-- Click-to-place opening mode on exterior wall segments.
-- Automatic room/direction assignment from the selected wall segment.
 - Opening validation against exterior-only placement and garage restrictions.

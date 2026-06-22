@@ -50,6 +50,19 @@ type DragState = {
   current: TakeoffPoint;
   target?: MovablePointTarget;
 } | null;
+type OpeningPlacement = {
+  surface: "glass" | "door";
+  assembly: string;
+  width: number;
+  height: number;
+  label: string;
+} | null;
+type PendingOpeningTarget = {
+  roomId: string;
+  roomName: string;
+  direction: (typeof directionOptions)[number];
+  placement: TakeoffPoint;
+} | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
 type SavedTakeoffRow = {
   id: number;
@@ -459,6 +472,38 @@ function sharedSegmentLength(
   return Math.max(0, Math.min(firstMax, secondMax) - Math.max(firstMin, secondMin));
 }
 
+function sharedSegment(
+  first: { a: TakeoffPoint; b: TakeoffPoint },
+  second: { a: TakeoffPoint; b: TakeoffPoint },
+  tolerance: number,
+) {
+  const dx1 = first.b.x - first.a.x;
+  const dy1 = first.b.y - first.a.y;
+  const len1 = Math.hypot(dx1, dy1);
+  const dx2 = second.b.x - second.a.x;
+  const dy2 = second.b.y - second.a.y;
+  const len2 = Math.hypot(dx2, dy2);
+  if (len1 <= 0.001 || len2 <= 0.001) return null;
+  const cross = Math.abs(dx1 * dy2 - dy1 * dx2);
+  if (cross > tolerance * Math.max(len1, len2)) return null;
+  const distanceToLine = Math.abs((second.a.x - first.a.x) * dy1 - (second.a.y - first.a.y) * dx1) / len1;
+  if (distanceToLine > tolerance) return null;
+  const ux = dx1 / len1;
+  const uy = dy1 / len1;
+  const project = (point: TakeoffPoint) => (point.x - first.a.x) * ux + (point.y - first.a.y) * uy;
+  const secondA = project(second.a);
+  const secondB = project(second.b);
+  const overlapStart = Math.max(0, Math.min(secondA, secondB));
+  const overlapEnd = Math.min(len1, Math.max(secondA, secondB));
+  const length = overlapEnd - overlapStart;
+  if (length <= 0) return null;
+  return {
+    a: { x: first.a.x + ux * overlapStart, y: first.a.y + uy * overlapStart },
+    b: { x: first.a.x + ux * overlapEnd, y: first.a.y + uy * overlapEnd },
+    length,
+  };
+}
+
 function roomExteriorWallSuggestions(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const exteriorPoints = exteriorRingPoints(floor);
   if (exteriorPoints.length < 3) return [] as Array<{ direction: (typeof directionOptions)[number]; length: number; area: number }>;
@@ -494,6 +539,36 @@ function roomExteriorWallSuggestions(floor: TakeoffFloor, room: TakeoffRectRoom)
 
 function roomExteriorDirections(floor: TakeoffFloor, room: TakeoffRectRoom) {
   return roomExteriorWallSuggestions(floor, room).map((suggestion) => suggestion.direction);
+}
+
+function roomExteriorSegments(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  const exteriorPoints = exteriorRingPoints(floor);
+  if (exteriorPoints.length < 3) return [] as Array<{ a: TakeoffPoint; b: TakeoffPoint; direction: (typeof directionOptions)[number]; length: number }>;
+  const center = {
+    x: exteriorPoints.reduce((sum, point) => sum + point.x, 0) / exteriorPoints.length,
+    y: exteriorPoints.reduce((sum, point) => sum + point.y, 0) / exteriorPoints.length,
+  };
+  const exteriorEdges = pointsToEdges(exteriorPoints);
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const segments: Array<{ a: TakeoffPoint; b: TakeoffPoint; direction: (typeof directionOptions)[number]; length: number }> = [];
+
+  for (const roomEdge of pointsToEdges(roomCorners(room))) {
+    for (const exteriorEdge of exteriorEdges) {
+      const exposed = sharedSegment(roomEdge, exteriorEdge, tolerance);
+      if (!exposed || exposed.length <= 0.25) continue;
+      const midpoint = {
+        x: (exteriorEdge.a.x + exteriorEdge.b.x) / 2,
+        y: (exteriorEdge.a.y + exteriorEdge.b.y) / 2,
+      };
+      segments.push({
+        ...exposed,
+        direction: compassFromVector(midpoint.x - center.x, midpoint.y - center.y),
+        length: Number(exposed.length.toFixed(3)),
+      });
+    }
+  }
+
+  return segments;
 }
 
 function isCompassDirection(value: TakeoffRoomComponent["direction"] | undefined): value is (typeof directionOptions)[number] {
@@ -871,6 +946,8 @@ export function TakeoffApp() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [sliceRoomId, setSliceRoomId] = useState("");
   const [suggestedWallAssembly, setSuggestedWallAssembly] = useState("W1");
+  const [openingPlacement, setOpeningPlacement] = useState<OpeningPlacement>(null);
+  const [pendingOpeningTarget, setPendingOpeningTarget] = useState<PendingOpeningTarget>(null);
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressNextCanvasClickRef = useRef(false);
 
@@ -1047,6 +1124,113 @@ export function TakeoffApp() {
         };
       }),
     }));
+  }
+
+  function startOpeningPlacement(surface: "glass" | "door" = "glass") {
+    const option = scheduleOptionsBySurface[surface][0];
+    setOpeningPlacement({
+      surface,
+      assembly: option?.code ?? (surface === "glass" ? "G1" : "D1"),
+      width: surface === "glass" ? 3 : 3,
+      height: surface === "glass" ? 5 : 6.67,
+      label: surface === "glass" ? "Window" : "Door",
+    });
+    setWorkflowStep("trace");
+    setTraceTool("select");
+    setRoomDrawMode(false);
+    setRoomPolygonMode(false);
+    setSubtractMode(false);
+    setMessage("Openings mode active. Click an exterior wall segment, then confirm the component and size.");
+  }
+
+  function updateOpeningPlacement(patch: Partial<NonNullable<OpeningPlacement>>) {
+    setOpeningPlacement((current) => {
+      if (!current) return current;
+      const nextSurface = patch.surface ?? current.surface;
+      const surfaceChanged = patch.surface && patch.surface !== current.surface;
+      const option = surfaceChanged ? scheduleOptionsBySurface[nextSurface][0] : null;
+      return {
+        ...current,
+        ...patch,
+        assembly: patch.assembly ?? option?.code ?? current.assembly,
+        width: patch.width ?? (surfaceChanged ? 3 : current.width),
+        height: patch.height ?? (surfaceChanged ? (nextSurface === "glass" ? 5 : 6.67) : current.height),
+        label: patch.label ?? (surfaceChanged ? (nextSurface === "glass" ? "Window" : "Door") : current.label),
+      };
+    });
+  }
+
+  function nearestExteriorSegment(point: TakeoffPoint) {
+    const threshold = Math.max(1.5, floor.scale.feetPerGrid * 1.5, floor.scale.gridSnapInches / 12);
+    const candidates = floor.rooms.flatMap((room) =>
+      roomExteriorSegments(floor, room).map((segment) => {
+        const closest = closestPointOnSegment(point, segment.a, segment.b);
+        return {
+          room,
+          segment,
+          closest,
+          distance: distance(point, closest),
+        };
+      }),
+    );
+    return candidates
+      .filter((candidate) => candidate.distance <= threshold)
+      .sort((a, b) => {
+        if (a.room.id === selectedRoomId && b.room.id !== selectedRoomId) return -1;
+        if (b.room.id === selectedRoomId && a.room.id !== selectedRoomId) return 1;
+        return a.distance - b.distance;
+      })[0] ?? null;
+  }
+
+  function placeOpeningAt(point: TakeoffPoint) {
+    if (!openingPlacement) return false;
+    const target = nearestExteriorSegment(point);
+    if (!target) {
+      setMessage("Click closer to an exterior wall segment for a room. Openings cannot be placed on interior-only walls.");
+      return false;
+    }
+    setPendingOpeningTarget({
+      roomId: target.room.id,
+      roomName: target.room.name,
+      direction: target.segment.direction,
+      placement: {
+        x: Number(target.closest.x.toFixed(3)),
+        y: Number(target.closest.y.toFixed(3)),
+      },
+    });
+    setSelectedRoomId(target.room.id);
+    setMessage(`Detected ${target.room.name} ${target.segment.direction} wall. Confirm the opening details.`);
+    return true;
+  }
+
+  function confirmOpeningPlacement() {
+    if (!openingPlacement || !pendingOpeningTarget) return false;
+    const area = Number(Math.max(0, openingPlacement.width * openingPlacement.height).toFixed(2));
+    if (area <= 0) {
+      setMessage("Enter a positive width and height before placing an opening.");
+      return false;
+    }
+    const component: TakeoffRoomComponent = {
+      id: nextId(`component-${openingPlacement.surface}`),
+      surface: openingPlacement.surface,
+      assembly: openingPlacement.assembly,
+      area,
+      direction: pendingOpeningTarget.direction,
+      label: openingPlacement.label || (openingPlacement.surface === "glass" ? "Window" : "Door"),
+      placement: pendingOpeningTarget.placement,
+    };
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => (
+        room.id === pendingOpeningTarget.roomId
+          ? { ...room, components: [...roomComponents(room), component] }
+          : room
+      )),
+    }));
+    setSelectedRoomId(pendingOpeningTarget.roomId);
+    setMessage(`${component.label} placed on ${pendingOpeningTarget.roomName} ${pendingOpeningTarget.direction} wall (${area} sf).`);
+    setPendingOpeningTarget(null);
+    return true;
   }
 
   function applyComponentToScheduleSlot(component: TakeoffComponentDefinition, target: number | "new") {
@@ -1714,6 +1898,10 @@ export function TakeoffApp() {
       addCalibrationPoint(point);
       return;
     }
+    if (workflowStep === "trace" && openingPlacement) {
+      placeOpeningAt(point);
+      return;
+    }
     if (workflowStep === "trace" && roomPolygonMode) {
       addPolygonRoomPoint(point);
       return;
@@ -1842,6 +2030,8 @@ export function TakeoffApp() {
       setOpenDialog(false);
       setCalibrationStart(null);
       setRoomPolygonDraft([]);
+      setOpeningPlacement(null);
+      setPendingOpeningTarget(null);
       setDragState(null);
       setWorkflowStep("trace");
       setTraceTool("select");
@@ -1899,6 +2089,8 @@ export function TakeoffApp() {
     setTraceTool("select");
     setRoomDrawMode(false);
     setCalibrationStart(null);
+    setOpeningPlacement(null);
+    setPendingOpeningTarget(null);
     setDragState(null);
     setRightPanelOpen(false);
     setZoom(1);
@@ -2216,7 +2408,7 @@ export function TakeoffApp() {
               onPointerUp={handleCanvasPointerUp}
               onPointerCancel={() => setDragState(null)}
               onClick={handleCanvasClick}
-              style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
+              style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || openingPlacement || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
             >
               <defs>
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
@@ -2287,10 +2479,11 @@ export function TakeoffApp() {
                 <g
                   key={room.id}
                   onClick={(event) => {
+                    if (openingPlacement) return;
                     event.stopPropagation();
                     setSelectedRoomId(room.id);
                   }}
-                  style={{ cursor: "pointer" }}
+                  style={{ cursor: openingPlacement ? "crosshair" : "pointer" }}
                 >
                   {room.polygon && room.polygon.length >= 3 ? (
                     <polygon
@@ -2342,6 +2535,7 @@ export function TakeoffApp() {
                       fill="#1f2933"
                       textAnchor="middle"
                       onClick={(event) => {
+                        if (openingPlacement) return;
                         event.stopPropagation();
                         setEditingRoomId(room.id);
                       }}
@@ -2353,6 +2547,30 @@ export function TakeoffApp() {
                   <text x={offsetX + roomCenter(room).x * scale} y={offsetY + roomCenter(room).y * scale + 16} fontSize="11" fill="#465667" textAnchor="middle">
                     {Math.round(rectArea(room))} sf
                   </text>
+                  {roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door")).filter((component) => component.placement).map((component) => (
+                    <g key={`${room.id}-${component.id}-marker`} pointerEvents="none">
+                      <rect
+                        x={offsetX + (component.placement?.x ?? 0) * scale - 8}
+                        y={offsetY + (component.placement?.y ?? 0) * scale - 8}
+                        width="16"
+                        height="16"
+                        rx="3"
+                        fill={component.surface === "glass" ? "#ffffff" : "#2b4c6f"}
+                        stroke={component.surface === "glass" ? "#1f6fb2" : "#ffffff"}
+                        strokeWidth="1.8"
+                      />
+                      <text
+                        x={offsetX + (component.placement?.x ?? 0) * scale}
+                        y={offsetY + (component.placement?.y ?? 0) * scale + 4}
+                        fontSize="10"
+                        fill={component.surface === "glass" ? "#1f6fb2" : "#ffffff"}
+                        fontWeight="700"
+                        textAnchor="middle"
+                      >
+                        {component.surface === "glass" ? "G" : "D"}
+                      </text>
+                    </g>
+                  ))}
                 </g>
               ))}
               {roomPolygonDraft.length > 0 && (
@@ -2472,6 +2690,24 @@ export function TakeoffApp() {
                 <button onClick={moveDraftRoomToOpenSpot}>Find Open Spot</button>
               </div>
               {message && <p className="takeoff-message">{message}</p>}
+            </section>
+
+            <section className="takeoff-panel">
+              <div className="takeoff-panel-head">
+                <h2>Openings</h2>
+              </div>
+              <div className="takeoff-form-actions">
+                <button className={openingPlacement ? "toolbar-primary" : ""} onClick={() => (openingPlacement ? setOpeningPlacement(null) : startOpeningPlacement())}>
+                  {openingPlacement ? "Stop Placing" : "Place Opening"}
+                </button>
+              </div>
+              {openingPlacement ? (
+                <p className="takeoff-note">
+                  Click the plan on an exterior wall. The tool will identify the room and wall facing, then ask which door or glass component to place.
+                </p>
+              ) : (
+                <p className="takeoff-muted">Openings are assigned from the plan grid and must land on exterior/load-bearing room edges.</p>
+              )}
             </section>
 
             <section className="takeoff-panel">
@@ -2680,6 +2916,77 @@ export function TakeoffApp() {
           )}
         </aside>
       </section>
+      {pendingOpeningTarget && openingPlacement && (
+        <div className="modal-backdrop open-dialog-backdrop" onClick={() => setPendingOpeningTarget(null)}>
+          <div className="modal takeoff-opening-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>What opening are you placing here?</h2>
+              <button className="modal-close" onClick={() => setPendingOpeningTarget(null)}>x</button>
+            </div>
+            <p className="takeoff-muted">
+              Assigned to <strong>{pendingOpeningTarget.roomName}</strong> on the <strong>{pendingOpeningTarget.direction}</strong> wall.
+            </p>
+            <div className="takeoff-opening-grid">
+              <label>
+                Type
+                <select
+                  value={openingPlacement.surface}
+                  onChange={(event) => updateOpeningPlacement({ surface: event.target.value as "glass" | "door" })}
+                >
+                  <option value="glass">Glass / Window</option>
+                  <option value="door">Door</option>
+                </select>
+              </label>
+              <label>
+                Component
+                <select
+                  value={openingPlacement.assembly}
+                  onChange={(event) => updateOpeningPlacement({ assembly: event.target.value })}
+                >
+                  {scheduleOptionsBySurface[openingPlacement.surface].map((option) => (
+                    <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Width ft
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={openingPlacement.width}
+                  onChange={(event) => updateOpeningPlacement({ width: Number(event.target.value) })}
+                />
+              </label>
+              <label>
+                Height ft
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={openingPlacement.height}
+                  onChange={(event) => updateOpeningPlacement({ height: Number(event.target.value) })}
+                />
+              </label>
+              <label>
+                Label
+                <input
+                  value={openingPlacement.label}
+                  onChange={(event) => updateOpeningPlacement({ label: event.target.value })}
+                />
+              </label>
+              <div className="takeoff-opening-area">
+                <span>Area</span>
+                <strong>{Number((openingPlacement.width * openingPlacement.height).toFixed(2))} sf</strong>
+              </div>
+            </div>
+            <div className="takeoff-form-actions">
+              <button className="toolbar-primary" onClick={confirmOpeningPlacement}>Confirm Opening</button>
+              <button onClick={() => setPendingOpeningTarget(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       {componentScheduleOpen && (
         <div className="modal-backdrop open-dialog-backdrop" onClick={() => setComponentScheduleOpen(false)}>
           <div className="modal takeoff-component-modal" onClick={(event) => event.stopPropagation()}>

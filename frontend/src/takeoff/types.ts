@@ -12,6 +12,7 @@ export type TakeoffRoomComponent = {
   area: number;
   direction?: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
   label?: string;
+  placement?: TakeoffPoint;
 };
 
 export type TakeoffComponentCategory = "Wall" | "Door" | "Ceiling" | "Floor" | "Glass";
