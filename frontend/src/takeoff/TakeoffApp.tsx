@@ -431,35 +431,69 @@ function exteriorRingPoints(floor: TakeoffFloor) {
   return rectToPoints({ x: bounds.x, y: bounds.y, width: bounds.width, depth: bounds.depth });
 }
 
-function roomExteriorDirections(floor: TakeoffFloor, room: TakeoffRectRoom) {
+function sharedSegmentLength(
+  first: { a: TakeoffPoint; b: TakeoffPoint },
+  second: { a: TakeoffPoint; b: TakeoffPoint },
+  tolerance: number,
+) {
+  const dx1 = first.b.x - first.a.x;
+  const dy1 = first.b.y - first.a.y;
+  const len1 = Math.hypot(dx1, dy1);
+  const dx2 = second.b.x - second.a.x;
+  const dy2 = second.b.y - second.a.y;
+  const len2 = Math.hypot(dx2, dy2);
+  if (len1 <= 0.001 || len2 <= 0.001) return 0;
+  const cross = Math.abs(dx1 * dy2 - dy1 * dx2);
+  if (cross > tolerance * Math.max(len1, len2)) return 0;
+  const distanceToLine = Math.abs((second.a.x - first.a.x) * dy1 - (second.a.y - first.a.y) * dx1) / len1;
+  if (distanceToLine > tolerance) return 0;
+  const ux = dx1 / len1;
+  const uy = dy1 / len1;
+  const project = (point: TakeoffPoint) => (point.x - first.a.x) * ux + (point.y - first.a.y) * uy;
+  const firstMin = 0;
+  const firstMax = len1;
+  const secondA = project(second.a);
+  const secondB = project(second.b);
+  const secondMin = Math.min(secondA, secondB);
+  const secondMax = Math.max(secondA, secondB);
+  return Math.max(0, Math.min(firstMax, secondMax) - Math.max(firstMin, secondMin));
+}
+
+function roomExteriorWallSuggestions(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const exteriorPoints = exteriorRingPoints(floor);
-  if (exteriorPoints.length < 3) return [] as Array<(typeof directionOptions)[number]>;
+  if (exteriorPoints.length < 3) return [] as Array<{ direction: (typeof directionOptions)[number]; length: number; area: number }>;
   const center = {
     x: exteriorPoints.reduce((sum, point) => sum + point.x, 0) / exteriorPoints.length,
     y: exteriorPoints.reduce((sum, point) => sum + point.y, 0) / exteriorPoints.length,
   };
   const exteriorEdges = pointsToEdges(exteriorPoints);
   const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
-  const directions = new Set<(typeof directionOptions)[number]>();
+  const lengths = new Map<(typeof directionOptions)[number], number>();
 
   for (const roomEdge of pointsToEdges(roomCorners(room))) {
-    const samples = [
-      roomEdge.a,
-      roomEdge.b,
-      { x: (roomEdge.a.x + roomEdge.b.x) / 2, y: (roomEdge.a.y + roomEdge.b.y) / 2 },
-    ];
     for (const exteriorEdge of exteriorEdges) {
-      if (samples.some((sample) => distance(sample, closestPointOnSegment(sample, exteriorEdge.a, exteriorEdge.b)) <= tolerance)) {
-        const midpoint = {
-          x: (exteriorEdge.a.x + exteriorEdge.b.x) / 2,
-          y: (exteriorEdge.a.y + exteriorEdge.b.y) / 2,
-        };
-        directions.add(compassFromVector(midpoint.x - center.x, midpoint.y - center.y));
-      }
+      const sharedLength = sharedSegmentLength(roomEdge, exteriorEdge, tolerance);
+      if (sharedLength <= 0.25) continue;
+      const midpoint = {
+        x: (exteriorEdge.a.x + exteriorEdge.b.x) / 2,
+        y: (exteriorEdge.a.y + exteriorEdge.b.y) / 2,
+      };
+      const direction = compassFromVector(midpoint.x - center.x, midpoint.y - center.y);
+      lengths.set(direction, (lengths.get(direction) ?? 0) + sharedLength);
     }
   }
 
-  return directionOptions.filter((direction) => directions.has(direction));
+  return directionOptions
+    .map((direction) => ({
+      direction,
+      length: Number((lengths.get(direction) ?? 0).toFixed(3)),
+      area: Number(((lengths.get(direction) ?? 0) * Math.max(0, room.ceilingHeight)).toFixed(3)),
+    }))
+    .filter((suggestion) => suggestion.length > 0.25);
+}
+
+function roomExteriorDirections(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  return roomExteriorWallSuggestions(floor, room).map((suggestion) => suggestion.direction);
 }
 
 function isCompassDirection(value: TakeoffRoomComponent["direction"] | undefined): value is (typeof directionOptions)[number] {
@@ -836,6 +870,7 @@ export function TakeoffApp() {
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [sliceRoomId, setSliceRoomId] = useState("");
+  const [suggestedWallAssembly, setSuggestedWallAssembly] = useState("W1");
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressNextCanvasClickRef = useRef(false);
 
@@ -978,6 +1013,39 @@ export function TakeoffApp() {
           ? { ...room, components: roomComponents(room).filter((component) => component.id !== componentId) }
           : room
       )),
+    }));
+  }
+
+  function applySuggestedWallArea(roomId: string, suggestion: { direction: TakeoffRoomComponent["direction"]; area: number }, assembly: string) {
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        const components = roomComponents(room);
+        const existing = components.find((component) => component.surface === "wall" && component.direction === suggestion.direction);
+        if (existing) {
+          return {
+            ...room,
+            components: components.map((component) => component.id === existing.id
+              ? { ...component, assembly, area: Math.round(suggestion.area), label: `${suggestion.direction} exterior wall` }
+              : component),
+          };
+        }
+        return {
+          ...room,
+          components: [
+            ...components,
+            {
+              id: nextId("component-wall"),
+              surface: "wall",
+              assembly,
+              direction: suggestion.direction,
+              area: Math.round(suggestion.area),
+              label: `${suggestion.direction} exterior wall`,
+            },
+          ],
+        };
+      }),
     }));
   }
 
@@ -2470,11 +2538,38 @@ export function TakeoffApp() {
             {selectedRoom ? (
               <>
                 {(() => {
-                  const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
+                  const suggestions = roomExteriorWallSuggestions(floor, selectedRoom);
+                  const exteriorDirections = suggestions.map((suggestion) => suggestion.direction);
                   return (
-                    <p className="takeoff-muted">
-                      Exterior/load-bearing directions: {exteriorDirections.join(", ") || "none detected"}
-                    </p>
+                    <div className="takeoff-wall-suggestions">
+                      <div className="takeoff-component-head">
+                        <h3>Suggested Exterior Walls</h3>
+                        <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
+                          {scheduleOptionsBySurface.wall.map((option) => (
+                            <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {suggestions.length ? suggestions.map((suggestion) => {
+                        const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
+                          component.direction === suggestion.direction && Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
+                        );
+                        return (
+                          <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
+                            <span>
+                              Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} wall
+                              <small>{Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft</small>
+                            </span>
+                            <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, suggestedWallAssembly)}>
+                              {approved ? "Approved" : "Apply"}
+                            </button>
+                          </div>
+                        );
+                      }) : (
+                        <p className="takeoff-muted">No exterior/load-bearing wall exposure detected for this room.</p>
+                      )}
+                      <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
+                    </div>
                   );
                 })()}
                 <label>
