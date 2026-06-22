@@ -1673,6 +1673,67 @@ label {
   min-width: 860px;
 }
 
+.assembly-library-panel {
+  border: 1px solid #dde4ea;
+  border-radius: 8px;
+  margin-bottom: 14px;
+  padding: 12px;
+}
+
+.assembly-library-head {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 1fr) minmax(180px, 260px) auto;
+}
+
+.assembly-library-head span {
+  color: #536271;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.assembly-library-hint {
+  color: #536271;
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+.assembly-library-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.assembly-library-row {
+  align-items: center;
+  border: 1px solid #e5ebf0;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 64px minmax(220px, 1fr) minmax(130px, auto) auto;
+  padding: 8px;
+}
+
+.assembly-library-row span,
+.assembly-library-row em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assembly-library-row em {
+  color: #536271;
+  font-style: normal;
+}
+
+.assembly-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* ── Load summary + calculated results ────────────────────────── */
 .load-summary-wrap {
   overflow-x: auto;

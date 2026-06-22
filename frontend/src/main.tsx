@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TakeoffApp } from "./takeoff/TakeoffApp";
 
-type AssemblyRow = { code: string; u_value: number; shgc: number | null; label: string };
+type AssemblyRow = { code: string; u_value?: number | null; shgc?: number | null; label: string };
 type TypeCategory = "Wall" | "Glass" | "Ceiling" | "Floor" | "Door";
 type CompassDirection = "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
 type RelativeFacing = "FRONT" | "FRONT_LEFT" | "FRONT_RIGHT" | "LEFT" | "RIGHT" | "REAR" | "REAR_RIGHT" | "REAR_LEFT";
@@ -362,6 +362,10 @@ function typeOptionLabel(definition: TypeDefinition): string {
   return `${definition.code} - ${truncated}`;
 }
 
+function assemblyRowKey(row: AssemblyRow): string {
+  return `${row.code}-${row.u_value ?? "x"}-${row.shgc ?? "x"}-${row.label}`.replace(/\s+/g, "-");
+}
+
 function finiteNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -614,6 +618,14 @@ function codeCategory(code: string): TypeCategory {
   return "Wall";
 }
 
+function libraryCodeForCategory(category: TypeCategory): string {
+  if (category === "Glass") return "G";
+  if (category === "Ceiling") return "C";
+  if (category === "Floor") return "F";
+  if (category === "Door") return "D";
+  return "W";
+}
+
 function componentCategory(item: { kind: ComponentKind; assembly?: string }): ComponentDraft["category"] {
   if (item.kind === "glass") return "Glass";
   if (item.kind === "internal_people") return "Person";
@@ -672,6 +684,11 @@ function App() {
   const [loads, setLoads] = useState<Loads | null>(null);
   const [worstCase, setWorstCase] = useState<WorstCaseResult | null>(null);
   const [assemblies, setAssemblies] = useState<AssemblyRow[]>([]);
+  const [assemblySearch, setAssemblySearch] = useState("");
+  const [assemblyLibraryLoading, setAssemblyLibraryLoading] = useState(false);
+  const [assemblyLibraryError, setAssemblyLibraryError] = useState<string | null>(null);
+  const [assemblyTargetIndex, setAssemblyTargetIndex] = useState(0);
+  const [savingAssemblyKey, setSavingAssemblyKey] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
   const [collapsedRooms, setCollapsedRooms] = useState<number[]>(() =>
     initialProject.rooms.length === 1 ? [] : initialProject.rooms.map((_, i) => i)
@@ -778,14 +795,18 @@ function App() {
   const hasAssignmentChoices = project.units.length > 1 || project.zones.length > 0;
   const hasRoomData = project.rooms.some((room) => room.name || room.floor_area || room.ceiling_height)
     || project.components.length > 0;
+  const assemblyTargetDefinition = project.type_definitions[assemblyTargetIndex] ?? project.type_definitions[0];
+  const filteredAssemblies = useMemo(() => {
+    const query = assemblySearch.trim().toLowerCase();
+    return assemblies.filter((assembly) => {
+      const matchesTargetCategory = !assemblyTargetDefinition || codeCategory(assembly.code) === assemblyTargetDefinition.category;
+      const matchesQuery = !query || `${assembly.code} ${assembly.label} ${assembly.u_value ?? ""} ${assembly.shgc ?? ""}`.toLowerCase().includes(query);
+      return matchesTargetCategory && matchesQuery;
+    });
+  }, [assemblies, assemblySearch, assemblyTargetDefinition]);
 
   useEffect(() => {
-    fetch("/api/assemblies")
-      .then((response) => response.json())
-      .then((rows: AssemblyRow[]) => {
-        setAssemblies(rows);
-      })
-      .catch(() => setAssemblies([]));
+    loadAssemblyLibrary();
   }, []);
 
   useEffect(() => {
@@ -905,6 +926,7 @@ function App() {
       ...current,
       type_definitions: [...current.type_definitions, { code: "", category: "Wall", u_value: undefined, shgc: null, description: "" }]
     }));
+    setAssemblyTargetIndex(project.type_definitions.length);
     setLoads(null);
     setWorstCase(null);
     setIsDirty(true);
@@ -929,10 +951,83 @@ function App() {
       ...current,
       type_definitions: current.type_definitions.filter((_definition, definitionIndex) => definitionIndex !== index)
     }));
+    setAssemblyTargetIndex((currentIndex) => Math.max(0, Math.min(currentIndex > index ? currentIndex - 1 : currentIndex, project.type_definitions.length - 2)));
     setLoads(null);
     setWorstCase(null);
     setIsDirty(true);
     setValidationMessage(null);
+  }
+
+  function useLibraryAssembly(row: AssemblyRow) {
+    setProject((current) => {
+      const targetIndex = current.type_definitions[assemblyTargetIndex] ? assemblyTargetIndex : 0;
+      const target = current.type_definitions[targetIndex];
+      if (!target) return current;
+      return {
+        ...current,
+        type_definitions: current.type_definitions.map((currentDefinition, definitionIndex) =>
+          definitionIndex === targetIndex
+            ? {
+                ...currentDefinition,
+                u_value: row.u_value ?? undefined,
+                shgc: currentDefinition.category === "Glass" ? row.shgc ?? null : null,
+                description: row.label,
+              }
+            : currentDefinition
+        )
+      };
+    });
+    setLoads(null);
+    setWorstCase(null);
+    setIsDirty(true);
+    setValidationMessage(null);
+  }
+
+  async function loadAssemblyLibrary() {
+    setAssemblyLibraryLoading(true);
+    setAssemblyLibraryError(null);
+    try {
+      const response = await fetch("/api/assemblies");
+      if (!response.ok) throw new Error("Could not load component library.");
+      const rows: AssemblyRow[] = await response.json();
+      setAssemblies(rows);
+    } catch (error) {
+      setAssemblies([]);
+      setAssemblyLibraryError(error instanceof Error ? error.message : "Could not load component library.");
+    } finally {
+      setAssemblyLibraryLoading(false);
+    }
+  }
+
+  async function saveTypeDefinitionToLibrary(definition: TypeDefinition, index: number) {
+    const label = compactTypeDescription(definition.description);
+    if (!label) {
+      setAssemblyLibraryError("Description is required before saving to the shared library.");
+      return;
+    }
+    const slotCode = definition.code.trim().toUpperCase();
+    const libraryCode = libraryCodeForCategory(definition.category);
+    const saveKey = `${index}-${slotCode}`;
+    setSavingAssemblyKey(saveKey);
+    setAssemblyLibraryError(null);
+    try {
+      const response = await fetch("/api/assemblies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: libraryCode,
+          u_value: definition.u_value,
+          shgc: definition.category === "Glass" ? definition.shgc ?? null : null,
+          label,
+        }),
+      });
+      if (!response.ok) throw new Error("Could not save this component to the shared library.");
+      await loadAssemblyLibrary();
+    } catch (error) {
+      setAssemblyLibraryError(error instanceof Error ? error.message : "Could not save this component to the shared library.");
+    } finally {
+      setSavingAssemblyKey(null);
+    }
   }
 
   function addUnit() {
@@ -2114,39 +2209,93 @@ function App() {
             <h3>Envelope Assemblies</h3>
             <div className="button-row">
               {!collapsedPanels.has("type-inputs") && <button onClick={addTypeDefinition}>Add Type</button>}
+              {!collapsedPanels.has("type-inputs") && <button onClick={loadAssemblyLibrary} disabled={assemblyLibraryLoading}>{assemblyLibraryLoading ? "Loading..." : "Refresh Library"}</button>}
               <button className="panel-toggle" onClick={() => togglePanel("type-inputs")}>{collapsedPanels.has("type-inputs") ? "Show ▾" : "Hide ▴"}</button>
             </div>
           </div>
-          {!collapsedPanels.has("type-inputs") && <div className="component-table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Code</th>
-                  <th>Category</th>
-                  <th>U-value</th>
-                  <th>SHGC</th>
-                  <th>Description</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {project.type_definitions.map((definition, index) => (
-                  <tr key={index}>
-                    <td><input value={definition.code} onChange={(event) => updateTypeDefinition(index, { code: event.target.value.toUpperCase() })} /></td>
-                    <td>
-                      <select value={definition.category} onChange={(event) => updateTypeDefinition(index, { category: event.target.value as TypeCategory })}>
-                        {typeCategories.map((category) => <option key={category} value={category}>{category}</option>)}
-                      </select>
-                    </td>
-                    <td><input type="number" step="0.001" value={inputNumber(definition.u_value)} onChange={(event) => updateTypeDefinition(index, { u_value: toNumber(event.target.value) })} /></td>
-                    <td><input type="number" step="0.001" value={inputNumber(definition.shgc ?? undefined)} onChange={(event) => updateTypeDefinition(index, { shgc: toNumber(event.target.value) })} readOnly={definition.category !== "Glass"} /></td>
-                    <td><input value={definition.description ?? ""} onChange={(event) => updateTypeDefinition(index, { description: event.target.value })} /></td>
-                    <td><button onClick={() => removeTypeDefinition(index)}>Remove</button></td>
-                  </tr>
+          {!collapsedPanels.has("type-inputs") && <>
+            <div className="assembly-library-panel">
+              <div className="assembly-library-head">
+                <label>Shared library search
+                  <input
+                    value={assemblySearch}
+                    placeholder="Search description, U-value, SHGC"
+                    onChange={(event) => setAssemblySearch(event.target.value)}
+                  />
+                </label>
+                <label>Apply to slot
+                  <select value={assemblyTargetIndex} onChange={(event) => setAssemblyTargetIndex(Number(event.target.value))}>
+                    {project.type_definitions.map((definition, index) => (
+                      <option key={`${definition.code}-${index}`} value={index}>
+                        {(definition.code || `Type ${index + 1}`).toUpperCase()} - {definition.category}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span>{assemblies.length} saved</span>
+              </div>
+              {assemblyTargetDefinition && (
+                <p className="assembly-library-hint">
+                  Applying a library item updates {assemblyTargetDefinition.code || "the selected slot"} values and description while keeping the project code unchanged.
+                </p>
+              )}
+              {assemblyLibraryError && <p className="modal-error">{assemblyLibraryError}</p>}
+              <div className="assembly-library-list">
+                {filteredAssemblies.slice(0, 8).map((assembly) => (
+                  <div className="assembly-library-row" key={assemblyRowKey(assembly)}>
+                    <strong>{assembly.code}</strong>
+                    <span>{assembly.label}</span>
+                    <em>U {assembly.u_value ?? "-"}{assembly.shgc != null ? ` / SHGC ${assembly.shgc}` : ""}</em>
+                    <button onClick={() => useLibraryAssembly(assembly)}>
+                      Apply to {assemblyTargetDefinition?.code || "Slot"}
+                    </button>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>}
+                {!filteredAssemblies.length && <p className="modal-empty">{assemblyLibraryLoading ? "Loading library..." : "No shared components found."}</p>}
+              </div>
+            </div>
+            <div className="component-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Code</th>
+                    <th>Category</th>
+                    <th>U-value</th>
+                    <th>SHGC</th>
+                    <th>Description</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {project.type_definitions.map((definition, index) => {
+                    const saveKey = `${index}-${definition.code.trim().toUpperCase()}`;
+                    return (
+                      <tr key={index}>
+                        <td><input value={definition.code} onChange={(event) => updateTypeDefinition(index, { code: event.target.value.toUpperCase() })} /></td>
+                        <td>
+                          <select value={definition.category} onChange={(event) => updateTypeDefinition(index, { category: event.target.value as TypeCategory })}>
+                            {typeCategories.map((category) => <option key={category} value={category}>{category}</option>)}
+                          </select>
+                        </td>
+                        <td><input type="number" step="0.001" value={inputNumber(definition.u_value)} onChange={(event) => updateTypeDefinition(index, { u_value: toNumber(event.target.value) })} /></td>
+                        <td><input type="number" step="0.001" value={inputNumber(definition.shgc ?? undefined)} onChange={(event) => updateTypeDefinition(index, { shgc: toNumber(event.target.value) })} readOnly={definition.category !== "Glass"} /></td>
+                        <td><input value={definition.description ?? ""} onChange={(event) => updateTypeDefinition(index, { description: event.target.value })} /></td>
+                        <td>
+                          <div className="assembly-row-actions">
+                            <button onClick={() => setAssemblyTargetIndex(index)}>Select Slot</button>
+                            <button onClick={() => saveTypeDefinitionToLibrary(definition, index)} disabled={savingAssemblyKey === saveKey}>
+                              {savingAssemblyKey === saveKey ? "Saving..." : "Save to Library"}
+                            </button>
+                            <button onClick={() => removeTypeDefinition(index)}>Remove</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>}
         </section>
 
         <section id="section-units-zones" data-section="units-zones" className="panel">
