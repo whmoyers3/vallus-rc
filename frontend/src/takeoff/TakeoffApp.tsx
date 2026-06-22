@@ -263,6 +263,44 @@ function wallAreaByDirection(room: TakeoffRectRoom) {
   return walls;
 }
 
+function componentAreaBySurfaceAndDirection(room: TakeoffRectRoom, surface: TakeoffRoomComponent["surface"]) {
+  const totals = new Map<(typeof directionOptions)[number], number>();
+  for (const component of roomComponents(room)) {
+    if (component.surface !== surface || !isCompassDirection(component.direction)) continue;
+    totals.set(component.direction, (totals.get(component.direction) ?? 0) + Math.max(0, component.area || 0));
+  }
+  return totals;
+}
+
+function roomWallReconciliation(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  const suggested = new Map(roomExteriorWallSuggestions(floor, room).map((entry) => [entry.direction, entry.area]));
+  const assignedWalls = wallAreaByDirection(room);
+  const windows = componentAreaBySurfaceAndDirection(room, "glass");
+  const doors = componentAreaBySurfaceAndDirection(room, "door");
+  return directionOptions
+    .map((direction) => {
+      const assignedGross = assignedWalls.get(direction) ?? 0;
+      const suggestedGross = suggested.get(direction) ?? 0;
+      const glassArea = windows.get(direction) ?? 0;
+      const doorArea = doors.get(direction) ?? 0;
+      const openingArea = glassArea + doorArea;
+      const grossArea = assignedGross > 0 ? assignedGross : suggestedGross;
+      return {
+        direction,
+        assignedGross,
+        suggestedGross,
+        grossArea,
+        glassArea,
+        doorArea,
+        openingArea,
+        netArea: Math.max(0, grossArea - openingArea),
+        isAssigned: assignedGross > 0,
+        isOverOpened: openingArea > grossArea + 0.5,
+      };
+    })
+    .filter((entry) => entry.grossArea > 0 || entry.openingArea > 0);
+}
+
 function payloadComponentsForRoom(room: TakeoffRectRoom) {
   const remainingOpenings = new Map(openingAreaByDirection(room));
   return roomComponents(room)
@@ -2950,36 +2988,86 @@ export function TakeoffApp() {
                 {(() => {
                   const suggestions = roomExteriorWallSuggestions(floor, selectedRoom);
                   const exteriorDirections = suggestions.map((suggestion) => suggestion.direction);
+                  const reconciliation = roomWallReconciliation(floor, selectedRoom);
+                  const totals = reconciliation.reduce(
+                    (sum, entry) => ({
+                      grossArea: sum.grossArea + entry.grossArea,
+                      glassArea: sum.glassArea + entry.glassArea,
+                      doorArea: sum.doorArea + entry.doorArea,
+                      netArea: sum.netArea + entry.netArea,
+                    }),
+                    { grossArea: 0, glassArea: 0, doorArea: 0, netArea: 0 },
+                  );
                   return (
-                    <div className="takeoff-wall-suggestions">
-                      <div className="takeoff-component-head">
-                        <h3>Suggested Exterior Walls</h3>
-                        <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
-                          {scheduleOptionsBySurface.wall.map((option) => (
-                            <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                          ))}
-                        </select>
+                    <>
+                      <div className="takeoff-wall-suggestions">
+                        <div className="takeoff-component-head">
+                          <h3>Suggested Exterior Walls</h3>
+                          <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
+                            {scheduleOptionsBySurface.wall.map((option) => (
+                              <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {suggestions.length ? suggestions.map((suggestion) => {
+                          const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
+                            component.direction === suggestion.direction && Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
+                          );
+                          return (
+                            <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
+                              <span>
+                                Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} wall
+                                <small>{Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft</small>
+                              </span>
+                              <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, suggestedWallAssembly)}>
+                                {approved ? "Approved" : "Apply"}
+                              </button>
+                            </div>
+                          );
+                        }) : (
+                          <p className="takeoff-muted">No exterior/load-bearing wall exposure detected for this room.</p>
+                        )}
+                        <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
                       </div>
-                      {suggestions.length ? suggestions.map((suggestion) => {
-                        const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
-                          component.direction === suggestion.direction && Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
-                        );
-                        return (
-                          <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
-                            <span>
-                              Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} wall
-                              <small>{Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft</small>
+
+                      <div className="takeoff-wall-reconciliation">
+                        <div className="takeoff-component-head">
+                          <h3>Wall / Opening Reconciliation</h3>
+                          {reconciliation.length > 0 && (
+                            <span className="takeoff-component-total">
+                              Net {Math.round(totals.netArea)} sf
                             </span>
-                            <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, suggestedWallAssembly)}>
-                              {approved ? "Approved" : "Apply"}
-                            </button>
-                          </div>
-                        );
-                      }) : (
-                        <p className="takeoff-muted">No exterior/load-bearing wall exposure detected for this room.</p>
-                      )}
-                      <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
-                    </div>
+                          )}
+                        </div>
+                        {reconciliation.length ? (
+                          <>
+                            <div className="takeoff-wall-reconciliation-total">
+                              <span>Gross <strong>{Math.round(totals.grossArea)} sf</strong></span>
+                              <span>Glass <strong>{Math.round(totals.glassArea)} sf</strong></span>
+                              <span>Doors <strong>{Math.round(totals.doorArea)} sf</strong></span>
+                              <span>Net wall <strong>{Math.round(totals.netArea)} sf</strong></span>
+                            </div>
+                            {reconciliation.map((entry) => (
+                              <div key={entry.direction} className={`takeoff-wall-reconciliation-row ${entry.isOverOpened ? "takeoff-wall-reconciliation-row--error" : ""}`}>
+                                <div>
+                                  <strong>{entry.direction} wall</strong>
+                                  <small>
+                                    {entry.isAssigned ? "Assigned gross" : "Suggested gross"} {Math.round(entry.grossArea)} sf
+                                    {!entry.isAssigned && entry.suggestedGross > 0 ? " · apply wall component before export" : ""}
+                                  </small>
+                                </div>
+                                <span>{Math.round(entry.grossArea)} sf gross</span>
+                                <span>- {Math.round(entry.glassArea)} sf glass</span>
+                                <span>- {Math.round(entry.doorArea)} sf door</span>
+                                <strong>= {Math.round(entry.netArea)} sf net</strong>
+                              </div>
+                            ))}
+                          </>
+                        ) : (
+                          <p className="takeoff-muted">Apply exterior wall areas or place openings to populate this room's reconciliation.</p>
+                        )}
+                      </div>
+                    </>
                   );
                 })()}
                 <label>

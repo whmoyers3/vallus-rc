@@ -1041,6 +1041,64 @@ button.toolbar-primary:hover {
   color: #697786;
 }
 
+.takeoff-wall-reconciliation {
+  border: 1px solid #dde6ed;
+  border-radius: 8px;
+  margin: 10px 0;
+  padding: 10px;
+}
+
+.takeoff-wall-reconciliation-total {
+  background: #f4f8fb;
+  border: 1px solid #dde6ed;
+  border-radius: 6px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 8px;
+  padding: 8px;
+}
+
+.takeoff-wall-reconciliation-total span {
+  color: #657384;
+  font-size: 11px;
+}
+
+.takeoff-wall-reconciliation-total strong {
+  color: #1f2933;
+  display: block;
+  font-size: 13px;
+}
+
+.takeoff-wall-reconciliation-row {
+  align-items: center;
+  border-top: 1px solid #eef3f6;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(98px, 1.2fr) repeat(4, minmax(58px, auto));
+  padding: 8px 0;
+}
+
+.takeoff-wall-reconciliation-row div {
+  display: grid;
+  gap: 2px;
+}
+
+.takeoff-wall-reconciliation-row small,
+.takeoff-wall-reconciliation-row span {
+  color: #697786;
+  font-size: 11px;
+}
+
+.takeoff-wall-reconciliation-row--error {
+  color: #a13939;
+}
+
+.takeoff-wall-reconciliation-row--error small,
+.takeoff-wall-reconciliation-row--error span {
+  color: #a13939;
+}
+
 .takeoff-component-list {
   display: flex;
   flex-direction: column;
