@@ -659,6 +659,14 @@ function libraryCodeForCategory(category: TakeoffComponentCategory) {
   return "W";
 }
 
+function nextScheduleSlotCode(category: TakeoffComponentCategory, schedule: TakeoffComponentDefinition[]) {
+  const prefix = libraryCodeForCategory(category);
+  const used = new Set(schedule.map((component) => component.code.trim().toUpperCase()));
+  let index = 1;
+  while (used.has(`${prefix}${index}`)) index += 1;
+  return `${prefix}${index}`;
+}
+
 function scheduleIdFor(component: Pick<TakeoffComponentDefinition, "code" | "uValue" | "shgc" | "description">) {
   return `${component.code}-${component.uValue ?? "x"}-${component.shgc ?? "x"}-${component.description}`.replace(/\s+/g, "-");
 }
@@ -680,6 +688,7 @@ export function TakeoffApp() {
   const [componentScheduleOpen, setComponentScheduleOpen] = useState(false);
   const [componentSearch, setComponentSearch] = useState("");
   const [componentScheduleTargetIndex, setComponentScheduleTargetIndex] = useState(0);
+  const [pendingComponentAssignment, setPendingComponentAssignment] = useState<TakeoffComponentDefinition | null>(null);
   const [libraryComponents, setLibraryComponents] = useState<TakeoffComponentDefinition[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [componentDraft, setComponentDraft] = useState<Omit<TakeoffComponentDefinition, "id" | "source">>({
@@ -731,13 +740,16 @@ export function TakeoffApp() {
   const selectedRoom = floor.rooms.find((room) => room.id === selectedRoomId) ?? null;
   const floorScheduleOptions = componentSchedule.filter((component) => component.category === "Floor");
   const ceilingScheduleOptions = componentSchedule.filter((component) => component.category === "Ceiling");
-  const componentScheduleTarget = componentSchedule[componentScheduleTargetIndex] ?? componentSchedule[0];
   const filteredLibraryComponents = libraryComponents.filter((component) => {
     const needle = componentSearch.trim().toLowerCase();
-    const matchesTarget = !componentScheduleTarget || component.category === componentScheduleTarget.category;
     const matchesSearch = !needle || `${component.code} ${component.description} ${component.category}`.toLowerCase().includes(needle);
-    return matchesTarget && matchesSearch;
+    return matchesSearch;
   });
+  const pendingComponentSlots = pendingComponentAssignment
+    ? componentSchedule
+        .map((component, index) => ({ component, index }))
+        .filter(({ component }) => component.category === pendingComponentAssignment.category)
+    : [];
   const bounds = footprintBounds(floor);
   const pendingScaleFactor = calibrationFactor(floor.calibration.lines);
   const areaDeltaPct = floor.calibration.expectedArea && computedFootprintArea > 0
@@ -838,11 +850,23 @@ export function TakeoffApp() {
     }));
   }
 
-  function applyComponentToScheduleSlot(component: TakeoffComponentDefinition) {
+  function applyComponentToScheduleSlot(component: TakeoffComponentDefinition, target: number | "new" = componentScheduleTargetIndex) {
     setComponentSchedule((current) => {
-      const targetIndex = current[componentScheduleTargetIndex] ? componentScheduleTargetIndex : 0;
-      const target = current[targetIndex];
-      if (!target) return current;
+      if (target === "new") {
+        return [
+          ...current,
+          {
+            ...component,
+            id: nextId(`schedule-${component.category.toLowerCase()}`),
+            code: nextScheduleSlotCode(component.category, current),
+            shgc: component.category === "Glass" ? component.shgc ?? null : null,
+            source: component.source,
+          }
+        ];
+      }
+      const targetIndex = current[target] ? target : 0;
+      const targetComponent = current[targetIndex];
+      if (!targetComponent) return current;
       return current.map((existing, index) => (
         index === targetIndex
           ? {
@@ -855,7 +879,8 @@ export function TakeoffApp() {
           : existing
       ));
     });
-    setMessage(`${componentScheduleTarget?.code ?? "Selected slot"} updated from the component library.`);
+    setPendingComponentAssignment(null);
+    setMessage("Component schedule updated.");
   }
 
   async function loadComponentLibrary() {
@@ -889,7 +914,7 @@ export function TakeoffApp() {
   function componentFromDraft(source: TakeoffComponentDefinition["source"]): TakeoffComponentDefinition {
     const code = source === "library"
       ? libraryCodeForCategory(componentDraft.category)
-      : (componentScheduleTarget?.code ?? componentDraft.code).toUpperCase().trim();
+      : (componentSchedule[componentScheduleTargetIndex]?.code ?? componentDraft.code).toUpperCase().trim();
     return {
       id: nextId(`schedule-${code || "component"}`),
       code,
@@ -928,9 +953,9 @@ export function TakeoffApp() {
         }),
       });
       if (!response.ok) throw new Error(await response.text());
-      applyComponentToScheduleSlot({ ...component, code: componentScheduleTarget?.code ?? component.code });
+      applyComponentToScheduleSlot({ ...component, code: componentSchedule[componentScheduleTargetIndex]?.code ?? component.code });
       await loadComponentLibrary();
-      setMessage(`${componentScheduleTarget?.code ?? "Selected slot"} values saved to the component library.`);
+      setMessage(`${componentSchedule[componentScheduleTargetIndex]?.code ?? "Selected slot"} values saved to the component library.`);
     } catch (error) {
       setMessage(error instanceof Error ? `Could not save component: ${error.message}` : "Could not save component.");
     }
@@ -2437,19 +2462,9 @@ export function TakeoffApp() {
                   <h3>Library</h3>
                   <button onClick={loadComponentLibrary}>{libraryLoading ? "Loading..." : "Refresh"}</button>
                 </div>
-                <label>
-                  Apply to slot
-                  <select value={componentScheduleTargetIndex} onChange={(event) => setComponentScheduleTargetIndex(Number(event.target.value))}>
-                    {componentSchedule.map((component, index) => (
-                      <option key={`${component.code}-${index}`} value={index}>{component.code} - {component.category}</option>
-                    ))}
-                  </select>
-                </label>
-                {componentScheduleTarget && (
-                  <p className="takeoff-muted">
-                    Applying a library item updates {componentScheduleTarget.code} values and description while keeping the project code unchanged.
-                  </p>
-                )}
+                <p className="takeoff-muted">
+                  Click Use to choose an existing project slot or create the next available slot.
+                </p>
                 <input
                   className="takeoff-schedule-search"
                   value={componentSearch}
@@ -2459,14 +2474,12 @@ export function TakeoffApp() {
                 <div className="takeoff-schedule-list">
                   {filteredLibraryComponents.map((component) => (
                     <div key={component.id} className="takeoff-schedule-row">
-                      <strong>{component.code}</strong>
+                      <strong>{component.category}</strong>
                       <span>{component.category}</span>
                       <span>U {component.uValue ?? "-"}</span>
                       <span>{component.category === "Glass" ? `SHGC ${component.shgc ?? "-"}` : ""}</span>
                       <em>{component.description}</em>
-                      <button onClick={() => applyComponentToScheduleSlot(component)}>
-                        Apply to {componentScheduleTarget?.code ?? "Slot"}
-                      </button>
+                      <button onClick={() => setPendingComponentAssignment(component)}>Use</button>
                     </div>
                   ))}
                   {!libraryLoading && filteredLibraryComponents.length === 0 && (
@@ -2517,6 +2530,30 @@ export function TakeoffApp() {
                 <button className="toolbar-primary" onClick={saveDraftComponentToLibrary}>Save To Library</button>
               </div>
             </section>
+          </div>
+        </div>
+      )}
+      {pendingComponentAssignment && (
+        <div className="modal-backdrop open-dialog-backdrop" onClick={() => setPendingComponentAssignment(null)}>
+          <div className="modal assembly-assign-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Assign Component</h2>
+              <button className="modal-close" onClick={() => setPendingComponentAssignment(null)}>x</button>
+            </div>
+            <p className="takeoff-muted">
+              {pendingComponentAssignment.category} · U {pendingComponentAssignment.uValue ?? "-"}
+              {pendingComponentAssignment.shgc != null ? ` / SHGC ${pendingComponentAssignment.shgc}` : ""} · {pendingComponentAssignment.description}
+            </p>
+            <div className="assembly-assign-list">
+              {pendingComponentSlots.map(({ component, index }) => (
+                <button key={`${component.code}-${index}`} onClick={() => applyComponentToScheduleSlot(pendingComponentAssignment, index)}>
+                  Use {component.code} - {component.description || component.category}
+                </button>
+              ))}
+              <button className="toolbar-primary" onClick={() => applyComponentToScheduleSlot(pendingComponentAssignment, "new")}>
+                Create {nextScheduleSlotCode(pendingComponentAssignment.category, componentSchedule)}
+              </button>
+            </div>
           </div>
         </div>
       )}

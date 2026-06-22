@@ -1734,6 +1734,21 @@ label {
   gap: 6px;
 }
 
+.assembly-assign-modal {
+  max-width: 560px;
+}
+
+.assembly-assign-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.assembly-assign-list button {
+  justify-content: flex-start;
+  text-align: left;
+}
+
 /* ── Load summary + calculated results ────────────────────────── */
 .load-summary-wrap {
   overflow-x: auto;

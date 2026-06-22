@@ -626,6 +626,14 @@ function libraryCodeForCategory(category: TypeCategory): string {
   return "W";
 }
 
+function nextSlotCode(category: TypeCategory, definitions: TypeDefinition[]): string {
+  const prefix = libraryCodeForCategory(category);
+  const used = new Set(definitions.map((definition) => definition.code.trim().toUpperCase()));
+  let index = 1;
+  while (used.has(`${prefix}${index}`)) index += 1;
+  return `${prefix}${index}`;
+}
+
 function componentCategory(item: { kind: ComponentKind; assembly?: string }): ComponentDraft["category"] {
   if (item.kind === "glass") return "Glass";
   if (item.kind === "internal_people") return "Person";
@@ -688,6 +696,7 @@ function App() {
   const [assemblyLibraryLoading, setAssemblyLibraryLoading] = useState(false);
   const [assemblyLibraryError, setAssemblyLibraryError] = useState<string | null>(null);
   const [assemblyTargetIndex, setAssemblyTargetIndex] = useState(0);
+  const [pendingAssemblyAssignment, setPendingAssemblyAssignment] = useState<AssemblyRow | null>(null);
   const [savingAssemblyKey, setSavingAssemblyKey] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
   const [collapsedRooms, setCollapsedRooms] = useState<number[]>(() =>
@@ -795,15 +804,19 @@ function App() {
   const hasAssignmentChoices = project.units.length > 1 || project.zones.length > 0;
   const hasRoomData = project.rooms.some((room) => room.name || room.floor_area || room.ceiling_height)
     || project.components.length > 0;
-  const assemblyTargetDefinition = project.type_definitions[assemblyTargetIndex] ?? project.type_definitions[0];
   const filteredAssemblies = useMemo(() => {
     const query = assemblySearch.trim().toLowerCase();
     return assemblies.filter((assembly) => {
-      const matchesTargetCategory = !assemblyTargetDefinition || codeCategory(assembly.code) === assemblyTargetDefinition.category;
       const matchesQuery = !query || `${assembly.code} ${assembly.label} ${assembly.u_value ?? ""} ${assembly.shgc ?? ""}`.toLowerCase().includes(query);
-      return matchesTargetCategory && matchesQuery;
+      return matchesQuery;
     });
-  }, [assemblies, assemblySearch, assemblyTargetDefinition]);
+  }, [assemblies, assemblySearch]);
+  const pendingAssemblyCategory = pendingAssemblyAssignment ? codeCategory(pendingAssemblyAssignment.code) : null;
+  const pendingAssemblySlots = pendingAssemblyCategory
+    ? project.type_definitions
+        .map((definition, index) => ({ definition, index }))
+        .filter(({ definition }) => definition.category === pendingAssemblyCategory)
+    : [];
 
   useEffect(() => {
     loadAssemblyLibrary();
@@ -958,15 +971,28 @@ function App() {
     setValidationMessage(null);
   }
 
-  function useLibraryAssembly(row: AssemblyRow) {
+  function applyLibraryAssembly(row: AssemblyRow, target: number | "new") {
     setProject((current) => {
-      const targetIndex = current.type_definitions[assemblyTargetIndex] ? assemblyTargetIndex : 0;
-      const target = current.type_definitions[targetIndex];
-      if (!target) return current;
+      const category = codeCategory(row.code);
+      if (target === "new") {
+        return {
+          ...current,
+          type_definitions: [
+            ...current.type_definitions,
+            {
+              code: nextSlotCode(category, current.type_definitions),
+              category,
+              u_value: row.u_value ?? undefined,
+              shgc: category === "Glass" ? row.shgc ?? null : null,
+              description: row.label,
+            }
+          ]
+        };
+      }
       return {
         ...current,
         type_definitions: current.type_definitions.map((currentDefinition, definitionIndex) =>
-          definitionIndex === targetIndex
+          definitionIndex === target
             ? {
                 ...currentDefinition,
                 u_value: row.u_value ?? undefined,
@@ -977,6 +1003,7 @@ function App() {
         )
       };
     });
+    setPendingAssemblyAssignment(null);
     setLoads(null);
     setWorstCase(null);
     setIsDirty(true);
@@ -2223,32 +2250,19 @@ function App() {
                     onChange={(event) => setAssemblySearch(event.target.value)}
                   />
                 </label>
-                <label>Apply to slot
-                  <select value={assemblyTargetIndex} onChange={(event) => setAssemblyTargetIndex(Number(event.target.value))}>
-                    {project.type_definitions.map((definition, index) => (
-                      <option key={`${definition.code}-${index}`} value={index}>
-                        {(definition.code || `Type ${index + 1}`).toUpperCase()} - {definition.category}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 <span>{assemblies.length} saved</span>
               </div>
-              {assemblyTargetDefinition && (
-                <p className="assembly-library-hint">
-                  Applying a library item updates {assemblyTargetDefinition.code || "the selected slot"} values and description while keeping the project code unchanged.
-                </p>
-              )}
+              <p className="assembly-library-hint">
+                Click Use to choose a project slot like W1, W2, or G1, or create the next available slot.
+              </p>
               {assemblyLibraryError && <p className="modal-error">{assemblyLibraryError}</p>}
               <div className="assembly-library-list">
                 {filteredAssemblies.slice(0, 8).map((assembly) => (
                   <div className="assembly-library-row" key={assemblyRowKey(assembly)}>
-                    <strong>{assembly.code}</strong>
+                    <strong>{codeCategory(assembly.code)}</strong>
                     <span>{assembly.label}</span>
                     <em>U {assembly.u_value ?? "-"}{assembly.shgc != null ? ` / SHGC ${assembly.shgc}` : ""}</em>
-                    <button onClick={() => useLibraryAssembly(assembly)}>
-                      Apply to {assemblyTargetDefinition?.code || "Slot"}
-                    </button>
+                    <button onClick={() => setPendingAssemblyAssignment(assembly)}>Use</button>
                   </div>
                 ))}
                 {!filteredAssemblies.length && <p className="modal-empty">{assemblyLibraryLoading ? "Loading library..." : "No shared components found."}</p>}
@@ -2929,6 +2943,31 @@ function App() {
                 ))}
               </div>
             </>)}
+          </div>
+        </div>
+      )}
+
+      {pendingAssemblyAssignment && (
+        <div className="modal-backdrop" onClick={() => setPendingAssemblyAssignment(null)}>
+          <div className="modal assembly-assign-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Assign Component</h2>
+              <button className="modal-close" onClick={() => setPendingAssemblyAssignment(null)}>x</button>
+            </div>
+            <p className="assembly-library-hint">
+              {codeCategory(pendingAssemblyAssignment.code)} · U {pendingAssemblyAssignment.u_value ?? "-"}
+              {pendingAssemblyAssignment.shgc != null ? ` / SHGC ${pendingAssemblyAssignment.shgc}` : ""} · {pendingAssemblyAssignment.label}
+            </p>
+            <div className="assembly-assign-list">
+              {pendingAssemblySlots.map(({ definition, index }) => (
+                <button key={`${definition.code}-${index}`} onClick={() => applyLibraryAssembly(pendingAssemblyAssignment, index)}>
+                  Use {definition.code || `Type ${index + 1}`} - {compactTypeDescription(definition.description) || definition.category}
+                </button>
+              ))}
+              <button className="toolbar-primary" onClick={() => applyLibraryAssembly(pendingAssemblyAssignment, "new")}>
+                Create {pendingAssemblyCategory ? nextSlotCode(pendingAssemblyCategory, project.type_definitions) : "New Slot"}
+              </button>
+            </div>
           </div>
         </div>
       )}
