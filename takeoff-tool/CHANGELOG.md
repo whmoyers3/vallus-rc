@@ -308,6 +308,8 @@ Implemented:
 - Prevented dragged room shapes from filling polygon holes over existing rooms, avoiding overlap regressions.
 - Swapped the takeoff workspace layout so drawing tools, adjacent spaces, openings, and validation live in the right rail, while room summary tiles and the expanded Room Profile editor sit directly beneath the plan grid.
 - Added a room-summary metric toggle for floor area, ceiling area, net wall area, or glass area.
+- Improved dragged-room clipping so oversized rectangles can start over existing rooms and create only the currently uncovered conditioned-area section or sections.
+- Synced the selected unassigned-region state after room deletion/reshaping so validation and highlighted open-area totals refresh against current geometry.
 
 Still pending:
 

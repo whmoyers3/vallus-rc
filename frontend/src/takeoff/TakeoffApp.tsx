@@ -169,9 +169,77 @@ function clipPolygonToPoints(polygon: Polygon) {
   return ring.slice(0, -1).map(([x, y]) => ({ x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) }));
 }
 
+function clipRingToPoints(ring: Ring) {
+  return ring.slice(0, -1).map(([x, y]) => ({ x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) }));
+}
+
+function clipPolygonArea(polygon: Polygon) {
+  const [outer, ...holes] = polygon;
+  const outerArea = outer ? polygonArea(clipRingToPoints(outer)) : 0;
+  const holeArea = holes.reduce((sum, ring) => sum + polygonArea(clipRingToPoints(ring)), 0);
+  return Math.max(0, outerArea - holeArea);
+}
+
+function clipRingBounds(ring: Ring) {
+  return polygonBounds(clipRingToPoints(ring));
+}
+
+function simplePolygonsFromClipPolygon(polygon: Polygon) {
+  if (polygon.length <= 1) return clipPolygonArea(polygon) > 0.5 ? [polygon] : [];
+  const [outer, ...holes] = polygon;
+  if (!outer) return [];
+  const outerPoints = clipRingToPoints(outer);
+  const holePoints = holes.map(clipRingToPoints);
+  const outerBounds = polygonBounds(outerPoints);
+  const xCuts = new Set([outerBounds.x, outerBounds.x + outerBounds.width]);
+  const yCuts = new Set([outerBounds.y, outerBounds.y + outerBounds.depth]);
+
+  for (const hole of holes) {
+    const bounds = clipRingBounds(hole);
+    xCuts.add(bounds.x);
+    xCuts.add(bounds.x + bounds.width);
+    yCuts.add(bounds.y);
+    yCuts.add(bounds.y + bounds.depth);
+  }
+
+  const xs = Array.from(xCuts).sort((a, b) => a - b);
+  const ys = Array.from(yCuts).sort((a, b) => a - b);
+  const pieces: Polygon[] = [];
+
+  for (let xIndex = 0; xIndex < xs.length - 1; xIndex += 1) {
+    for (let yIndex = 0; yIndex < ys.length - 1; yIndex += 1) {
+      const rect = {
+        x: xs[xIndex],
+        y: ys[yIndex],
+        width: xs[xIndex + 1] - xs[xIndex],
+        depth: ys[yIndex + 1] - ys[yIndex],
+      };
+      if (rect.width < 0.25 || rect.depth < 0.25) continue;
+      const center = { x: rect.x + rect.width / 2, y: rect.y + rect.depth / 2 };
+      if (!pointInPolygon(center, outerPoints)) continue;
+      if (holePoints.some((hole) => pointInPolygon(center, hole))) continue;
+      const candidate = pointsToClipPolygon(rectToPoints(rect));
+      const clipped = intersection([candidate], [polygon]);
+      for (const clippedPolygon of clipped) {
+        if (clippedPolygon.length === 1 && clipPolygonArea(clippedPolygon) > 0.5) pieces.push(clippedPolygon);
+      }
+    }
+  }
+
+  return pieces;
+}
+
+function simplePolygonsFromMultiPolygon(multiPolygon: MultiPolygon) {
+  return multiPolygon
+    .flatMap(simplePolygonsFromClipPolygon)
+    .map((polygon) => ({ polygon, area: clipPolygonArea(polygon) }))
+    .filter((entry) => entry.area > 0.5)
+    .sort((a, b) => b.area - a.area);
+}
+
 function largestClipPolygon(multiPolygon: MultiPolygon) {
   return multiPolygon
-    .map((polygon) => ({ polygon, area: polygonArea(clipPolygonToPoints(polygon)) }))
+    .map((polygon) => ({ polygon, area: clipPolygonArea(polygon) }))
     .filter((entry) => entry.area > 0.5 && entry.polygon.length === 1)
     .sort((a, b) => b.area - a.area)[0]?.polygon ?? null;
 }
@@ -2088,8 +2156,17 @@ export function TakeoffApp() {
     return availablePolygonFromPoints(rectToPoints(rect), ignoredRoomId);
   }
 
+  function availablePolygonsFromRect(rect: PlanRect, ignoredRoomId?: string) {
+    if (rect.width < 0.25 || rect.depth < 0.25) return [];
+    return availablePolygonsFromPoints(rectToPoints(rect), ignoredRoomId);
+  }
+
   function availablePolygonFromPoints(points: TakeoffPoint[], ignoredRoomId?: string) {
-    if (points.length < 3 || polygonArea(points) < 0.25) return null;
+    return availablePolygonsFromPoints(points, ignoredRoomId)[0]?.polygon ?? null;
+  }
+
+  function availablePolygonsFromPoints(points: TakeoffPoint[], ignoredRoomId?: string) {
+    if (points.length < 3 || polygonArea(points) < 0.25) return [];
     let available: MultiPolygon = [pointsToClipPolygon(points)];
     if (floor.exteriorPolygon.length >= 3) {
       available = intersection(available, pointsToClipPolygon(floor.exteriorPolygon));
@@ -2107,7 +2184,7 @@ export function TakeoffApp() {
     if (blockers.length > 0) {
       available = difference(available, ...blockers);
     }
-    return largestClipPolygon(available);
+    return simplePolygonsFromMultiPolygon(available);
   }
 
   function makeRoomFromPolygon(points: TakeoffPoint[]) {
@@ -2130,16 +2207,18 @@ export function TakeoffApp() {
       setMessage("Drag a larger area to create a room.");
       return;
     }
-    const availablePolygon = availablePolygonFromRect(rect);
-    if (!availablePolygon) {
+    const availablePolygons = availablePolygonsFromRect(rect);
+    if (availablePolygons.length === 0) {
       setMessage("No open room area remains after clipping to the exterior and existing rooms.");
       return;
     }
-    const points = clipPolygonToPoints(availablePolygon);
-    const room = makeRoomFromPolygon(points);
-    setFloor((current) => ({ ...current, rooms: [...current.rooms, room] }));
-    setSelectedRoomId(room.id);
-    setMessage(`${room.name} added as available polygon area.`);
+    const rooms = availablePolygons.map(({ polygon }, index) => {
+      const room = makeRoomFromPolygon(clipPolygonToPoints(polygon));
+      return availablePolygons.length > 1 ? { ...room, name: `${room.name}${String.fromCharCode(65 + index)}` } : room;
+    });
+    setFloor((current) => ({ ...current, rooms: [...current.rooms, ...rooms] }));
+    setSelectedRoomId(rooms[0].id);
+    setMessage(rooms.length === 1 ? `${rooms[0].name} added as available polygon area.` : `${rooms.length} available room sections added.`);
   }
 
   function addDraggedAdjacentSpace(rect: PlanRect) {
@@ -2667,6 +2746,16 @@ export function TakeoffApp() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [roomPolygonDraft, roomPolygonMode]);
+
+  useEffect(() => {
+    if (unassignedRegions.length === 0) {
+      if (selectedUnassignedRegionId) setSelectedUnassignedRegionId(null);
+      return;
+    }
+    if (!selectedUnassignedRegionId || !unassignedRegions.some((region) => region.id === selectedUnassignedRegionId)) {
+      setSelectedUnassignedRegionId(unassignedRegions[0].id);
+    }
+  }, [selectedUnassignedRegionId, unassignedRegions]);
 
   function roomTileMetricSummary(room: TakeoffRectRoom) {
     if (roomTileMetric === "wall") {
