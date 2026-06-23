@@ -966,7 +966,9 @@ button.toolbar-primary:hover {
 .takeoff-issue {
   border-radius: 5px;
   font-size: 12px;
+  text-align: left;
   padding: 7px 8px;
+  width: 100%;
 }
 
 .takeoff-issue--error {
@@ -979,6 +981,19 @@ button.toolbar-primary:hover {
   background: #fff5df;
   border: 1px solid #f2d19c;
   color: #815a15;
+}
+
+.takeoff-issue:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.takeoff-issue--clickable {
+  cursor: pointer;
+}
+
+.takeoff-issue--clickable:hover {
+  box-shadow: inset 0 0 0 1px currentColor;
 }
 
 .takeoff-room-list {
@@ -1074,6 +1089,19 @@ button.toolbar-primary:hover {
   color: #405060;
   font-size: 12px;
   margin: 8px 0;
+}
+
+.takeoff-ceiling-shape {
+  border: 1px solid #dde6ed;
+  border-radius: 8px;
+  margin: 10px 0;
+  padding: 8px;
+}
+
+.takeoff-ceiling-shape-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .takeoff-quick-actions {

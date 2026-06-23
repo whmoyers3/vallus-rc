@@ -51,6 +51,8 @@ export type TakeoffRectRoom = {
   depth: number;
   ceilingHeight: number;
   ceilingType?: "none" | "flat" | "vaulted";
+  ceilingLowHeight?: number;
+  ceilingPeakHeight?: number;
   floorType?: "none" | "slab" | "framed";
   ceilingLoadArea?: number;
   floorLoadArea?: number;
@@ -129,4 +131,8 @@ export type TakeoffProject = {
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
+  target?: {
+    type: "room" | "unassigned";
+    roomId?: string;
+  };
 };

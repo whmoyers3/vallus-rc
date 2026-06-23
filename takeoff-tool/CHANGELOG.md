@@ -300,7 +300,10 @@ Implemented:
 - Garage-adjacent walls are shown in room reconciliation and glass placement/editing is blocked or flagged on garage-adjacent walls.
 - Added floor and ceiling area reconciliation cards with quick actions to set full room area or intentionally mark no load.
 - Validation now respects intentional no-load floor and ceiling selections.
+- Validation warnings/errors can now be clicked to select the affected room or focus highlighted unassigned area.
+- Added first-pass room ceiling shape controls for flat/taller flat, vaulted, and no ceiling load.
 
 Still pending:
 
 - More detailed adjacent-space export treatment for attic/crawl/garage wall assemblies.
+- Vaulted ceiling sketching and richer knee-wall/gable-end geometry.

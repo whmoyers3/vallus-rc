@@ -757,11 +757,12 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
   }
 
   for (const room of floor.rooms) {
+    const roomTarget = { type: "room" as const, roomId: room.id };
     if (!insidePerimeter(room, floor)) {
-      issues.push({ severity: "error", message: `${room.name || "Room"} extends beyond the conditioned footprint.` });
+      issues.push({ severity: "error", message: `${room.name || "Room"} extends beyond the conditioned footprint.`, target: roomTarget });
     }
     if (room.ceilingHeight <= 0) {
-      issues.push({ severity: "error", message: `${room.name || "Room"} needs a ceiling height.` });
+      issues.push({ severity: "error", message: `${room.name || "Room"} needs a ceiling height.`, target: roomTarget });
     }
     const roomArea = rectArea(room);
     const floorArea = componentAreaTotal(room, "floor");
@@ -772,17 +773,17 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
     const openingAreas = openingAreaByDirection(room);
     const wallAreas = wallAreaByDirection(room);
     if (!noFloorLoad && floorArea > roomArea + 0.5) {
-      issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.` });
+      issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.`, target: roomTarget });
     }
     if (!noCeilingLoad && ceilingArea > roomArea + 0.5) {
-      issues.push({ severity: "error", message: `${room.name || "Room"} ceiling components exceed room area by ${Math.round(ceilingArea - roomArea)} sf.` });
+      issues.push({ severity: "error", message: `${room.name || "Room"} ceiling components exceed room area by ${Math.round(ceilingArea - roomArea)} sf.`, target: roomTarget });
     }
     for (const component of roomComponents(room)) {
       if (!component.assembly) {
-        issues.push({ severity: "error", message: `${room.name || "Room"} has a component with no assembly code.` });
+        issues.push({ severity: "error", message: `${room.name || "Room"} has a component with no assembly code.`, target: roomTarget });
       }
       if (componentNeedsDirection(component.surface) && !component.direction) {
-        issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${componentSurfaceLabel(component.surface).toLowerCase()} component with no direction.` });
+        issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${componentSurfaceLabel(component.surface).toLowerCase()} component with no direction.`, target: roomTarget });
       }
       if (
         componentNeedsDirection(component.surface) &&
@@ -792,10 +793,11 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
         issues.push({
           severity: "error",
           message: `${room.name || "Room"} cannot assign a ${componentSurfaceLabel(component.surface).toLowerCase()} to ${component.direction}; detected exterior/load-bearing directions: ${exteriorDirections.join(", ") || "none"}.`,
+          target: roomTarget,
         });
       }
       if (component.area <= 0) {
-        issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${component.surface} component with no area.` });
+        issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${component.surface} component with no area.`, target: roomTarget });
       }
       if (component.surface === "glass" && component.placement && isCompassDirection(component.direction)) {
         const garageAdjacent = roomExteriorSegments(floor, room)
@@ -805,7 +807,7 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
             adjacentKindsForSegment(floor, segment).includes("garage")
           );
         if (garageAdjacent) {
-          issues.push({ severity: "error", message: `${room.name || "Room"} has glass on a garage-adjacent ${component.direction} wall.` });
+          issues.push({ severity: "error", message: `${room.name || "Room"} has glass on a garage-adjacent ${component.direction} wall.`, target: roomTarget });
         }
       }
     }
@@ -815,21 +817,22 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
         issues.push({
           severity: "error",
           message: `${room.name || "Room"} has ${Math.round(openingArea)} sf of windows/doors on ${direction}, exceeding ${Math.round(wallArea)} sf of assigned wall area.`,
+          target: roomTarget,
         });
       }
     }
     if (!noFloorLoad && floorArea < roomArea - 0.5) {
-      issues.push({ severity: "warning", message: `${room.name || "Room"} floor components leave ${Math.round(roomArea - floorArea)} sf unassigned.` });
+      issues.push({ severity: "warning", message: `${room.name || "Room"} floor components leave ${Math.round(roomArea - floorArea)} sf unassigned.`, target: roomTarget });
     }
     if (!noCeilingLoad && ceilingArea < roomArea - 0.5) {
-      issues.push({ severity: "warning", message: `${room.name || "Room"} ceiling components leave ${Math.round(roomArea - ceilingArea)} sf unassigned.` });
+      issues.push({ severity: "warning", message: `${room.name || "Room"} ceiling components leave ${Math.round(roomArea - ceilingArea)} sf unassigned.`, target: roomTarget });
     }
   }
 
   for (let i = 0; i < floor.rooms.length; i += 1) {
     for (let j = i + 1; j < floor.rooms.length; j += 1) {
       if (overlaps(floor.rooms[i], floor.rooms[j])) {
-        issues.push({ severity: "error", message: `${floor.rooms[i].name} overlaps ${floor.rooms[j].name}.` });
+        issues.push({ severity: "error", message: `${floor.rooms[i].name} overlaps ${floor.rooms[j].name}.`, target: { type: "room", roomId: floor.rooms[i].id } });
       }
     }
   }
@@ -841,7 +844,7 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
       message: `No rooms are assigned yet. Conditioned footprint is ${Math.round(area)} sf.`,
     });
   } else if (area > 0 && unassigned > 1) {
-    issues.push({ severity: "warning", message: `${Math.round(unassigned)} sf of conditioned footprint remains unassigned.` });
+    issues.push({ severity: "warning", message: `${Math.round(unassigned)} sf of conditioned footprint remains unassigned.`, target: { type: "unassigned" } });
   }
 
   return issues;
@@ -1275,6 +1278,36 @@ export function TakeoffApp() {
       )),
     }));
     setMessage(`${componentSurfaceLabel(surface)} load marked as none for this room.`);
+  }
+
+  function updateRoomCeilingType(roomId: string, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>) {
+    if (ceilingType === "none") {
+      setRoomSurfaceNoLoad(roomId, "ceiling");
+      return;
+    }
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        const ceilingComponents = roomSurfaceComponents(room, "ceiling");
+        const defaultCeiling = defaultComponent("ceiling", rectArea(room));
+        const normalizedCeiling = ceilingComponents.length > 0
+          ? ceilingComponents.map((component, index) => index === 0
+            ? { ...component, assembly: ceilingType === "vaulted" ? "C2" : component.assembly || "C1" }
+            : component)
+          : [{ ...defaultCeiling, assembly: ceilingType === "vaulted" ? "C2" : "C1" }];
+        return {
+          ...room,
+          ceilingType,
+          ceilingLowHeight: ceilingType === "vaulted" ? room.ceilingLowHeight ?? room.ceilingHeight : undefined,
+          ceilingPeakHeight: ceilingType === "vaulted" ? room.ceilingPeakHeight ?? Math.max(room.ceilingHeight, room.ceilingHeight + 1) : undefined,
+          components: [
+            ...roomComponents(room).filter((component) => component.surface !== "ceiling"),
+            ...normalizedCeiling,
+          ],
+        };
+      }),
+    }));
   }
 
   function removeRoomComponent(roomId: string, componentId: string) {
@@ -2122,6 +2155,24 @@ export function TakeoffApp() {
       ],
     }));
     setMessage(`${Math.round(unassignedCellArea)} sf merged into ${targetRoom.name}.`);
+  }
+
+  function focusValidationIssue(issue: TakeoffValidationIssue) {
+    if (!issue.target) return;
+    if (issue.target.type === "room" && issue.target.roomId) {
+      setSelectedRoomId(issue.target.roomId);
+      setRightPanelOpen(true);
+      const room = floor.rooms.find((candidate) => candidate.id === issue.target?.roomId);
+      setMessage(room ? `${room.name} selected from validation.` : "Room selected from validation.");
+      return;
+    }
+    if (issue.target.type === "unassigned") {
+      setSelectedRoomId(null);
+      setRightPanelOpen(false);
+      if (!sliceRoomId && floor.rooms[0]) setSliceRoomId(floor.rooms[0].id);
+      fitPlan();
+      setMessage(`${Math.round(unassignedCellArea)} sf of unassigned area is highlighted on the plan.`);
+    }
   }
 
   function handleCanvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
@@ -3201,7 +3252,14 @@ export function TakeoffApp() {
               ) : (
                 <div className="takeoff-issue-list">
                   {validation.map((issue, index) => (
-                    <div key={index} className={`takeoff-issue takeoff-issue--${issue.severity}`}>{issue.message}</div>
+                    <button
+                      key={index}
+                      className={`takeoff-issue takeoff-issue--${issue.severity} ${issue.target ? "takeoff-issue--clickable" : ""}`}
+                      onClick={() => focusValidationIssue(issue)}
+                      disabled={!issue.target}
+                    >
+                      {issue.message}
+                    </button>
                   ))}
                 </div>
               )}
@@ -3355,6 +3413,46 @@ export function TakeoffApp() {
                     onChange={(event) => updateRoom(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
                   />
                 </label>
+                <div className="takeoff-ceiling-shape">
+                  <label>
+                    Ceiling shape
+                    <select
+                      value={selectedRoom.ceilingType ?? "flat"}
+                      onChange={(event) => updateRoomCeilingType(selectedRoom.id, event.target.value as NonNullable<TakeoffRectRoom["ceilingType"]>)}
+                    >
+                      <option value="flat">Flat / taller flat</option>
+                      <option value="vaulted">Vaulted</option>
+                      <option value="none">No ceiling load</option>
+                    </select>
+                  </label>
+                  {(selectedRoom.ceilingType ?? "flat") === "vaulted" && (
+                    <div className="takeoff-ceiling-shape-grid">
+                      <label>
+                        Low height ft
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={selectedRoom.ceilingLowHeight ?? selectedRoom.ceilingHeight}
+                          onChange={(event) => updateRoom(selectedRoom.id, { ceilingLowHeight: Number(event.target.value) })}
+                        />
+                      </label>
+                      <label>
+                        Peak height ft
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          value={selectedRoom.ceilingPeakHeight ?? Math.max(selectedRoom.ceilingHeight, selectedRoom.ceilingHeight + 1)}
+                          onChange={(event) => updateRoom(selectedRoom.id, { ceilingPeakHeight: Number(event.target.value) })}
+                        />
+                      </label>
+                    </div>
+                  )}
+                  <p className="takeoff-muted">
+                    Ceiling shape is stored with the editable takeoff JSON; vaulted geometry refinement and sketching will build on these values.
+                  </p>
+                </div>
                 {(["floor", "ceiling", "wall", "glass", "door"] as const).map((surface) => {
                   const roomArea = rectArea(selectedRoom);
                   const assigned = componentAreaTotal(selectedRoom, surface);
