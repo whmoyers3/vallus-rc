@@ -165,7 +165,7 @@ function clipPolygonToPoints(polygon: Polygon) {
 function largestClipPolygon(multiPolygon: MultiPolygon) {
   return multiPolygon
     .map((polygon) => ({ polygon, area: polygonArea(clipPolygonToPoints(polygon)) }))
-    .filter((entry) => entry.area > 0.5)
+    .filter((entry) => entry.area > 0.5 && entry.polygon.length === 1)
     .sort((a, b) => b.area - a.area)[0]?.polygon ?? null;
 }
 
@@ -711,15 +711,28 @@ function overlaps(a: TakeoffRectRoom, b: TakeoffRectRoom) {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.depth && a.y + a.depth > b.y;
 }
 
+function roomOutsideFootprintArea(room: TakeoffRectRoom, floor: TakeoffFloor) {
+  if (floor.exteriorPolygon.length >= 3) {
+    const roomArea = rectArea(room);
+    if (roomArea <= 0.25) return roomArea;
+    const insideArea = intersection(roomToClipPolygon(room), pointsToClipPolygon(floor.exteriorPolygon))
+      .reduce((sum, polygon) => sum + polygonArea(clipPolygonToPoints(polygon)), 0);
+    return Math.max(0, roomArea - insideArea);
+  }
+
+  const outsideLeft = Math.max(0, -room.x);
+  const outsideTop = Math.max(0, -room.y);
+  const outsideRight = Math.max(0, room.x + room.width - floor.conditionedPerimeter.width);
+  const outsideBottom = Math.max(0, room.y + room.depth - floor.conditionedPerimeter.depth);
+  return (outsideLeft + outsideRight) * room.depth + (outsideTop + outsideBottom) * room.width;
+}
+
 function insidePerimeter(room: TakeoffRectRoom, floor: TakeoffFloor) {
   if (floor.exteriorPolygon.length >= 3) {
     const roomArea = rectArea(room);
     if (roomArea <= 0.25) return false;
-    const insideArea = intersection(roomToClipPolygon(room), pointsToClipPolygon(floor.exteriorPolygon))
-      .reduce((sum, polygon) => sum + polygonArea(clipPolygonToPoints(polygon)), 0);
-    return roomArea - insideArea <= Math.max(1, roomArea * 0.005);
+    return roomOutsideFootprintArea(room, floor) <= Math.max(2, roomArea * 0.01);
   }
-
   return (
     room.x >= 0 &&
     room.y >= 0 &&
@@ -837,7 +850,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
   for (const room of floor.rooms) {
     const roomTarget = { type: "room" as const, roomId: room.id };
     if (!insidePerimeter(room, floor)) {
-      issues.push({ severity: "error", message: `${room.name || "Room"} extends beyond the conditioned footprint.`, target: roomTarget });
+      issues.push({ severity: "error", message: `${room.name || "Room"} extends beyond the conditioned footprint by about ${Math.round(roomOutsideFootprintArea(room, floor))} sf.`, target: roomTarget });
     }
     if (room.ceilingHeight <= 0) {
       issues.push({ severity: "error", message: `${room.name || "Room"} needs a ceiling height.`, target: roomTarget });
@@ -1241,7 +1254,6 @@ export function TakeoffApp() {
     if (floor.exteriorPolygon.length < 3) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
     const floorBounds = footprintBounds(floor);
-    const attributed = floor.attributedSlices?.flatMap((slice) => slice.cells) ?? [];
     const cells: UnassignedCell[] = [];
 
     for (let y = floorBounds.y; y < floorBounds.y + floorBounds.depth; y += cellSize) {
@@ -1255,12 +1267,11 @@ export function TakeoffApp() {
         const center = { x: cell.x + cell.width / 2, y: cell.y + cell.depth / 2 };
         const inFootprint = pointInPolygon(center, floor.exteriorPolygon);
         const inRoom = floor.rooms.some((room) => pointInRoom(center, room));
-        const alreadyAttributed = attributed.some((slice) => center.x >= slice.x && center.x <= slice.x + slice.width && center.y >= slice.y && center.y <= slice.y + slice.depth);
-        if (inFootprint && !inRoom && !alreadyAttributed) cells.push(cell);
+        if (inFootprint && !inRoom) cells.push(cell);
       }
     }
 
-    return cells.slice(0, 500);
+    return cells;
   }, [floor]);
   const unassignedRegions = useMemo(() => buildUnassignedRegions(floor, unassignedCells), [floor, unassignedCells]);
   const selectedUnassignedRegion = unassignedRegions.find((region) => region.id === selectedUnassignedRegionId) ?? unassignedRegions[0] ?? null;

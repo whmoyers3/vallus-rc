@@ -304,6 +304,8 @@ Implemented:
 - Added first-pass room ceiling shape controls for flat/taller flat, vaulted, and no ceiling load.
 - Conditioned-footprint containment validation now uses area overlap tolerance to avoid false room-boundary warnings after clipping/snapping.
 - Unassigned conditioned areas are now grouped into contiguous regions; validation targets each region separately and attribution merges only the selected region into an adjacent room.
+- Restored unassigned-area detection by deriving open cells from current room geometry instead of stale attributed slice history.
+- Prevented dragged room shapes from filling polygon holes over existing rooms, avoiding overlap regressions.
 
 Still pending:
 
