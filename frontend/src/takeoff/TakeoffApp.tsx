@@ -46,6 +46,7 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
 ];
 type WorkflowStep = "crop" | "calibrate" | "trace";
 type RoomTileMetric = "floor" | "ceiling" | "wall" | "glass";
+type PlanReviewMode = "plan" | "floor" | "ceiling" | "walls" | "elevation";
 type MovablePointTarget = { type: "exterior"; index: number } | { type: "room"; roomId: string; index: number };
 type OpeningMoveTarget = { roomId: string; componentId: string };
 type DragState = {
@@ -91,6 +92,13 @@ const roomTileMetrics: Array<{ id: RoomTileMetric; label: string }> = [
   { id: "ceiling", label: "Ceiling" },
   { id: "wall", label: "Wall" },
   { id: "glass", label: "Glass" },
+];
+const planReviewModes: Array<{ id: PlanReviewMode; label: string }> = [
+  { id: "plan", label: "Plan" },
+  { id: "floor", label: "Floor" },
+  { id: "ceiling", label: "Ceiling" },
+  { id: "walls", label: "Walls" },
+  { id: "elevation", label: "Elevation" },
 ];
 type SavedTakeoffRow = {
   id: number;
@@ -1385,6 +1393,7 @@ export function TakeoffApp() {
   const [takeoffJsonOpen, setTakeoffJsonOpen] = useState(false);
   const [payloadPreviewOpen, setPayloadPreviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [planReviewMode, setPlanReviewMode] = useState<PlanReviewMode>("plan");
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
   const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("trace");
   const [calibrationOrientation, setCalibrationOrientation] = useState<TakeoffScaleLine["orientation"]>("horizontal");
@@ -3225,6 +3234,17 @@ export function TakeoffApp() {
                   <span>{Math.round(zoom * 100)}%</span>
                   <button onClick={() => setZoom((current) => Math.min(8, Number((current + 0.25).toFixed(2))))}>+</button>
                 </div>
+                <div className="takeoff-review-mode-group" aria-label="Plan review mode">
+                  {planReviewModes.map((mode) => (
+                    <button
+                      key={mode.id}
+                      className={planReviewMode === mode.id ? "toolbar-primary" : ""}
+                      onClick={() => setPlanReviewMode(mode.id)}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -3375,7 +3395,27 @@ export function TakeoffApp() {
                   </g>
                 );
               })}
-              {floor.rooms.map((room, index) => (
+              {floor.rooms.map((room, index) => {
+                const points = roomCorners(room);
+                const center = roomCenter(room);
+                const bounds = polygonBounds(points);
+                const color = roomColor(index);
+                const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
+                const reviewActive = planReviewMode !== "plan";
+                const ridgeRunsEastWest = ceilingInfo.ridgeDirection === "E-W";
+                const ridgeRatio = ceilingInfo.ridgeRatio;
+                const ridgeA = ridgeRunsEastWest
+                  ? { x: bounds.x, y: bounds.y + bounds.depth * ridgeRatio }
+                  : { x: bounds.x + bounds.width * ridgeRatio, y: bounds.y };
+                const ridgeB = ridgeRunsEastWest
+                  ? { x: bounds.x + bounds.width, y: bounds.y + bounds.depth * ridgeRatio }
+                  : { x: bounds.x + bounds.width * ridgeRatio, y: bounds.y + bounds.depth };
+                const elevationLift = Math.max(8, Math.min(34, (ceilingInfo.peakHeight || room.ceilingHeight) * scale * 0.12));
+                const elevationShift = Math.max(6, Math.min(22, bounds.width * scale * 0.04));
+                const elevatedPoints = points.map((point) => ({ x: offsetX + point.x * scale + elevationShift, y: offsetY + point.y * scale - elevationLift }));
+                const planPoints = points.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ");
+                const elevatedPointString = elevatedPoints.map((point) => `${point.x},${point.y}`).join(" ");
+                return (
                 <g
                   key={room.id}
                   onClick={(event) => {
@@ -3385,26 +3425,103 @@ export function TakeoffApp() {
                   }}
                   style={{ cursor: openingModeActive ? "crosshair" : "pointer" }}
                 >
-                  {room.polygon && room.polygon.length >= 3 ? (
-                    <polygon
-                      points={room.polygon.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
-                      fill={roomColor(index)}
-                      fillOpacity="0.75"
-                      stroke={selectedRoomId === room.id ? "#0f5fa8" : "#324457"}
-                      strokeWidth={selectedRoomId === room.id ? "3" : "1.5"}
-                    />
-                  ) : (
-                    <rect
-                      x={offsetX + room.x * scale}
-                      y={offsetY + room.y * scale}
-                      width={room.width * scale}
-                      height={room.depth * scale}
-                      fill={roomColor(index)}
-                      fillOpacity="0.75"
-                      stroke={selectedRoomId === room.id ? "#0f5fa8" : "#324457"}
-                      strokeWidth={selectedRoomId === room.id ? "3" : "1.5"}
-                    />
+                  {planReviewMode === "elevation" && (
+                    <g pointerEvents="none">
+                      <polygon
+                        points={elevatedPointString}
+                        fill={color}
+                        fillOpacity="0.22"
+                        stroke="#7ea48b"
+                        strokeWidth="1.3"
+                      />
+                      {points.map((point, pointIndex) => {
+                        const next = elevatedPoints[pointIndex];
+                        return (
+                          <line
+                            key={`${room.id}-elevation-post-${pointIndex}`}
+                            x1={offsetX + point.x * scale}
+                            y1={offsetY + point.y * scale}
+                            x2={next.x}
+                            y2={next.y}
+                            stroke="#7ea48b"
+                            strokeOpacity="0.6"
+                            strokeWidth="1"
+                          />
+                        );
+                      })}
+                    </g>
                   )}
+                  <polygon
+                    points={planPoints}
+                    fill={color}
+                    fillOpacity={reviewActive ? "0.5" : "0.75"}
+                    stroke={selectedRoomId === room.id ? "#0f5fa8" : "#324457"}
+                    strokeWidth={selectedRoomId === room.id ? "3" : "1.5"}
+                  />
+                  {planReviewMode === "ceiling" && (
+                    <g pointerEvents="none">
+                      {ceilingInfo.ceilingType === "vaulted" ? (
+                        <>
+                          <line
+                            x1={offsetX + ridgeA.x * scale}
+                            y1={offsetY + ridgeA.y * scale}
+                            x2={offsetX + ridgeB.x * scale}
+                            y2={offsetY + ridgeB.y * scale}
+                            stroke="#b35b2f"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                          />
+                          <text
+                            x={offsetX + center.x * scale}
+                            y={offsetY + center.y * scale - 18}
+                            fontSize="10"
+                            fill="#7f3f20"
+                            fontWeight="700"
+                            textAnchor="middle"
+                          >
+                            Vault {ceilingInfo.ridgeDirection} {ceilingInfo.lowHeight}/{ceilingInfo.peakHeight} ft
+                          </text>
+                        </>
+                      ) : (
+                        <text
+                          x={offsetX + center.x * scale}
+                          y={offsetY + center.y * scale - 18}
+                          fontSize="10"
+                          fill="#31516b"
+                          fontWeight="700"
+                          textAnchor="middle"
+                        >
+                          {ceilingInfo.ceilingType === "none" ? "No ceiling load" : `${room.ceilingHeight} ft flat`}
+                        </text>
+                      )}
+                    </g>
+                  )}
+                  {planReviewMode === "floor" && (
+                    <text
+                      x={offsetX + center.x * scale}
+                      y={offsetY + center.y * scale - 18}
+                      fontSize="10"
+                      fill="#31516b"
+                      fontWeight="700"
+                      textAnchor="middle"
+                      pointerEvents="none"
+                    >
+                      Floor {Math.round(componentAreaTotal(room, "floor"))} sf
+                    </text>
+                  )}
+                  {planReviewMode === "walls" && roomExteriorSegments(floor, room).map((segment, segmentIndex) => (
+                    <line
+                      key={`${room.id}-wall-review-${segmentIndex}`}
+                      x1={offsetX + segment.a.x * scale}
+                      y1={offsetY + segment.a.y * scale}
+                      x2={offsetX + segment.b.x * scale}
+                      y2={offsetY + segment.b.y * scale}
+                      stroke="#b35b2f"
+                      strokeWidth="4"
+                      strokeLinecap="round"
+                      pointerEvents="none"
+                    />
+                  ))}
                   {room.polygon?.map((point, pointIndex) => (
                     <circle key={`${room.id}-point-${pointIndex}`} cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="3.5" fill="#324457" stroke="#ffffff" strokeWidth="1.2" />
                   ))}
@@ -3498,7 +3615,8 @@ export function TakeoffApp() {
                     );
                   })}
                 </g>
-              ))}
+                );
+              })}
               {roomPolygonDraft.length > 0 && (
                 <g>
                   <polyline
@@ -3776,12 +3894,15 @@ export function TakeoffApp() {
                   {(() => {
                     const ceilingInfo = ceilingGeometryInfo(selectedRoom, floor.defaultCeilingHeight ?? 9);
                     const roomBounds = polygonBounds(roomCorners(selectedRoom));
+                    const sketchViewWidth = 310;
+                    const sketchViewMinY = -24;
+                    const sketchViewHeight = 220;
                     const floorWidth = 220;
-                    const floorDepth = 82;
+                    const floorDepth = 76;
                     const skew = 38;
                     const baseX = 22;
-                    const baseY = 118;
-                    const heightScale = 7;
+                    const baseY = 168;
+                    const heightScale = 6.4;
                     const lowRise = Math.max(10, ceilingInfo.lowHeight * heightScale);
                     const peakExtra = ceilingInfo.ceilingType === "vaulted" ? Math.max(8, (ceilingInfo.peakHeight - ceilingInfo.lowHeight) * heightScale) : 0;
                     const backY = baseY - floorDepth;
@@ -3796,8 +3917,8 @@ export function TakeoffApp() {
                       const svg = event.currentTarget.ownerSVGElement;
                       if (!svg) return;
                       const rect = svg.getBoundingClientRect();
-                      const viewX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 310;
-                      const viewY = ((event.clientY - rect.top) / Math.max(rect.height, 1)) * 150;
+                      const viewX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * sketchViewWidth;
+                      const viewY = sketchViewMinY + ((event.clientY - rect.top) / Math.max(rect.height, 1)) * sketchViewHeight;
                       const ratio = ridgeRunsEastWest
                         ? clamp((baseY - lowRise - peakExtra - viewY) / floorDepth, 0, 1)
                         : clamp((viewX - baseX) / floorWidth, 0, 1);
@@ -3812,7 +3933,7 @@ export function TakeoffApp() {
                           </button>
                         </div>
                         <div className="takeoff-ceiling-qa-grid">
-                          <svg viewBox="0 0 310 150" role="img" aria-label="Ceiling geometry preview">
+                          <svg viewBox={`0 ${sketchViewMinY} ${sketchViewWidth} ${sketchViewHeight}`} role="img" aria-label="Ceiling geometry preview">
                             <polygon
                               points={`${baseX},${baseY} ${baseX + floorWidth},${baseY} ${baseX + floorWidth + skew},${backY} ${baseX + skew},${backY}`}
                               fill="rgba(31,111,178,0.08)"

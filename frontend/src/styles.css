@@ -808,9 +808,11 @@ button.toolbar-primary:hover {
 }
 
 .takeoff-stage-tool-group,
-.takeoff-zoom-group {
+.takeoff-zoom-group,
+.takeoff-review-mode-group {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
 }
 
@@ -819,6 +821,12 @@ button.toolbar-primary:hover {
   border: 1px solid #d9e0e6;
   border-radius: 6px;
   padding: 3px;
+}
+
+.takeoff-review-mode-group {
+  border-left: 1px solid #d9e0e6;
+  margin-left: 4px;
+  padding-left: 8px;
 }
 
 .takeoff-stage-tools button {
@@ -1216,7 +1224,7 @@ button.toolbar-primary:hover {
   border: 1px solid #dde6ed;
   border-radius: 6px;
   display: block;
-  min-height: 150px;
+  min-height: 190px;
   width: 100%;
 }
 

@@ -319,6 +319,9 @@ Implemented:
 - Added ceiling geometry validation for large height changes, including an estimated raised wall/knee-wall exposure warning.
 - Added a first-pass Ceiling Geometry QA sketch in Room Profile to visualize flat/taller and vaulted ceiling height/ridge direction before export.
 - Added draggable vaulted-ceiling ridge offset in the QA sketch; approval refreshes vaulted ceiling component area from the estimated sloped surface.
+- Adjusted the Ceiling Geometry QA sketch viewBox/headroom so vaulted ridges and top wall lines remain visible instead of clipping at the top.
+- Added plan-grid review modes for Plan, Floor, Ceiling, Walls, and Elevation so QA can review floor/ceiling/wall information across the full plan instead of only within Room Profile.
+- Ceiling review mode shows vaulted ridge direction and low/peak heights across rooms; Wall review mode emphasizes exterior/load-bearing wall segments; Elevation mode adds a translucent raised-wall/top-plane sketch over the plan.
 
 Still pending:
 
