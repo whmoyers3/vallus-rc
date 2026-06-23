@@ -302,6 +302,8 @@ Implemented:
 - Validation now respects intentional no-load floor and ceiling selections.
 - Validation warnings/errors can now be clicked to select the affected room or focus highlighted unassigned area.
 - Added first-pass room ceiling shape controls for flat/taller flat, vaulted, and no ceiling load.
+- Conditioned-footprint containment validation now uses area overlap tolerance to avoid false room-boundary warnings after clipping/snapping.
+- Unassigned conditioned areas are now grouped into contiguous regions; validation targets each region separately and attribution merges only the selected region into an adjacent room.
 
 Still pending:
 

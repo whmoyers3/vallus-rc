@@ -70,6 +70,15 @@ type PendingOpeningTarget = {
 } | null;
 type EditingOpeningTarget = OpeningMoveTarget | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
+type UnassignedCell = { x: number; y: number; width: number; depth: number };
+type UnassignedRegion = {
+  id: string;
+  label: string;
+  cells: UnassignedCell[];
+  area: number;
+  bounds: PlanRect;
+  adjacentRoomIds: string[];
+};
 const adjacentSpaceKinds: Array<{ id: TakeoffAdjacentSpaceKind; label: string }> = [
   { id: "garage", label: "Garage" },
   { id: "attic", label: "Attic" },
@@ -704,7 +713,11 @@ function overlaps(a: TakeoffRectRoom, b: TakeoffRectRoom) {
 
 function insidePerimeter(room: TakeoffRectRoom, floor: TakeoffFloor) {
   if (floor.exteriorPolygon.length >= 3) {
-    return room.width > 0 && room.depth > 0 && roomCorners(room).every((corner) => pointInPolygon(corner, floor.exteriorPolygon));
+    const roomArea = rectArea(room);
+    if (roomArea <= 0.25) return false;
+    const insideArea = intersection(roomToClipPolygon(room), pointsToClipPolygon(floor.exteriorPolygon))
+      .reduce((sum, polygon) => sum + polygonArea(clipPolygonToPoints(polygon)), 0);
+    return roomArea - insideArea <= Math.max(1, roomArea * 0.005);
   }
 
   return (
@@ -739,7 +752,72 @@ function findOpenRoomPosition(floor: TakeoffFloor, candidate: TakeoffRectRoom) {
   return null;
 }
 
-function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
+function cellKey(cell: Pick<UnassignedCell, "x" | "y">) {
+  return `${cell.x.toFixed(3)},${cell.y.toFixed(3)}`;
+}
+
+function cellsAreAdjacent(a: UnassignedCell, b: UnassignedCell) {
+  const horizontalTouch = Math.abs(a.x + a.width - b.x) < 0.001 || Math.abs(b.x + b.width - a.x) < 0.001;
+  const verticalOverlap = Math.min(a.y + a.depth, b.y + b.depth) - Math.max(a.y, b.y) > 0.001;
+  const verticalTouch = Math.abs(a.y + a.depth - b.y) < 0.001 || Math.abs(b.y + b.depth - a.y) < 0.001;
+  const horizontalOverlap = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0.001;
+  return (horizontalTouch && verticalOverlap) || (verticalTouch && horizontalOverlap);
+}
+
+function unassignedRegionBounds(cells: UnassignedCell[]): PlanRect {
+  const minX = Math.min(...cells.map((cell) => cell.x));
+  const minY = Math.min(...cells.map((cell) => cell.y));
+  const maxX = Math.max(...cells.map((cell) => cell.x + cell.width));
+  const maxY = Math.max(...cells.map((cell) => cell.y + cell.depth));
+  return { x: minX, y: minY, width: maxX - minX, depth: maxY - minY };
+}
+
+function adjacentRoomsForCells(floor: TakeoffFloor, cells: UnassignedCell[]) {
+  const cellEdges = cells.flatMap((cell) => pointsToEdges(rectToPoints(cell)));
+  const tolerance = Math.max(0.25, floor.scale.feetPerGrid * 0.25);
+  return floor.rooms
+    .filter((room) => pointsToEdges(roomCorners(room)).some((roomEdge) =>
+      cellEdges.some((cellEdge) => sharedSegmentLength(roomEdge, cellEdge, tolerance) > 0.1)
+    ))
+    .map((room) => room.id);
+}
+
+function buildUnassignedRegions(floor: TakeoffFloor, cells: UnassignedCell[]): UnassignedRegion[] {
+  const remaining = new Map(cells.map((cell) => [cellKey(cell), cell]));
+  const regions: UnassignedRegion[] = [];
+
+  while (remaining.size > 0) {
+    const first = remaining.values().next().value as UnassignedCell;
+    const queue = [first];
+    const regionCells: UnassignedCell[] = [];
+    remaining.delete(cellKey(first));
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      regionCells.push(current);
+      for (const [key, candidate] of Array.from(remaining.entries())) {
+        if (!cellsAreAdjacent(current, candidate)) continue;
+        remaining.delete(key);
+        queue.push(candidate);
+      }
+    }
+
+    const bounds = unassignedRegionBounds(regionCells);
+    const area = regionCells.reduce((sum, cell) => sum + cell.width * cell.depth, 0);
+    regions.push({
+      id: `unassigned-${bounds.x.toFixed(2)}-${bounds.y.toFixed(2)}-${regionCells.length}`,
+      label: `Unassigned area ${regions.length + 1}`,
+      cells: regionCells,
+      area,
+      bounds,
+      adjacentRoomIds: adjacentRoomsForCells(floor, regionCells),
+    });
+  }
+
+  return regions.sort((a, b) => b.area - a.area);
+}
+
+function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegion[] = []): TakeoffValidationIssue[] {
   const issues: TakeoffValidationIssue[] = [];
   const area = footprintArea(floor);
   const roomArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
@@ -837,14 +915,20 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
     }
   }
 
-  const unassigned = area - roomArea;
   if (area > 0 && floor.rooms.length === 0) {
     issues.push({
       severity: "warning",
       message: `No rooms are assigned yet. Conditioned footprint is ${Math.round(area)} sf.`,
     });
-  } else if (area > 0 && unassigned > 1) {
-    issues.push({ severity: "warning", message: `${Math.round(unassigned)} sf of conditioned footprint remains unassigned.`, target: { type: "unassigned" } });
+  } else if (area > 0 && unassignedRegions.length > 0) {
+    for (const region of unassignedRegions) {
+      if (region.area <= 1) continue;
+      issues.push({
+        severity: "warning",
+        message: `${region.label}: ${Math.round(region.area)} sf of conditioned footprint remains unassigned.`,
+        target: { type: "unassigned", regionId: region.id },
+      });
+    }
   }
 
   return issues;
@@ -1098,6 +1182,7 @@ export function TakeoffApp() {
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [sliceRoomId, setSliceRoomId] = useState("");
+  const [selectedUnassignedRegionId, setSelectedUnassignedRegionId] = useState<string | null>(null);
   const [suggestedWallAssembly, setSuggestedWallAssembly] = useState("W1");
   const [openingPlacement, setOpeningPlacement] = useState<OpeningPlacement>(null);
   const [openingModeActive, setOpeningModeActive] = useState(false);
@@ -1121,7 +1206,6 @@ export function TakeoffApp() {
   const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
   const serializedTakeoff = useMemo(() => takeoffSnapshot(persistableTakeoff), [persistableTakeoff]);
   const isDirty = takeoffId === null || serializedTakeoff !== savedSnapshot;
-  const validation = useMemo(() => buildValidation(floor), [floor]);
   const computedFootprintArea = footprintArea(floor);
   const assignedArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
   const unassignedArea = computedFootprintArea - assignedArea;
@@ -1158,7 +1242,7 @@ export function TakeoffApp() {
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
     const floorBounds = footprintBounds(floor);
     const attributed = floor.attributedSlices?.flatMap((slice) => slice.cells) ?? [];
-    const cells: Array<{ x: number; y: number; width: number; depth: number }> = [];
+    const cells: UnassignedCell[] = [];
 
     for (let y = floorBounds.y; y < floorBounds.y + floorBounds.depth; y += cellSize) {
       for (let x = floorBounds.x; x < floorBounds.x + floorBounds.width; x += cellSize) {
@@ -1178,7 +1262,11 @@ export function TakeoffApp() {
 
     return cells.slice(0, 500);
   }, [floor]);
-  const unassignedCellArea = unassignedCells.reduce((sum, cell) => sum + cell.width * cell.depth, 0);
+  const unassignedRegions = useMemo(() => buildUnassignedRegions(floor, unassignedCells), [floor, unassignedCells]);
+  const selectedUnassignedRegion = unassignedRegions.find((region) => region.id === selectedUnassignedRegionId) ?? unassignedRegions[0] ?? null;
+  const activeUnassignedCells = selectedUnassignedRegion?.cells ?? unassignedCells;
+  const unassignedCellArea = activeUnassignedCells.reduce((sum, cell) => sum + cell.width * cell.depth, 0);
+  const validation = useMemo(() => buildValidation(floor, unassignedRegions), [floor, unassignedRegions]);
 
   const canvasWidth = 720;
   const canvasHeight = 420;
@@ -2133,11 +2221,12 @@ export function TakeoffApp() {
   }
 
   function assignHighlightedSlices() {
-    const roomId = sliceRoomId || floor.rooms[0]?.id;
-    if (!roomId || unassignedCells.length === 0) return;
+    const candidateRooms = selectedUnassignedRegion?.adjacentRoomIds.length ? selectedUnassignedRegion.adjacentRoomIds : floor.rooms.map((room) => room.id);
+    const roomId = sliceRoomId && candidateRooms.includes(sliceRoomId) ? sliceRoomId : candidateRooms[0] || floor.rooms[0]?.id;
+    if (!roomId || activeUnassignedCells.length === 0) return;
     const targetRoom = floor.rooms.find((room) => room.id === roomId);
     if (!targetRoom) return;
-    const cellPolygons = unassignedCells.map((cell) => pointsToClipPolygon(rectToPoints(cell)));
+    const cellPolygons = activeUnassignedCells.map((cell) => pointsToClipPolygon(rectToPoints(cell)));
     const merged = union(roomToClipPolygon(targetRoom), ...cellPolygons);
     const largest = largestClipPolygon(merged);
     if (!largest) {
@@ -2151,9 +2240,10 @@ export function TakeoffApp() {
       rooms: current.rooms.map((room) => (room.id === roomId ? { ...room, ...bounds, polygon, areaAdjustment: undefined } : room)),
       attributedSlices: [
         ...(current.attributedSlices ?? []),
-        { id: nextId("slice"), roomId, cells: unassignedCells },
+        { id: nextId("slice"), roomId, cells: activeUnassignedCells },
       ],
     }));
+    setSelectedUnassignedRegionId(null);
     setMessage(`${Math.round(unassignedCellArea)} sf merged into ${targetRoom.name}.`);
   }
 
@@ -2168,10 +2258,14 @@ export function TakeoffApp() {
     }
     if (issue.target.type === "unassigned") {
       setSelectedRoomId(null);
+      setSelectedUnassignedRegionId(issue.target.regionId ?? null);
       setRightPanelOpen(false);
-      if (!sliceRoomId && floor.rooms[0]) setSliceRoomId(floor.rooms[0].id);
+      const region = unassignedRegions.find((candidate) => candidate.id === issue.target?.regionId);
+      const adjacentRoomId = region?.adjacentRoomIds[0];
+      if (adjacentRoomId) setSliceRoomId(adjacentRoomId);
+      else if (!sliceRoomId && floor.rooms[0]) setSliceRoomId(floor.rooms[0].id);
       fitPlan();
-      setMessage(`${Math.round(unassignedCellArea)} sf of unassigned area is highlighted on the plan.`);
+      setMessage(`${Math.round(region?.area ?? unassignedCellArea)} sf of unassigned area is highlighted on the plan.`);
     }
   }
 
@@ -2867,18 +2961,21 @@ export function TakeoffApp() {
                   <text x={offsetX + point.x * scale + 6} y={offsetY + point.y * scale - 6} fontSize="10" fill="#1f2933">{index + 1}</text>
                 </g>
               ))}
-              {unassignedCells.map((cell, index) => (
-                <rect
-                  key={`unassigned-${index}-${cell.x}-${cell.y}`}
-                  x={offsetX + cell.x * scale}
-                  y={offsetY + cell.y * scale}
-                  width={cell.width * scale}
-                  height={cell.depth * scale}
-                  fill="rgba(244, 187, 68, 0.28)"
-                  stroke="rgba(154, 106, 18, 0.38)"
-                  strokeWidth="0.5"
-                />
-              ))}
+              {unassignedRegions.flatMap((region) => region.cells.map((cell, index) => {
+                const isSelected = !selectedUnassignedRegionId || selectedUnassignedRegionId === region.id;
+                return (
+                  <rect
+                    key={`${region.id}-${index}-${cell.x}-${cell.y}`}
+                    x={offsetX + cell.x * scale}
+                    y={offsetY + cell.y * scale}
+                    width={cell.width * scale}
+                    height={cell.depth * scale}
+                    fill={isSelected ? "rgba(244, 187, 68, 0.34)" : "rgba(244, 187, 68, 0.12)"}
+                    stroke={isSelected ? "rgba(154, 106, 18, 0.55)" : "rgba(154, 106, 18, 0.18)"}
+                    strokeWidth={isSelected ? "0.8" : "0.4"}
+                  />
+                );
+              }))}
               {activeDragRect && (
                 <rect
                   x={offsetX + activeDragRect.x * scale}
@@ -3263,11 +3360,38 @@ export function TakeoffApp() {
                   ))}
                 </div>
               )}
-              {unassignedCells.length > 0 && (
+              {unassignedRegions.length > 0 && (
                 <div className="takeoff-slice-tools">
-                  <p className="takeoff-muted">{Math.round(unassignedCellArea)} sf highlighted as unassigned slices.</p>
-                  <select value={sliceRoomId || floor.rooms[0]?.id || ""} onChange={(event) => setSliceRoomId(event.target.value)}>
-                    {floor.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+                  <p className="takeoff-muted">
+                    {selectedUnassignedRegion ? `${selectedUnassignedRegion.label}: ` : ""}
+                    {Math.round(unassignedCellArea)} sf highlighted as unassigned slices.
+                  </p>
+                  <select
+                    value={selectedUnassignedRegion?.id ?? ""}
+                    onChange={(event) => {
+                      const region = unassignedRegions.find((candidate) => candidate.id === event.target.value) ?? null;
+                      setSelectedUnassignedRegionId(region?.id ?? null);
+                      if (region?.adjacentRoomIds[0]) setSliceRoomId(region.adjacentRoomIds[0]);
+                    }}
+                  >
+                    {unassignedRegions.map((region) => (
+                      <option key={region.id} value={region.id}>
+                        {region.label} - {Math.round(region.area)} sf
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={
+                      sliceRoomId && (selectedUnassignedRegion?.adjacentRoomIds.length ? selectedUnassignedRegion.adjacentRoomIds.includes(sliceRoomId) : true)
+                        ? sliceRoomId
+                        : selectedUnassignedRegion?.adjacentRoomIds[0] || floor.rooms[0]?.id || ""
+                    }
+                    onChange={(event) => setSliceRoomId(event.target.value)}
+                  >
+                    {(selectedUnassignedRegion?.adjacentRoomIds.length
+                      ? floor.rooms.filter((room) => selectedUnassignedRegion.adjacentRoomIds.includes(room.id))
+                      : floor.rooms
+                    ).map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
                   </select>
                   <button onClick={assignHighlightedSlices}>Attribute Highlighted Area</button>
                 </div>

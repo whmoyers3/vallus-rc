@@ -134,5 +134,6 @@ export type TakeoffValidationIssue = {
   target?: {
     type: "room" | "unassigned";
     roomId?: string;
+    regionId?: string;
   };
 };
