@@ -306,6 +306,8 @@ Implemented:
 - Unassigned conditioned areas are now grouped into contiguous regions; validation targets each region separately and attribution merges only the selected region into an adjacent room.
 - Restored unassigned-area detection by deriving open cells from current room geometry instead of stale attributed slice history.
 - Prevented dragged room shapes from filling polygon holes over existing rooms, avoiding overlap regressions.
+- Swapped the takeoff workspace layout so drawing tools, adjacent spaces, openings, and validation live in the right rail, while room summary tiles and the expanded Room Profile editor sit directly beneath the plan grid.
+- Added a room-summary metric toggle for floor area, ceiling area, net wall area, or glass area.
 
 Still pending:
 

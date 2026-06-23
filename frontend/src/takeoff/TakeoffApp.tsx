@@ -45,6 +45,7 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "grid_manual", label: "Grid Manual" },
 ];
 type WorkflowStep = "crop" | "calibrate" | "trace";
+type RoomTileMetric = "floor" | "ceiling" | "wall" | "glass";
 type MovablePointTarget = { type: "exterior"; index: number } | { type: "room"; roomId: string; index: number };
 type OpeningMoveTarget = { roomId: string; componentId: string };
 type DragState = {
@@ -84,6 +85,12 @@ const adjacentSpaceKinds: Array<{ id: TakeoffAdjacentSpaceKind; label: string }>
   { id: "attic", label: "Attic" },
   { id: "crawl", label: "Crawl space" },
   { id: "exterior", label: "Exterior" },
+];
+const roomTileMetrics: Array<{ id: RoomTileMetric; label: string }> = [
+  { id: "floor", label: "Floor" },
+  { id: "ceiling", label: "Ceiling" },
+  { id: "wall", label: "Wall" },
+  { id: "glass", label: "Glass" },
 ];
 type SavedTakeoffRow = {
   id: number;
@@ -1194,6 +1201,7 @@ export function TakeoffApp() {
   const [subtractRoomId, setSubtractRoomId] = useState("");
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [roomTileMetric, setRoomTileMetric] = useState<RoomTileMetric>("floor");
   const [sliceRoomId, setSliceRoomId] = useState("");
   const [selectedUnassignedRegionId, setSelectedUnassignedRegionId] = useState<string | null>(null);
   const [suggestedWallAssembly, setSuggestedWallAssembly] = useState("W1");
@@ -2660,6 +2668,20 @@ export function TakeoffApp() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [roomPolygonDraft, roomPolygonMode]);
 
+  function roomTileMetricSummary(room: TakeoffRectRoom) {
+    if (roomTileMetric === "wall") {
+      const netWallArea = roomWallReconciliation(floor, room).reduce((sum, entry) => sum + entry.netArea, 0);
+      return { value: Math.round(netWallArea), label: "net wall sf" };
+    }
+    if (roomTileMetric === "glass") {
+      return { value: Math.round(componentAreaTotal(room, "glass")), label: "glass sf" };
+    }
+    return {
+      value: Math.round(componentAreaTotal(room, roomTileMetric)),
+      label: `${roomTileMetric} sf`,
+    };
+  }
+
   return (
     <main className="takeoff-root">
       <header className="takeoff-toolbar">
@@ -3254,169 +3276,464 @@ export function TakeoffApp() {
             </div>
           </div>
 
-          <div className="takeoff-lower-grid">
-            <section className="takeoff-panel">
+          <div className="takeoff-lower-grid takeoff-room-workspace">
+            <section className="takeoff-panel takeoff-room-summary-panel">
               <div className="takeoff-panel-head">
-                <h2>New Room</h2>
-              </div>
-              <div className="takeoff-form-actions">
-                <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
-                <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
-                <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setAdjacentDrawMode(false); setTraceTool("select"); }}>Subtract</button>
-                {roomPolygonDraft.length >= 3 && <button className="toolbar-primary" onClick={() => finishPolygonRoom()}>Finish Polygon</button>}
-                {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
-              </div>
-              {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle. Point-by-point room shapes are the next step.</p>}
-              {roomPolygonMode && <p className="takeoff-note">Click room corners. After 3 points, use Finish Polygon, press Enter, or click the Close marker on the first point.</p>}
-              {subtractMode && (
-                <>
-                  <label>
-                    Subtract from
-                    <select value={subtractRoomId || floor.rooms[0]?.id || ""} onChange={(event) => setSubtractRoomId(event.target.value)}>
-                      {floor.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
-                    </select>
-                  </label>
-                  <p className="takeoff-note">Drag a subtraction shape across the selected room to cut it away.</p>
-                </>
-              )}
-              <div className="takeoff-room-form">
-                <label>Name<input value={draftRoom.name} onChange={(event) => setDraftRoom({ ...draftRoom, name: event.target.value })} /></label>
-                <label>X ft<input type="number" value={draftRoom.x} onChange={(event) => setDraftRoom({ ...draftRoom, x: Number(event.target.value) })} /></label>
-                <label>Y ft<input type="number" value={draftRoom.y} onChange={(event) => setDraftRoom({ ...draftRoom, y: Number(event.target.value) })} /></label>
-                <label>Width<input type="number" min="0" value={draftRoom.width} onChange={(event) => setDraftRoom({ ...draftRoom, width: Number(event.target.value) })} /></label>
-                <label>Depth<input type="number" min="0" value={draftRoom.depth} onChange={(event) => setDraftRoom({ ...draftRoom, depth: Number(event.target.value) })} /></label>
-                <label>Height<input type="number" min="0" step="0.5" value={draftRoom.ceilingHeight} onChange={(event) => setDraftRoom({ ...draftRoom, ceilingHeight: Number(event.target.value) })} /></label>
-              </div>
-              <div className="takeoff-form-actions">
-                <button className="toolbar-primary" onClick={addRoom}>Add Room</button>
-                <button onClick={moveDraftRoomToOpenSpot}>Find Open Spot</button>
-              </div>
-              {message && <p className="takeoff-message">{message}</p>}
-            </section>
-
-            <section className="takeoff-panel">
-              <div className="takeoff-panel-head">
-                <h2>Adjacent Spaces</h2>
-              </div>
-              <div className="takeoff-form-actions">
-                <select value={adjacentSpaceKind} onChange={(event) => setAdjacentSpaceKind(event.target.value as TakeoffAdjacentSpaceKind)}>
-                  {adjacentSpaceKinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}
-                </select>
-                <button
-                  className={adjacentDrawMode ? "toolbar-primary" : ""}
-                  onClick={() => {
-                    setWorkflowStep("trace");
-                    setAdjacentDrawMode((current) => !current);
-                    setRoomDrawMode(false);
-                    setRoomPolygonMode(false);
-                    setSubtractMode(false);
-                    setTraceTool("select");
-                  }}
-                >
-                  {adjacentDrawMode ? "Stop Drawing" : "Draw Adjacent"}
-                </button>
-              </div>
-              {adjacentDrawMode ? (
-                <p className="takeoff-note">Drag a rectangle along the outside of conditioned space to tag a garage, attic, crawl space, or exterior-adjacent area.</p>
-              ) : (
-                <p className="takeoff-muted">Adjacent spaces tag exterior wall treatment without adding conditioned room area.</p>
-              )}
-              {(floor.adjacentSpaces ?? []).length > 0 && (
-                <div className="takeoff-adjacent-list">
-                  {(floor.adjacentSpaces ?? []).map((space) => (
-                    <div key={space.id} className="takeoff-adjacent-row">
-                      <span><strong>{space.name}</strong> · {Math.round(space.width * space.depth)} sf · {adjacentSpaceLabel(space.kind)}</span>
-                      <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section className="takeoff-panel">
-              <div className="takeoff-panel-head">
-                <h2>Openings</h2>
-              </div>
-              <div className="takeoff-form-actions">
-                <button className={openingModeActive ? "toolbar-primary" : ""} onClick={() => (openingModeActive ? stopOpeningPlacement() : startOpeningPlacement())}>
-                  {openingModeActive ? "Stop Placing" : "Place Opening"}
-                </button>
-              </div>
-              {openingModeActive ? (
-                <p className="takeoff-note">
-                  Click the plan on an exterior wall. The tool will identify the room and wall facing, then ask which door or glass component to place.
-                </p>
-              ) : (
-                <p className="takeoff-muted">Openings are assigned from the plan grid and must land on exterior/load-bearing room edges.</p>
-              )}
-            </section>
-
-            <section className="takeoff-panel">
-              <div className="takeoff-panel-head">
-                <h2>Validation</h2>
-              </div>
-              {validation.length === 0 ? (
-                <p className="takeoff-ok">Ready for payload preview.</p>
-              ) : (
-                <div className="takeoff-issue-list">
-                  {validation.map((issue, index) => (
+                <h2>Rooms</h2>
+                <div className="takeoff-room-metric-toggle" aria-label="Room summary metric">
+                  {roomTileMetrics.map((metric) => (
                     <button
-                      key={index}
-                      className={`takeoff-issue takeoff-issue--${issue.severity} ${issue.target ? "takeoff-issue--clickable" : ""}`}
-                      onClick={() => focusValidationIssue(issue)}
-                      disabled={!issue.target}
+                      key={metric.id}
+                      className={roomTileMetric === metric.id ? "toolbar-primary" : ""}
+                      onClick={() => setRoomTileMetric(metric.id)}
                     >
-                      {issue.message}
+                      {metric.label}
                     </button>
                   ))}
                 </div>
-              )}
-              {unassignedRegions.length > 0 && (
-                <div className="takeoff-slice-tools">
-                  <p className="takeoff-muted">
-                    {selectedUnassignedRegion ? `${selectedUnassignedRegion.label}: ` : ""}
-                    {Math.round(unassignedCellArea)} sf highlighted as unassigned slices.
-                  </p>
-                  <select
-                    value={selectedUnassignedRegion?.id ?? ""}
-                    onChange={(event) => {
-                      const region = unassignedRegions.find((candidate) => candidate.id === event.target.value) ?? null;
-                      setSelectedUnassignedRegionId(region?.id ?? null);
-                      if (region?.adjacentRoomIds[0]) setSliceRoomId(region.adjacentRoomIds[0]);
-                    }}
-                  >
-                    {unassignedRegions.map((region) => (
-                      <option key={region.id} value={region.id}>
-                        {region.label} - {Math.round(region.area)} sf
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={
-                      sliceRoomId && (selectedUnassignedRegion?.adjacentRoomIds.length ? selectedUnassignedRegion.adjacentRoomIds.includes(sliceRoomId) : true)
-                        ? sliceRoomId
-                        : selectedUnassignedRegion?.adjacentRoomIds[0] || floor.rooms[0]?.id || ""
-                    }
-                    onChange={(event) => setSliceRoomId(event.target.value)}
-                  >
-                    {(selectedUnassignedRegion?.adjacentRoomIds.length
-                      ? floor.rooms.filter((room) => selectedUnassignedRegion.adjacentRoomIds.includes(room.id))
-                      : floor.rooms
-                    ).map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
-                  </select>
-                  <button onClick={assignHighlightedSlices}>Attribute Highlighted Area</button>
+              </div>
+              {floor.rooms.length === 0 ? (
+                <p className="takeoff-muted">Draw or add rooms to build the room profile list.</p>
+              ) : (
+                <div className="takeoff-room-tile-list">
+                  {floor.rooms.map((room) => {
+                    const metric = roomTileMetricSummary(room);
+                    return (
+                      <button
+                        key={room.id}
+                        className={`takeoff-room-tile ${selectedRoomId === room.id ? "takeoff-room-tile--selected" : ""}`}
+                        onClick={() => setSelectedRoomId(room.id)}
+                      >
+                        <strong>{room.name}</strong>
+                        <span>{metric.value} {metric.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
+              )}
+            </section>
+
+            <section className="takeoff-panel takeoff-room-profile-panel">
+              <div className="takeoff-panel-head">
+                <h2>Room Profile</h2>
+                {selectedRoom && <button onClick={() => removeRoom(selectedRoom.id)}>Remove Room</button>}
+              </div>
+              {selectedRoom ? (
+                <>
+                  {(() => {
+                    const suggestions = roomExteriorWallSuggestions(floor, selectedRoom);
+                    const reconciliation = roomWallReconciliation(floor, selectedRoom);
+                    const totals = reconciliation.reduce(
+                      (sum, entry) => ({
+                        grossArea: sum.grossArea + entry.grossArea,
+                        glassArea: sum.glassArea + entry.glassArea,
+                        doorArea: sum.doorArea + entry.doorArea,
+                        netArea: sum.netArea + entry.netArea,
+                      }),
+                      { grossArea: 0, glassArea: 0, doorArea: 0, netArea: 0 },
+                    );
+                    return (
+                      <>
+                        <div className="takeoff-wall-suggestions">
+                          <div className="takeoff-component-head">
+                            <h3>Suggested Exterior Walls</h3>
+                            <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
+                              {scheduleOptionsBySurface.wall.map((option) => (
+                                <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                              ))}
+                            </select>
+                          </div>
+                          {suggestions.length ? suggestions.map((suggestion) => {
+                            const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
+                              component.direction === suggestion.direction && Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
+                            );
+                            return (
+                              <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
+                                <span>
+                                  Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} wall
+                                  <small>{Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft</small>
+                                </span>
+                                <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, suggestedWallAssembly)}>
+                                  {approved ? "Approved" : "Apply"}
+                                </button>
+                              </div>
+                            );
+                          }) : (
+                            <p className="takeoff-muted">No exterior/load-bearing wall exposure detected for this room.</p>
+                          )}
+                          <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
+                        </div>
+
+                        <div className="takeoff-wall-reconciliation">
+                          <div className="takeoff-component-head">
+                            <h3>Wall / Opening Reconciliation</h3>
+                            {reconciliation.length > 0 && (
+                              <span className="takeoff-component-total">
+                                Net {Math.round(totals.netArea)} sf
+                              </span>
+                            )}
+                          </div>
+                          {reconciliation.length ? (
+                            <>
+                              <div className="takeoff-wall-reconciliation-total">
+                                <span>Gross <strong>{Math.round(totals.grossArea)} sf</strong></span>
+                                <span>Glass <strong>{Math.round(totals.glassArea)} sf</strong></span>
+                                <span>Doors <strong>{Math.round(totals.doorArea)} sf</strong></span>
+                                <span>Net wall <strong>{Math.round(totals.netArea)} sf</strong></span>
+                              </div>
+                              {reconciliation.map((entry) => (
+                                <div key={entry.direction} className={`takeoff-wall-reconciliation-row ${entry.isOverOpened ? "takeoff-wall-reconciliation-row--error" : ""}`}>
+                                  <div>
+                                    <strong>{entry.direction} wall</strong>
+                                    <small>
+                                      {entry.isAssigned ? "Assigned gross" : "Suggested gross"} {Math.round(entry.grossArea)} sf
+                                      {!entry.isAssigned && entry.suggestedGross > 0 ? " · apply wall component before export" : ""}
+                                      {entry.adjacentKinds.length > 0 ? ` · adjacent ${entry.adjacentKinds.map(adjacentSpaceLabel).join(", ")}` : ""}
+                                    </small>
+                                  </div>
+                                  <span>{Math.round(entry.grossArea)} sf gross</span>
+                                  <span>- {Math.round(entry.glassArea)} sf glass</span>
+                                  <span>- {Math.round(entry.doorArea)} sf door</span>
+                                  <strong>= {Math.round(entry.netArea)} sf net</strong>
+                                </div>
+                              ))}
+                            </>
+                          ) : (
+                            <p className="takeoff-muted">Apply exterior wall areas or place openings to populate this room's reconciliation.</p>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
+                  <div className="takeoff-room-profile-grid">
+                    <label>
+                      Name
+                      <input value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
+                    </label>
+                    <label>
+                      Ceiling height ft
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        value={selectedRoom.ceilingHeight}
+                        onChange={(event) => updateRoom(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
+                      />
+                    </label>
+                  </div>
+                  <div className="takeoff-ceiling-shape">
+                    <label>
+                      Ceiling shape
+                      <select
+                        value={selectedRoom.ceilingType ?? "flat"}
+                        onChange={(event) => updateRoomCeilingType(selectedRoom.id, event.target.value as NonNullable<TakeoffRectRoom["ceilingType"]>)}
+                      >
+                        <option value="flat">Flat / taller flat</option>
+                        <option value="vaulted">Vaulted</option>
+                        <option value="none">No ceiling load</option>
+                      </select>
+                    </label>
+                    {(selectedRoom.ceilingType ?? "flat") === "vaulted" && (
+                      <div className="takeoff-ceiling-shape-grid">
+                        <label>
+                          Low height ft
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            value={selectedRoom.ceilingLowHeight ?? selectedRoom.ceilingHeight}
+                            onChange={(event) => updateRoom(selectedRoom.id, { ceilingLowHeight: Number(event.target.value) })}
+                          />
+                        </label>
+                        <label>
+                          Peak height ft
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            value={selectedRoom.ceilingPeakHeight ?? Math.max(selectedRoom.ceilingHeight, selectedRoom.ceilingHeight + 1)}
+                            onChange={(event) => updateRoom(selectedRoom.id, { ceilingPeakHeight: Number(event.target.value) })}
+                          />
+                        </label>
+                      </div>
+                    )}
+                    <p className="takeoff-muted">
+                      Ceiling shape is stored with the editable takeoff JSON; vaulted geometry refinement and sketching will build on these values.
+                    </p>
+                  </div>
+                  {(["floor", "ceiling", "wall", "glass", "door"] as const).map((surface) => {
+                    const roomArea = rectArea(selectedRoom);
+                    const assigned = componentAreaTotal(selectedRoom, surface);
+                    const delta = roomArea - assigned;
+                    const isAreaChecked = surface === "floor" || surface === "ceiling";
+                    const areaSurface = isAreaChecked ? surface as "floor" | "ceiling" : null;
+                    const areaCheck = areaSurface ? roomAreaReconciliation(selectedRoom, areaSurface) : null;
+                    const options = scheduleOptionsBySurface[surface];
+                    const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
+                    return (
+                      <div key={surface} className="takeoff-component-editor">
+                        <div className="takeoff-component-head">
+                          <h3>{componentSurfaceLabel(surface)} Components</h3>
+                          <button onClick={() => addRoomComponent(selectedRoom.id, surface)}>Add</button>
+                        </div>
+                        {isAreaChecked ? (
+                          <p className={assigned > roomArea + 0.5 ? "takeoff-component-total takeoff-component-total--error" : "takeoff-component-total"}>
+                            Assigned {Math.round(assigned)} / {Math.round(roomArea)} sf
+                            {Math.abs(delta) > 0.5 ? ` · ${delta > 0 ? Math.round(delta) + " sf open" : Math.round(Math.abs(delta)) + " sf over"}` : " · balanced"}
+                          </p>
+                        ) : (
+                          <p className="takeoff-component-total">
+                            {Math.round(assigned)} sf total · {surface === "wall" ? "wall area is gross; same-direction windows/doors subtract in payload." : "enter area manually until click-to-place openings is enabled."}
+                          </p>
+                        )}
+                        {areaCheck && (
+                          <div className={`takeoff-area-reconciliation ${areaCheck.isOver ? "takeoff-area-reconciliation--error" : ""}`}>
+                            <div className="takeoff-area-reconciliation-grid">
+                              <span>Measured <strong>{Math.round(areaCheck.roomArea)} sf</strong></span>
+                              <span>Assigned <strong>{Math.round(areaCheck.assignedArea)} sf</strong></span>
+                              <span>Open <strong>{Math.round(areaCheck.openArea)} sf</strong></span>
+                              <span>Over <strong>{Math.round(areaCheck.overArea)} sf</strong></span>
+                            </div>
+                            <p>
+                              {areaCheck.noLoad
+                                ? `No ${componentSurfaceLabel(surface).toLowerCase()} load marked for this room.`
+                                : areaCheck.isBalanced
+                                  ? `${componentSurfaceLabel(surface)} area is balanced.`
+                                  : areaCheck.isOver
+                                    ? `${componentSurfaceLabel(surface)} area is over-assigned by ${Math.round(areaCheck.overArea)} sf.`
+                                    : `${componentSurfaceLabel(surface)} area has ${Math.round(areaCheck.openArea)} sf unassigned.`}
+                            </p>
+                            <div className="takeoff-quick-actions">
+                              <button onClick={() => areaSurface && setRoomSurfaceFullArea(selectedRoom.id, areaSurface)}>Set = room area</button>
+                              <button onClick={() => areaSurface && setRoomSurfaceNoLoad(selectedRoom.id, areaSurface)}>No {componentSurfaceLabel(surface)} load</button>
+                            </div>
+                          </div>
+                        )}
+                        {roomSurfaceComponents(selectedRoom, surface).length === 0 ? (
+                          <p className="takeoff-muted">No {componentSurfaceLabel(surface).toLowerCase()} load components.</p>
+                        ) : (
+                          <div className="takeoff-component-list">
+                            {roomSurfaceComponents(selectedRoom, surface).map((component) => {
+                              const selectedDefinition = options.find((option) => option.code === component.assembly);
+                              return (
+                                <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""}`}>
+                                  <select
+                                    value={component.assembly}
+                                    onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
+                                  >
+                                    {options.map((option) => (
+                                      <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                                    ))}
+                                  </select>
+                                  {componentNeedsDirection(surface) && (
+                                    <select
+                                      value={component.direction ?? ""}
+                                      onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
+                                    >
+                                      <option value="">Direction</option>
+                                      {exteriorDirections.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
+                                    </select>
+                                  )}
+                                  <input
+                                    aria-label={`${surface} component label`}
+                                    value={component.label ?? ""}
+                                    placeholder="Label"
+                                    onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { label: event.target.value })}
+                                  />
+                                  <input
+                                    aria-label={`${surface} component area`}
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    value={component.area}
+                                    onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { area: Number(event.target.value) })}
+                                  />
+                                  <button onClick={() => removeRoomComponent(selectedRoom.id, component.id)}>Remove</button>
+                                  <p className="takeoff-component-meta">
+                                    <strong>{selectedDefinition?.code ?? component.assembly}</strong>
+                                    {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
+                                    {" · "}{componentThermalSummary(selectedDefinition)}
+                                  </p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <p className="takeoff-muted">
+                    Geometry {Math.round(rectArea(selectedRoom))} sf · Volume {Math.round(rectArea(selectedRoom) * selectedRoom.ceilingHeight)} cu ft
+                  </p>
+                </>
+              ) : (
+                <p className="takeoff-muted">Select a room on the plan or in the room list.</p>
               )}
             </section>
           </div>
         </section>
 
-        <aside className={`takeoff-sidebar ${!rightPanelOpen ? "takeoff-sidebar--collapsed" : ""}`}>
+        <aside className={`takeoff-sidebar takeoff-tools-sidebar ${!rightPanelOpen ? "takeoff-sidebar--collapsed" : ""}`}>
           {!rightPanelOpen ? (
-            <button className="takeoff-rail-toggle" onClick={() => setRightPanelOpen(true)} aria-label="Show output panel">Output</button>
+            <button className="takeoff-rail-toggle" onClick={() => setRightPanelOpen(true)} aria-label="Show tools panel">Tools</button>
           ) : (
           <>
           <section className="takeoff-panel">
+            <div className="takeoff-panel-head">
+              <h2>Drawing Tools</h2>
+              <button className="takeoff-icon-button" onClick={() => setRightPanelOpen(false)} aria-label="Hide tools panel">Hide</button>
+            </div>
+            <div className="takeoff-form-actions">
+              <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
+              <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
+              <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setAdjacentDrawMode(false); setTraceTool("select"); }}>Subtract</button>
+              {roomPolygonDraft.length >= 3 && <button className="toolbar-primary" onClick={() => finishPolygonRoom()}>Finish Polygon</button>}
+              {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
+            </div>
+            {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle.</p>}
+            {roomPolygonMode && <p className="takeoff-note">Click room corners. After 3 points, use Finish Polygon, press Enter, or click the Close marker on the first point.</p>}
+            {subtractMode && (
+              <>
+                <label>
+                  Subtract from
+                  <select value={subtractRoomId || floor.rooms[0]?.id || ""} onChange={(event) => setSubtractRoomId(event.target.value)}>
+                    {floor.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+                  </select>
+                </label>
+                <p className="takeoff-note">Drag a subtraction shape across the selected room to cut it away.</p>
+              </>
+            )}
+            <div className="takeoff-room-form takeoff-room-form--rail">
+              <label>Name<input value={draftRoom.name} onChange={(event) => setDraftRoom({ ...draftRoom, name: event.target.value })} /></label>
+              <label>X ft<input type="number" value={draftRoom.x} onChange={(event) => setDraftRoom({ ...draftRoom, x: Number(event.target.value) })} /></label>
+              <label>Y ft<input type="number" value={draftRoom.y} onChange={(event) => setDraftRoom({ ...draftRoom, y: Number(event.target.value) })} /></label>
+              <label>Width<input type="number" min="0" value={draftRoom.width} onChange={(event) => setDraftRoom({ ...draftRoom, width: Number(event.target.value) })} /></label>
+              <label>Depth<input type="number" min="0" value={draftRoom.depth} onChange={(event) => setDraftRoom({ ...draftRoom, depth: Number(event.target.value) })} /></label>
+              <label>Height<input type="number" min="0" step="0.5" value={draftRoom.ceilingHeight} onChange={(event) => setDraftRoom({ ...draftRoom, ceilingHeight: Number(event.target.value) })} /></label>
+            </div>
+            <div className="takeoff-form-actions">
+              <button className="toolbar-primary" onClick={addRoom}>Add Room</button>
+              <button onClick={moveDraftRoomToOpenSpot}>Find Open Spot</button>
+            </div>
+            {message && <p className="takeoff-message">{message}</p>}
+          </section>
+
+          <section className="takeoff-panel">
+            <div className="takeoff-panel-head">
+              <h2>Adjacent Spaces</h2>
+            </div>
+            <div className="takeoff-form-actions">
+              <select value={adjacentSpaceKind} onChange={(event) => setAdjacentSpaceKind(event.target.value as TakeoffAdjacentSpaceKind)}>
+                {adjacentSpaceKinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}
+              </select>
+              <button
+                className={adjacentDrawMode ? "toolbar-primary" : ""}
+                onClick={() => {
+                  setWorkflowStep("trace");
+                  setAdjacentDrawMode((current) => !current);
+                  setRoomDrawMode(false);
+                  setRoomPolygonMode(false);
+                  setSubtractMode(false);
+                  setTraceTool("select");
+                }}
+              >
+                {adjacentDrawMode ? "Stop Drawing" : "Draw Adjacent"}
+              </button>
+            </div>
+            {adjacentDrawMode ? (
+              <p className="takeoff-note">Drag a rectangle along the outside of conditioned space to tag a garage, attic, crawl space, or exterior-adjacent area.</p>
+            ) : (
+              <p className="takeoff-muted">Adjacent spaces tag exterior wall treatment without adding conditioned room area.</p>
+            )}
+            {(floor.adjacentSpaces ?? []).length > 0 && (
+              <div className="takeoff-adjacent-list">
+                {(floor.adjacentSpaces ?? []).map((space) => (
+                  <div key={space.id} className="takeoff-adjacent-row">
+                    <span><strong>{space.name}</strong> · {Math.round(space.width * space.depth)} sf · {adjacentSpaceLabel(space.kind)}</span>
+                    <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="takeoff-panel">
+            <div className="takeoff-panel-head">
+              <h2>Openings</h2>
+            </div>
+            <div className="takeoff-form-actions">
+              <button className={openingModeActive ? "toolbar-primary" : ""} onClick={() => (openingModeActive ? stopOpeningPlacement() : startOpeningPlacement())}>
+                {openingModeActive ? "Stop Placing" : "Place Opening"}
+              </button>
+            </div>
+            {openingModeActive ? (
+              <p className="takeoff-note">
+                Click the plan on an exterior wall. The tool will identify the room and wall facing, then ask which door or glass component to place.
+              </p>
+            ) : (
+              <p className="takeoff-muted">Openings are assigned from the plan grid and must land on exterior/load-bearing room edges.</p>
+            )}
+          </section>
+
+          <section className="takeoff-panel">
+            <div className="takeoff-panel-head">
+              <h2>Validation</h2>
+            </div>
+            {validation.length === 0 ? (
+              <p className="takeoff-ok">Ready for payload preview.</p>
+            ) : (
+              <div className="takeoff-issue-list">
+                {validation.map((issue, index) => (
+                  <button
+                    key={index}
+                    className={`takeoff-issue takeoff-issue--${issue.severity} ${issue.target ? "takeoff-issue--clickable" : ""}`}
+                    onClick={() => focusValidationIssue(issue)}
+                    disabled={!issue.target}
+                  >
+                    {issue.message}
+                  </button>
+                ))}
+              </div>
+            )}
+            {unassignedRegions.length > 0 && (
+              <div className="takeoff-slice-tools">
+                <p className="takeoff-muted">
+                  {selectedUnassignedRegion ? `${selectedUnassignedRegion.label}: ` : ""}
+                  {Math.round(unassignedCellArea)} sf highlighted as unassigned slices.
+                </p>
+                <select
+                  value={selectedUnassignedRegion?.id ?? ""}
+                  onChange={(event) => {
+                    const region = unassignedRegions.find((candidate) => candidate.id === event.target.value) ?? null;
+                    setSelectedUnassignedRegionId(region?.id ?? null);
+                    if (region?.adjacentRoomIds[0]) setSliceRoomId(region.adjacentRoomIds[0]);
+                  }}
+                >
+                  {unassignedRegions.map((region) => (
+                    <option key={region.id} value={region.id}>
+                      {region.label} - {Math.round(region.area)} sf
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={
+                    sliceRoomId && (selectedUnassignedRegion?.adjacentRoomIds.length ? selectedUnassignedRegion.adjacentRoomIds.includes(sliceRoomId) : true)
+                      ? sliceRoomId
+                      : selectedUnassignedRegion?.adjacentRoomIds[0] || floor.rooms[0]?.id || ""
+                  }
+                  onChange={(event) => setSliceRoomId(event.target.value)}
+                >
+                  {(selectedUnassignedRegion?.adjacentRoomIds.length
+                    ? floor.rooms.filter((room) => selectedUnassignedRegion.adjacentRoomIds.includes(room.id))
+                    : floor.rooms
+                  ).map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+                </select>
+                <button onClick={assignHighlightedSlices}>Attribute Highlighted Area</button>
+              </div>
+            )}
+          </section>
+
+          <section className="takeoff-panel takeoff-room-sidebar-legacy">
             <div className="takeoff-panel-head">
               <h2>Rooms</h2>
               <button className="takeoff-icon-button" onClick={() => setRightPanelOpen(false)} aria-label="Hide output panel">Hide</button>
@@ -3442,7 +3759,7 @@ export function TakeoffApp() {
             </div>
           </section>
 
-          <section className="takeoff-panel">
+          <section className="takeoff-panel takeoff-room-sidebar-legacy">
             <div className="takeoff-panel-head">
               <h2>Room Profile</h2>
             </div>
