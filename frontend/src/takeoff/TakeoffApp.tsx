@@ -238,11 +238,17 @@ function simplePolygonsFromMultiPolygon(multiPolygon: MultiPolygon) {
   return mergeConnectedSimplePolygons(pieces);
 }
 
+function mergePolygonEntries(entries: Array<{ polygon: Polygon; area: number }>) {
+  if (entries.length === 0) return [];
+  const [firstPolygon, ...remainingPolygons] = entries.map((entry) => entry.polygon);
+  return simplePolygonsFromMultiPolygon(union(firstPolygon, ...remainingPolygons));
+}
+
 function polygonsShareBoundary(first: Polygon, second: Polygon) {
   const firstEdges = pointsToEdges(clipPolygonToPoints(first));
   const secondEdges = pointsToEdges(clipPolygonToPoints(second));
   return firstEdges.some((firstEdge) =>
-    secondEdges.some((secondEdge) => sharedSegmentLength(firstEdge, secondEdge, 0.01) > 0.01)
+    secondEdges.some((secondEdge) => sharedSegmentLength(firstEdge, secondEdge, 0.18) > 0.05)
   );
 }
 
@@ -2262,6 +2268,15 @@ export function TakeoffApp() {
     return simplePolygonsFromMultiPolygon(available);
   }
 
+  function unassignedPolygonsInsideRect(rect: PlanRect) {
+    if (unassignedCells.length === 0) return [];
+    const rectPolygon = pointsToClipPolygon(rectToPoints(rect));
+    return unassignedCells.flatMap((cell) => {
+      const clipped = intersection([pointsToClipPolygon(unassignedCellPoints(cell))], [rectPolygon]);
+      return simplePolygonsFromMultiPolygon(clipped);
+    });
+  }
+
   function makeRoomFromPolygon(points: TakeoffPoint[]) {
     const bounds = polygonBounds(points);
     const room = {
@@ -2282,7 +2297,10 @@ export function TakeoffApp() {
       setMessage("Drag a larger area to create a room.");
       return;
     }
-    const availablePolygons = availablePolygonsFromRect(rect);
+    const availablePolygons = mergePolygonEntries([
+      ...availablePolygonsFromRect(rect),
+      ...unassignedPolygonsInsideRect(rect),
+    ]);
     if (availablePolygons.length === 0) {
       setMessage("No open room area remains after clipping to the exterior and existing rooms.");
       return;
