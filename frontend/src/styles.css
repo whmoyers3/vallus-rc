@@ -854,6 +854,32 @@ button.toolbar-primary:hover {
   overflow: auto;
 }
 
+.takeoff-model-preview {
+  background: #eaf2ef;
+  min-height: 560px;
+  position: relative;
+  width: 100%;
+}
+
+.takeoff-model-preview canvas {
+  display: block;
+  min-height: 560px;
+  width: 100% !important;
+}
+
+.takeoff-model-caption {
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid #d9e0e6;
+  border-radius: 6px;
+  color: #405060;
+  font-size: 12px;
+  left: 12px;
+  padding: 6px 8px;
+  position: absolute;
+  top: 12px;
+  z-index: 1;
+}
+
 .takeoff-drawing-layer {
   position: relative;
 }

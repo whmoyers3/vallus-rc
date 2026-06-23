@@ -14,11 +14,13 @@
     "polygon-clipping": "^0.15.7",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
+    "three": "^0.184.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.16",
-    "@types/react-dom": "^19.2.3"
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.184.1"
   }
 }
