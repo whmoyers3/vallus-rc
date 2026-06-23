@@ -310,6 +310,8 @@ Implemented:
 - Added a room-summary metric toggle for floor area, ceiling area, net wall area, or glass area.
 - Improved dragged-room clipping so oversized rectangles can start over existing rooms and create only the currently uncovered conditioned-area section or sections.
 - Synced the selected unassigned-region state after room deletion/reshaping so validation and highlighted open-area totals refresh against current geometry.
+- Re-merged connected clipped room pieces after blocker subtraction so hallway-like open areas become one room instead of several slices.
+- Reworked unassigned-space detection to clip actual open geometry from the footprint minus rooms, so deleting or reshaping a room restores an actionable validation warning with highlighted assignable area.
 
 Still pending:
 

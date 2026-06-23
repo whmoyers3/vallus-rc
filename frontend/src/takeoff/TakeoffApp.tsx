@@ -71,7 +71,7 @@ type PendingOpeningTarget = {
 } | null;
 type EditingOpeningTarget = OpeningMoveTarget | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
-type UnassignedCell = { x: number; y: number; width: number; depth: number };
+type UnassignedCell = { x: number; y: number; width: number; depth: number; polygon?: TakeoffPoint[]; area?: number };
 type UnassignedRegion = {
   id: string;
   label: string;
@@ -230,11 +230,58 @@ function simplePolygonsFromClipPolygon(polygon: Polygon) {
 }
 
 function simplePolygonsFromMultiPolygon(multiPolygon: MultiPolygon) {
-  return multiPolygon
+  const pieces = multiPolygon
     .flatMap(simplePolygonsFromClipPolygon)
     .map((polygon) => ({ polygon, area: clipPolygonArea(polygon) }))
     .filter((entry) => entry.area > 0.5)
     .sort((a, b) => b.area - a.area);
+  return mergeConnectedSimplePolygons(pieces);
+}
+
+function polygonsShareBoundary(first: Polygon, second: Polygon) {
+  const firstEdges = pointsToEdges(clipPolygonToPoints(first));
+  const secondEdges = pointsToEdges(clipPolygonToPoints(second));
+  return firstEdges.some((firstEdge) =>
+    secondEdges.some((secondEdge) => sharedSegmentLength(firstEdge, secondEdge, 0.01) > 0.01)
+  );
+}
+
+function mergeConnectedSimplePolygons(entries: Array<{ polygon: Polygon; area: number }>) {
+  const remaining = new Set(entries.map((_, index) => index));
+  const mergedEntries: Array<{ polygon: Polygon; area: number }> = [];
+
+  while (remaining.size > 0) {
+    const firstIndex = remaining.values().next().value as number;
+    const queue = [firstIndex];
+    const group: Array<{ polygon: Polygon; area: number }> = [];
+    remaining.delete(firstIndex);
+
+    while (queue.length > 0) {
+      const currentIndex = queue.shift()!;
+      const current = entries[currentIndex];
+      group.push(current);
+      for (const candidateIndex of Array.from(remaining)) {
+        if (!group.some((groupEntry) => polygonsShareBoundary(groupEntry.polygon, entries[candidateIndex].polygon))) continue;
+        remaining.delete(candidateIndex);
+        queue.push(candidateIndex);
+      }
+    }
+
+    const [firstPolygon, ...remainingPolygons] = group.map((entry) => entry.polygon);
+    const merged = union(firstPolygon, ...remainingPolygons);
+    const simpleMerged = merged
+      .filter((polygon) => polygon.length === 1)
+      .map((polygon) => ({ polygon, area: clipPolygonArea(polygon) }))
+      .filter((entry) => entry.area > 0.5);
+
+    if (simpleMerged.length > 0 && simpleMerged.reduce((sum, entry) => sum + entry.area, 0) >= group.reduce((sum, entry) => sum + entry.area, 0) - 0.5) {
+      mergedEntries.push(...simpleMerged);
+    } else {
+      mergedEntries.push(...group);
+    }
+  }
+
+  return mergedEntries.sort((a, b) => b.area - a.area);
 }
 
 function largestClipPolygon(multiPolygon: MultiPolygon) {
@@ -844,24 +891,33 @@ function cellKey(cell: Pick<UnassignedCell, "x" | "y">) {
   return `${cell.x.toFixed(3)},${cell.y.toFixed(3)}`;
 }
 
+function unassignedCellPoints(cell: UnassignedCell) {
+  return cell.polygon && cell.polygon.length >= 3 ? cell.polygon : rectToPoints(cell);
+}
+
+function unassignedCellMeasuredArea(cell: UnassignedCell) {
+  return cell.area ?? polygonArea(unassignedCellPoints(cell));
+}
+
 function cellsAreAdjacent(a: UnassignedCell, b: UnassignedCell) {
-  const horizontalTouch = Math.abs(a.x + a.width - b.x) < 0.001 || Math.abs(b.x + b.width - a.x) < 0.001;
-  const verticalOverlap = Math.min(a.y + a.depth, b.y + b.depth) - Math.max(a.y, b.y) > 0.001;
-  const verticalTouch = Math.abs(a.y + a.depth - b.y) < 0.001 || Math.abs(b.y + b.depth - a.y) < 0.001;
-  const horizontalOverlap = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0.001;
-  return (horizontalTouch && verticalOverlap) || (verticalTouch && horizontalOverlap);
+  const firstEdges = pointsToEdges(unassignedCellPoints(a));
+  const secondEdges = pointsToEdges(unassignedCellPoints(b));
+  return firstEdges.some((firstEdge) =>
+    secondEdges.some((secondEdge) => sharedSegmentLength(firstEdge, secondEdge, 0.01) > 0.01)
+  );
 }
 
 function unassignedRegionBounds(cells: UnassignedCell[]): PlanRect {
-  const minX = Math.min(...cells.map((cell) => cell.x));
-  const minY = Math.min(...cells.map((cell) => cell.y));
-  const maxX = Math.max(...cells.map((cell) => cell.x + cell.width));
-  const maxY = Math.max(...cells.map((cell) => cell.y + cell.depth));
+  const bounds = cells.map((cell) => polygonBounds(unassignedCellPoints(cell)));
+  const minX = Math.min(...bounds.map((bound) => bound.x));
+  const minY = Math.min(...bounds.map((bound) => bound.y));
+  const maxX = Math.max(...bounds.map((bound) => bound.x + bound.width));
+  const maxY = Math.max(...bounds.map((bound) => bound.y + bound.depth));
   return { x: minX, y: minY, width: maxX - minX, depth: maxY - minY };
 }
 
 function adjacentRoomsForCells(floor: TakeoffFloor, cells: UnassignedCell[]) {
-  const cellEdges = cells.flatMap((cell) => pointsToEdges(rectToPoints(cell)));
+  const cellEdges = cells.flatMap((cell) => pointsToEdges(unassignedCellPoints(cell)));
   const tolerance = Math.max(0.25, floor.scale.feetPerGrid * 0.25);
   return floor.rooms
     .filter((room) => pointsToEdges(roomCorners(room)).some((roomEdge) =>
@@ -891,7 +947,7 @@ function buildUnassignedRegions(floor: TakeoffFloor, cells: UnassignedCell[]): U
     }
 
     const bounds = unassignedRegionBounds(regionCells);
-    const area = regionCells.reduce((sum, cell) => sum + cell.width * cell.depth, 0);
+    const area = regionCells.reduce((sum, cell) => sum + unassignedCellMeasuredArea(cell), 0);
     regions.push({
       id: `unassigned-${bounds.x.toFixed(2)}-${bounds.y.toFixed(2)}-${regionCells.length}`,
       label: `Unassigned area ${regions.length + 1}`,
@@ -1327,10 +1383,17 @@ export function TakeoffApp() {
   const activeDragRect = dragState ? rectFromPoints(dragState.start, dragState.current) : null;
   const visibleCrop = floor.reference?.crop ?? { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
   const unassignedCells = useMemo(() => {
-    if (floor.exteriorPolygon.length < 3) return [];
+    if (floor.exteriorPolygon.length < 3 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
     const floorBounds = footprintBounds(floor);
     const cells: UnassignedCell[] = [];
+    let available: MultiPolygon = floor.exteriorPolygon.length >= 3
+      ? [pointsToClipPolygon(floor.exteriorPolygon)]
+      : [pointsToClipPolygon(rectToPoints({ x: 0, y: 0, width: floor.conditionedPerimeter.width, depth: floor.conditionedPerimeter.depth }))];
+    const blockers = floor.rooms.map((room) => roomToClipPolygon(room));
+    if (blockers.length > 0) {
+      available = difference(available, ...blockers);
+    }
 
     for (let y = floorBounds.y; y < floorBounds.y + floorBounds.depth; y += cellSize) {
       for (let x = floorBounds.x; x < floorBounds.x + floorBounds.width; x += cellSize) {
@@ -1340,10 +1403,22 @@ export function TakeoffApp() {
           width: Math.min(cellSize, floorBounds.x + floorBounds.width - x),
           depth: Math.min(cellSize, floorBounds.y + floorBounds.depth - y),
         };
-        const center = { x: cell.x + cell.width / 2, y: cell.y + cell.depth / 2 };
-        const inFootprint = pointInPolygon(center, floor.exteriorPolygon);
-        const inRoom = floor.rooms.some((room) => pointInRoom(center, room));
-        if (inFootprint && !inRoom) cells.push(cell);
+        const clipped = intersection([pointsToClipPolygon(rectToPoints(cell))], available);
+        for (const polygon of clipped) {
+          for (const { polygon: simplePolygon, area } of simplePolygonsFromMultiPolygon([polygon])) {
+            if (area <= 0.5) continue;
+            const polygonPoints = clipPolygonToPoints(simplePolygon);
+            const bounds = polygonBounds(polygonPoints);
+            cells.push({
+              x: bounds.x,
+              y: bounds.y,
+              width: bounds.width,
+              depth: bounds.depth,
+              polygon: polygonPoints,
+              area,
+            });
+          }
+        }
       }
     }
 
@@ -1352,7 +1427,7 @@ export function TakeoffApp() {
   const unassignedRegions = useMemo(() => buildUnassignedRegions(floor, unassignedCells), [floor, unassignedCells]);
   const selectedUnassignedRegion = unassignedRegions.find((region) => region.id === selectedUnassignedRegionId) ?? unassignedRegions[0] ?? null;
   const activeUnassignedCells = selectedUnassignedRegion?.cells ?? unassignedCells;
-  const unassignedCellArea = activeUnassignedCells.reduce((sum, cell) => sum + cell.width * cell.depth, 0);
+  const unassignedCellArea = activeUnassignedCells.reduce((sum, cell) => sum + unassignedCellMeasuredArea(cell), 0);
   const validation = useMemo(() => buildValidation(floor, unassignedRegions), [floor, unassignedRegions]);
 
   const canvasWidth = 720;
@@ -2324,7 +2399,7 @@ export function TakeoffApp() {
     if (!roomId || activeUnassignedCells.length === 0) return;
     const targetRoom = floor.rooms.find((room) => room.id === roomId);
     if (!targetRoom) return;
-    const cellPolygons = activeUnassignedCells.map((cell) => pointsToClipPolygon(rectToPoints(cell)));
+    const cellPolygons = activeUnassignedCells.map((cell) => pointsToClipPolygon(unassignedCellPoints(cell)));
     const merged = union(roomToClipPolygon(targetRoom), ...cellPolygons);
     const largest = largestClipPolygon(merged);
     if (!largest) {
@@ -3085,13 +3160,11 @@ export function TakeoffApp() {
               ))}
               {unassignedRegions.flatMap((region) => region.cells.map((cell, index) => {
                 const isSelected = !selectedUnassignedRegionId || selectedUnassignedRegionId === region.id;
+                const points = unassignedCellPoints(cell).map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ");
                 return (
-                  <rect
+                  <polygon
                     key={`${region.id}-${index}-${cell.x}-${cell.y}`}
-                    x={offsetX + cell.x * scale}
-                    y={offsetY + cell.y * scale}
-                    width={cell.width * scale}
-                    height={cell.depth * scale}
+                    points={points}
                     fill={isSelected ? "rgba(244, 187, 68, 0.34)" : "rgba(244, 187, 68, 0.12)"}
                     stroke={isSelected ? "rgba(154, 106, 18, 0.55)" : "rgba(154, 106, 18, 0.18)"}
                     strokeWidth={isSelected ? "0.8" : "0.4"}
