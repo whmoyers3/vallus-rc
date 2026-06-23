@@ -1340,6 +1340,31 @@ function createHorizontalShapeMesh(points: TakeoffPoint[], center: TakeoffPoint,
   return new THREE.Mesh(geometry, material);
 }
 
+function modelPoint(point: TakeoffPoint, center: TakeoffPoint, height: number) {
+  return new THREE.Vector3(point.x - center.x, height, point.y - center.y);
+}
+
+function createPanelMesh(vertices: THREE.Vector3[], material: THREE.Material) {
+  const geometry = new THREE.BufferGeometry().setFromPoints(vertices);
+  if (vertices.length === 3) {
+    geometry.setIndex([0, 1, 2]);
+  } else if (vertices.length === 4) {
+    geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  }
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, material);
+}
+
+function raisedWallMeshesForPoints(points: TakeoffPoint[], center: TakeoffPoint, baseHeight: number, topHeight: number, material: THREE.Material) {
+  if (topHeight <= baseHeight + 0.01) return [];
+  return pointsToEdges(points).map((edge) => createPanelMesh([
+    modelPoint(edge.a, center, baseHeight),
+    modelPoint(edge.b, center, baseHeight),
+    modelPoint(edge.b, center, topHeight),
+    modelPoint(edge.a, center, topHeight),
+  ], material));
+}
+
 function wallMeshForEdge(a: TakeoffPoint, b: TakeoffPoint, center: TakeoffPoint, height: number, material: THREE.Material) {
   const dx = b.x - a.x;
   const dz = b.y - a.y;
@@ -1437,6 +1462,81 @@ function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCei
     new THREE.Vector3(a.x - center.x, ceilingInfo.peakHeight, a.y - center.y),
     new THREE.Vector3(b.x - center.x, ceilingInfo.peakHeight, b.y - center.y),
   ];
+}
+
+function vaultedCeilingMeshesForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, ceilingMaterial: THREE.Material, kneeWallMaterial: THREE.Material) {
+  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
+  const bounds = polygonBounds(roomCorners(room));
+  const minX = bounds.x;
+  const maxX = bounds.x + bounds.width;
+  const minY = bounds.y;
+  const maxY = bounds.y + bounds.depth;
+  const meshes: THREE.Mesh[] = [];
+  meshes.push(...raisedWallMeshesForPoints(roomCorners(room), center, defaultCeilingHeight, ceilingInfo.lowHeight, kneeWallMaterial));
+
+  if (ceilingInfo.ridgeDirection === "E-W") {
+    const ridgeY = minY + bounds.depth * ceilingInfo.ridgeRatio;
+    const ridgeLeft = { x: minX, y: ridgeY };
+    const ridgeRight = { x: maxX, y: ridgeY };
+    if (ridgeY > minY + 0.01) {
+      meshes.push(createPanelMesh([
+        modelPoint({ x: minX, y: minY }, center, ceilingInfo.lowHeight),
+        modelPoint({ x: maxX, y: minY }, center, ceilingInfo.lowHeight),
+        modelPoint(ridgeRight, center, ceilingInfo.peakHeight),
+        modelPoint(ridgeLeft, center, ceilingInfo.peakHeight),
+      ], ceilingMaterial));
+    }
+    if (ridgeY < maxY - 0.01) {
+      meshes.push(createPanelMesh([
+        modelPoint(ridgeLeft, center, ceilingInfo.peakHeight),
+        modelPoint(ridgeRight, center, ceilingInfo.peakHeight),
+        modelPoint({ x: maxX, y: maxY }, center, ceilingInfo.lowHeight),
+        modelPoint({ x: minX, y: maxY }, center, ceilingInfo.lowHeight),
+      ], ceilingMaterial));
+    }
+    meshes.push(createPanelMesh([
+      modelPoint({ x: minX, y: minY }, center, ceilingInfo.lowHeight),
+      modelPoint({ x: minX, y: maxY }, center, ceilingInfo.lowHeight),
+      modelPoint(ridgeLeft, center, ceilingInfo.peakHeight),
+    ], kneeWallMaterial));
+    meshes.push(createPanelMesh([
+      modelPoint({ x: maxX, y: maxY }, center, ceilingInfo.lowHeight),
+      modelPoint({ x: maxX, y: minY }, center, ceilingInfo.lowHeight),
+      modelPoint(ridgeRight, center, ceilingInfo.peakHeight),
+    ], kneeWallMaterial));
+    return meshes;
+  }
+
+  const ridgeX = minX + bounds.width * ceilingInfo.ridgeRatio;
+  const ridgeTop = { x: ridgeX, y: minY };
+  const ridgeBottom = { x: ridgeX, y: maxY };
+  if (ridgeX > minX + 0.01) {
+    meshes.push(createPanelMesh([
+      modelPoint({ x: minX, y: maxY }, center, ceilingInfo.lowHeight),
+      modelPoint({ x: minX, y: minY }, center, ceilingInfo.lowHeight),
+      modelPoint(ridgeTop, center, ceilingInfo.peakHeight),
+      modelPoint(ridgeBottom, center, ceilingInfo.peakHeight),
+    ], ceilingMaterial));
+  }
+  if (ridgeX < maxX - 0.01) {
+    meshes.push(createPanelMesh([
+      modelPoint(ridgeBottom, center, ceilingInfo.peakHeight),
+      modelPoint(ridgeTop, center, ceilingInfo.peakHeight),
+      modelPoint({ x: maxX, y: minY }, center, ceilingInfo.lowHeight),
+      modelPoint({ x: maxX, y: maxY }, center, ceilingInfo.lowHeight),
+    ], ceilingMaterial));
+  }
+  meshes.push(createPanelMesh([
+    modelPoint({ x: minX, y: minY }, center, ceilingInfo.lowHeight),
+    modelPoint({ x: maxX, y: minY }, center, ceilingInfo.lowHeight),
+    modelPoint(ridgeTop, center, ceilingInfo.peakHeight),
+  ], kneeWallMaterial));
+  meshes.push(createPanelMesh([
+    modelPoint({ x: maxX, y: maxY }, center, ceilingInfo.lowHeight),
+    modelPoint({ x: minX, y: maxY }, center, ceilingInfo.lowHeight),
+    modelPoint(ridgeBottom, center, ceilingInfo.peakHeight),
+  ], kneeWallMaterial));
+  return meshes;
 }
 
 function TakeoffModelPreview({
@@ -1544,6 +1644,7 @@ function TakeoffModelPreview({
     const interiorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9aa9b5, transparent: true, opacity: 0.16, side: THREE.DoubleSide });
     const selectedWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6aa0d6, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
     const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
+    const kneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xb35b2f, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
     const glassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.78, side: THREE.DoubleSide });
     const doorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.82, side: THREE.DoubleSide });
     const openingFrameMaterial = new THREE.MeshBasicMaterial({ color: 0x2f3b1f, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
@@ -1587,7 +1688,21 @@ function TakeoffModelPreview({
       }
 
       if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
-        scene.add(createHorizontalShapeMesh(points, center, room.ceilingHeight, roomCeilingMaterial));
+        const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
+        if (ceilingInfo.ceilingType === "vaulted") {
+          for (const mesh of vaultedCeilingMeshesForRoom(room, center, floor.defaultCeilingHeight ?? 9, roomCeilingMaterial, kneeWallMaterial)) {
+            mesh.userData.roomId = room.id;
+            scene.add(mesh);
+          }
+        } else {
+          const ceilingMesh = createHorizontalShapeMesh(points, center, room.ceilingHeight, roomCeilingMaterial);
+          ceilingMesh.userData.roomId = room.id;
+          scene.add(ceilingMesh);
+          for (const mesh of raisedWallMeshesForPoints(points, center, floor.defaultCeilingHeight ?? 9, room.ceilingHeight, kneeWallMaterial)) {
+            mesh.userData.roomId = room.id;
+            scene.add(mesh);
+          }
+        }
       }
 
       const ridge = roomRidgePoints(room, center, floor.defaultCeilingHeight ?? 9);
