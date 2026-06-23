@@ -76,7 +76,7 @@ type EditingOpeningTarget = OpeningMoveTarget | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
 type UnassignedCell = { x: number; y: number; width: number; depth: number; polygon?: TakeoffPoint[]; area?: number };
 type ModelViewPreset = "iso" | "front" | "rear" | "left" | "right";
-type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls";
+type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "interiorWalls";
 type UnassignedRegion = {
   id: string;
   label: string;
@@ -1461,6 +1461,7 @@ function TakeoffModelPreview({
     ceilings: true,
     floors: true,
     walls: true,
+    interiorWalls: false,
   });
 
   function setModelViewPreset(preset: ModelViewPreset) {
@@ -1540,6 +1541,7 @@ function TakeoffModelPreview({
     const exteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x8fc0b0, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
     const floorMaterial = new THREE.MeshPhongMaterial({ color: 0xc8ddd5, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
     const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x8fb4c8, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
+    const interiorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9aa9b5, transparent: true, opacity: 0.16, side: THREE.DoubleSide });
     const selectedWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6aa0d6, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
     const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
     const glassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.78, side: THREE.DoubleSide });
@@ -1565,8 +1567,20 @@ function TakeoffModelPreview({
       }
 
       if (visibleLayers.walls) {
+        for (const segment of roomExteriorSegments(floor, room)) {
+          const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(room.ceilingHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
+          wallMesh.userData.roomId = room.id;
+          scene.add(wallMesh);
+        }
+      }
+
+      if (visibleLayers.interiorWalls) {
+        const exposedSegments = roomExteriorSegments(floor, room);
+        const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
         for (const edge of pointsToEdges(points)) {
-          const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
+          const isLoadWall = exposedSegments.some((segment) => sharedSegmentLength(edge, segment, tolerance) > 0.25);
+          if (isLoadWall) continue;
+          const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), interiorWallMaterial);
           wallMesh.userData.roomId = room.id;
           scene.add(wallMesh);
         }
@@ -1654,7 +1668,8 @@ function TakeoffModelPreview({
           ["doors", "Doors"],
           ["ceilings", "Ceilings"],
           ["floors", "Floors"],
-          ["walls", "Walls"],
+          ["walls", "Load walls"],
+          ["interiorWalls", "Interior walls"],
         ] as Array<[ModelLayerKey, string]>).map(([key, label]) => (
           <label key={key}>
             <input

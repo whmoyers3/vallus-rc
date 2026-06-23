@@ -327,6 +327,7 @@ Implemented:
 - Improved 3D opening visibility by anchoring placed windows and doors to the nearest actual room wall edge with a visible frame instead of relying only on compass-facing placement.
 - Added 3D QA layer checkboxes for windows, doors, ceilings, floors, and walls so reviewers can isolate or hide component types while verifying takeoff changes.
 - Added the uploaded/rendered plan reference as a translucent floor texture in 3D QA, with a Plan PDF checkbox so it can be shown for context or hidden during component verification.
+- Split the 3D wall layer into default-on load/perimeter walls and default-off faint interior walls so the QA view focuses on load components while still allowing interior partitions for orientation.
 
 Still pending:
 
