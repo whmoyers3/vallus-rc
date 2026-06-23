@@ -313,6 +313,8 @@ Implemented:
 - Re-merged connected clipped room pieces after blocker subtraction so hallway-like open areas become one room instead of several slices.
 - Reworked unassigned-space detection to clip actual open geometry from the footprint minus rooms, so deleting or reshaping a room restores an actionable validation warning with highlighted assignable area.
 - Dragged room creation now also uses the same clipped unassigned-space geometry as validation, preventing adjacent open hallway bands from being missed when direct room clipping drops a section.
+- Hid Takeoff JSON and Payload Preview output panels by default behind explicit Show/Hide controls.
+- Grouped the plan grid zoom controls so minus, zoom percent, and plus sit together beside Fit Grid/Fit Plan.
 
 Still pending:
 

@@ -1314,6 +1314,8 @@ export function TakeoffApp() {
   });
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [takeoffJsonOpen, setTakeoffJsonOpen] = useState(false);
+  const [payloadPreviewOpen, setPayloadPreviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
   const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("trace");
@@ -3098,11 +3100,15 @@ export function TakeoffApp() {
                 <span><b>{Math.max(0, Math.round(unassignedArea))}</b> open</span>
               </div>
               <div className="takeoff-stage-tools" aria-label="Plan zoom controls">
-                <button onClick={() => setZoom((current) => Math.max(0.5, Number((current - 0.25).toFixed(2))))}>-</button>
-                <button onClick={fitGrid}>Fit Grid</button>
-                <button onClick={fitPlan}>Fit Plan</button>
-                <span>{Math.round(zoom * 100)}%</span>
-                <button onClick={() => setZoom((current) => Math.min(8, Number((current + 0.25).toFixed(2))))}>+</button>
+                <div className="takeoff-stage-tool-group">
+                  <button onClick={fitGrid}>Fit Grid</button>
+                  <button onClick={fitPlan}>Fit Plan</button>
+                </div>
+                <div className="takeoff-zoom-group" aria-label="Zoom level">
+                  <button onClick={() => setZoom((current) => Math.max(0.5, Number((current - 0.25).toFixed(2))))}>-</button>
+                  <span>{Math.round(zoom * 100)}%</span>
+                  <button onClick={() => setZoom((current) => Math.min(8, Number((current + 0.25).toFixed(2))))}>+</button>
+                </div>
               </div>
             </div>
           </div>
@@ -4198,15 +4204,29 @@ export function TakeoffApp() {
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
               <h2>Takeoff JSON</h2>
+              <button className="takeoff-icon-button" onClick={() => setTakeoffJsonOpen((current) => !current)}>
+                {takeoffJsonOpen ? "Hide" : "Show"}
+              </button>
             </div>
-            <pre className="takeoff-code">{JSON.stringify(takeoffProject, null, 2)}</pre>
+            {takeoffJsonOpen ? (
+              <pre className="takeoff-code">{JSON.stringify(takeoffProject, null, 2)}</pre>
+            ) : (
+              <p className="takeoff-muted">Hidden by default. Show when inspecting the editable takeoff file.</p>
+            )}
           </section>
 
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
               <h2>Payload Preview</h2>
+              <button className="takeoff-icon-button" onClick={() => setPayloadPreviewOpen((current) => !current)}>
+                {payloadPreviewOpen ? "Hide" : "Show"}
+              </button>
             </div>
-            <pre className="takeoff-code">{JSON.stringify(payload, null, 2)}</pre>
+            {payloadPreviewOpen ? (
+              <pre className="takeoff-code">{JSON.stringify(payload, null, 2)}</pre>
+            ) : (
+              <p className="takeoff-muted">Hidden by default. Show when checking the calculator import payload.</p>
+            )}
           </section>
           </>
           )}

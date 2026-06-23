@@ -807,6 +807,20 @@ button.toolbar-primary:hover {
   gap: 5px;
 }
 
+.takeoff-stage-tool-group,
+.takeoff-zoom-group {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.takeoff-zoom-group {
+  background: #f3f6f8;
+  border: 1px solid #d9e0e6;
+  border-radius: 6px;
+  padding: 3px;
+}
+
 .takeoff-stage-tools button {
   background: #ffffff;
   border: 1px solid #c9d3dc;
