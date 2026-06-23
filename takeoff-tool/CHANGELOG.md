@@ -323,6 +323,10 @@ Implemented:
 - Added plan-grid review modes for Plan, Floor, Ceiling, Walls, and 3D QA so QA can review floor/ceiling/wall information across the full plan instead of only within Room Profile.
 - Ceiling review mode shows vaulted ridge direction and low/peak heights across rooms; Wall review mode emphasizes exterior/load-bearing wall segments.
 - Added a Three.js-powered 3D QA model preview with translucent room floors, walls, ceilings, opening markers, and vaulted ridge lines so component QA can happen in a spatial view instead of a labeled 2D overlay.
+- Added 3D QA navigation: right-click drag orbit, wheel zoom, drag pan, and Iso/Front/Rear/Left/Right camera presets.
+- Improved 3D opening visibility by anchoring placed windows and doors to the nearest actual room wall edge with a visible frame instead of relying only on compass-facing placement.
+- Added 3D QA layer checkboxes for windows, doors, ceilings, floors, and walls so reviewers can isolate or hide component types while verifying takeoff changes.
+- Added the uploaded/rendered plan reference as a translucent floor texture in 3D QA, with a Plan PDF checkbox so it can be shown for context or hidden during component verification.
 
 Still pending:
 

@@ -3,6 +3,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import polygonClipping, { type MultiPolygon, type Polygon, type Ring } from "polygon-clipping";
 import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type {
   TakeoffAdjacentSpace,
   TakeoffAdjacentSpaceKind,
@@ -74,6 +75,8 @@ type PendingOpeningTarget = {
 type EditingOpeningTarget = OpeningMoveTarget | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
 type UnassignedCell = { x: number; y: number; width: number; depth: number; polygon?: TakeoffPoint[]; area?: number };
+type ModelViewPreset = "iso" | "front" | "rear" | "left" | "right";
+type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls";
 type UnassignedRegion = {
   id: string;
   label: string;
@@ -1348,25 +1351,74 @@ function wallMeshForEdge(a: TakeoffPoint, b: TakeoffPoint, center: TakeoffPoint,
   return mesh;
 }
 
-function openingMeshForComponent(component: TakeoffRoomComponent, center: TakeoffPoint, material: THREE.Material) {
+function nearestRoomEdge(point: TakeoffPoint, room: TakeoffRectRoom) {
+  let best: { a: TakeoffPoint; b: TakeoffPoint; point: TakeoffPoint; distance: number } | null = null;
+  for (const edge of pointsToEdges(roomCorners(room))) {
+    const projected = closestPointOnSegment(point, edge.a, edge.b);
+    const edgeDistance = distance(point, projected);
+    if (!best || edgeDistance < best.distance) best = { ...edge, point: projected, distance: edgeDistance };
+  }
+  return best;
+}
+
+function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffRectRoom, center: TakeoffPoint, material: THREE.Material, frameMaterial: THREE.Material) {
   if (!component.placement) return null;
   const width = Math.max(1.5, component.width ?? Math.sqrt(Math.max(component.area, 1) * 0.6));
   const height = Math.max(2, component.height ?? Math.max(2, component.area / width));
-  const sill = component.surface === "door" ? height / 2 : 3 + height / 2;
-  const geometry = new THREE.PlaneGeometry(width, height);
+  const edge = nearestRoomEdge(component.placement, room);
+  if (!edge) return null;
+  const dx = edge.b.x - edge.a.x;
+  const dz = edge.b.y - edge.a.y;
+  const length = Math.max(0.001, Math.hypot(dx, dz));
+  const ux = dx / length;
+  const uz = dz / length;
+  const edgeCenter = { x: (edge.a.x + edge.b.x) / 2, y: (edge.a.y + edge.b.y) / 2 };
+  const roomCenterPoint = roomCenter(room);
+  const normalA = { x: -uz, y: ux };
+  const normalB = { x: uz, y: -ux };
+  const outward = distance({ x: edgeCenter.x + normalA.x, y: edgeCenter.y + normalA.y }, roomCenterPoint) >
+    distance({ x: edgeCenter.x + normalB.x, y: edgeCenter.y + normalB.y }, roomCenterPoint)
+    ? normalA
+    : normalB;
+  const verticalCenter = component.surface === "door"
+    ? height / 2
+    : Math.min(Math.max(3 + height / 2, height / 2), Math.max(height / 2, room.ceilingHeight - 0.4));
+  const group = new THREE.Group();
+  group.position.set(edge.point.x + outward.x * 0.16 - center.x, verticalCenter, edge.point.y + outward.y * 0.16 - center.y);
+  group.rotation.y = -Math.atan2(dz, dx);
+  const frame = new THREE.Mesh(new THREE.PlaneGeometry(width + 0.22, height + 0.22), frameMaterial);
+  frame.position.z = -0.01;
+  const fill = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+  fill.position.z = 0.01;
+  group.add(frame);
+  group.add(fill);
+  group.userData.roomId = room.id;
+  return group;
+}
+
+function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, texture: THREE.Texture) {
+  const width = Math.max(floor.designGrid.width, 1);
+  const depth = Math.max(floor.designGrid.depth, 1);
+  const crop = floor.reference?.crop;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.wrapT = THREE.ClampToEdgeWrapping;
+  if (crop && crop.width > 0 && crop.depth > 0) {
+    texture.repeat.set(crop.width / width, crop.depth / depth);
+    texture.offset.set(crop.x / width, 1 - (crop.y + crop.depth) / depth);
+  }
+  texture.needsUpdate = true;
+
+  const material = new THREE.MeshBasicMaterial({
+    map: texture,
+    opacity: 0.52,
+    side: THREE.DoubleSide,
+    transparent: true,
+  });
+  const geometry = new THREE.PlaneGeometry(width, depth);
+  geometry.rotateX(-Math.PI / 2);
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.set(component.placement.x - center.x, sill, component.placement.y - center.y);
-  const directionAngles: Partial<Record<NonNullable<TakeoffRoomComponent["direction"]>, number>> = {
-    N: 0,
-    S: Math.PI,
-    E: -Math.PI / 2,
-    W: Math.PI / 2,
-    NE: -Math.PI / 4,
-    SE: -Math.PI * 0.75,
-    SW: Math.PI * 0.75,
-    NW: Math.PI / 4,
-  };
-  mesh.rotation.y = directionAngles[component.direction as NonNullable<TakeoffRoomComponent["direction"]>] ?? 0;
+  mesh.position.set(width / 2 - center.x, -0.08, depth / 2 - center.y);
   return mesh;
 }
 
@@ -1389,14 +1441,44 @@ function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCei
 
 function TakeoffModelPreview({
   floor,
+  referenceUrl,
   selectedRoomId,
   onSelectRoom,
 }: {
   floor: TakeoffFloor;
+  referenceUrl: string;
   selectedRoomId: string | null;
   onSelectRoom: (roomId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const spanRef = useRef(40);
+  const [visibleLayers, setVisibleLayers] = useState<Record<ModelLayerKey, boolean>>({
+    reference: true,
+    windows: true,
+    doors: true,
+    ceilings: true,
+    floors: true,
+    walls: true,
+  });
+
+  function setModelViewPreset(preset: ModelViewPreset) {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera || !controls) return;
+    const span = spanRef.current;
+    const positions: Record<ModelViewPreset, [number, number, number]> = {
+      iso: [span * 0.82, span * 0.72, span * 1.05],
+      front: [0, span * 0.42, span * 1.35],
+      rear: [0, span * 0.42, -span * 1.35],
+      left: [-span * 1.35, span * 0.42, 0],
+      right: [span * 1.35, span * 0.42, 0],
+    };
+    camera.position.set(...positions[preset]);
+    controls.target.set(0, 4, 0);
+    controls.update();
+  }
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1415,8 +1497,27 @@ function TakeoffModelPreview({
     scene.fog = new THREE.Fog(0xeaf2ef, 120, 420);
     const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 1000);
     const span = Math.max(bounds.width, bounds.depth, 30);
+    spanRef.current = span;
+    cameraRef.current = camera;
     camera.position.set(span * 0.82, span * 0.72, span * 1.05);
     camera.lookAt(0, 4, 0);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 4, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.enablePan = true;
+    controls.minDistance = span * 0.22;
+    controls.maxDistance = span * 3.2;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.PAN,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.ROTATE,
+    };
+    controls.touches = {
+      ONE: THREE.TOUCH.ROTATE,
+      TWO: THREE.TOUCH.DOLLY_PAN,
+    };
+    controlsRef.current = controls;
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.72));
     const light = new THREE.DirectionalLight(0xffffff, 0.82);
@@ -1427,6 +1528,15 @@ function TakeoffModelPreview({
     grid.position.y = -0.04;
     scene.add(grid);
 
+    const loadedTextures: THREE.Texture[] = [];
+    if (visibleLayers.reference && referenceUrl) {
+      const loader = new THREE.TextureLoader();
+      loader.setCrossOrigin("anonymous");
+      const texture = loader.load(referenceUrl);
+      loadedTextures.push(texture);
+      scene.add(referencePlaneForFloor(floor, center, texture));
+    }
+
     const exteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x8fc0b0, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
     const floorMaterial = new THREE.MeshPhongMaterial({ color: 0xc8ddd5, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
     const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x8fb4c8, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
@@ -1434,6 +1544,7 @@ function TakeoffModelPreview({
     const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
     const glassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.78, side: THREE.DoubleSide });
     const doorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.82, side: THREE.DoubleSide });
+    const openingFrameMaterial = new THREE.MeshBasicMaterial({ color: 0x2f3b1f, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
     const lineMaterial = new THREE.LineBasicMaterial({ color: 0xb35b2f });
 
     const exteriorPoints = exteriorRingPoints(floor);
@@ -1447,25 +1558,31 @@ function TakeoffModelPreview({
       const roomCeilingMaterial = ceilingMaterial.clone();
       roomCeilingMaterial.color = color;
 
-      const floorMesh = createHorizontalShapeMesh(points, center, 0, roomFloorMaterial);
-      floorMesh.userData.roomId = room.id;
-      scene.add(floorMesh);
-
-      for (const edge of pointsToEdges(points)) {
-        const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
-        wallMesh.userData.roomId = room.id;
-        scene.add(wallMesh);
+      if (visibleLayers.floors) {
+        const floorMesh = createHorizontalShapeMesh(points, center, 0, roomFloorMaterial);
+        floorMesh.userData.roomId = room.id;
+        scene.add(floorMesh);
       }
 
-      if ((room.ceilingType ?? "flat") !== "none") {
+      if (visibleLayers.walls) {
+        for (const edge of pointsToEdges(points)) {
+          const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
+          wallMesh.userData.roomId = room.id;
+          scene.add(wallMesh);
+        }
+      }
+
+      if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
         scene.add(createHorizontalShapeMesh(points, center, room.ceilingHeight, roomCeilingMaterial));
       }
 
       const ridge = roomRidgePoints(room, center, floor.defaultCeilingHeight ?? 9);
-      if (ridge) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial));
+      if (visibleLayers.ceilings && ridge) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial));
 
       for (const component of roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door"))) {
-        const openingMesh = openingMeshForComponent(component, center, component.surface === "glass" ? glassMaterial : doorMaterial);
+        if (component.surface === "glass" && !visibleLayers.windows) continue;
+        if (component.surface === "door" && !visibleLayers.doors) continue;
+        const openingMesh = openingMeshForComponent(component, room, center, component.surface === "glass" ? glassMaterial : doorMaterial, openingFrameMaterial);
         if (openingMesh) scene.add(openingMesh);
       }
     }
@@ -1473,6 +1590,7 @@ function TakeoffModelPreview({
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     function handlePointerDown(event: PointerEvent) {
+      if (event.button === 2) return;
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
       pointer.y = -(((event.clientY - rect.top) / Math.max(rect.height, 1)) * 2 - 1);
@@ -1480,11 +1598,39 @@ function TakeoffModelPreview({
       const hit = raycaster.intersectObjects(scene.children, true).find((entry) => entry.object.userData.roomId);
       if (hit?.object.userData.roomId) onSelectRoom(hit.object.userData.roomId);
     }
+    function handleContextMenu(event: MouseEvent) {
+      event.preventDefault();
+    }
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.addEventListener("contextmenu", handleContextMenu);
 
-    renderer.render(scene, camera);
+    let animationFrame = 0;
+    function animate() {
+      controls.update();
+      renderer.render(scene, camera);
+      animationFrame = window.requestAnimationFrame(animate);
+    }
+    animate();
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const nextWidth = Math.max(entry.contentRect.width, 720);
+      const nextHeight = Math.max(entry.contentRect.height, 520);
+      renderer.setSize(nextWidth, nextHeight);
+      camera.aspect = nextWidth / nextHeight;
+      camera.updateProjectionMatrix();
+    });
+    resizeObserver.observe(container);
+
     return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+      renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
+      controls.dispose();
+      controlsRef.current = null;
+      cameraRef.current = null;
       renderer.dispose();
       scene.traverse((object) => {
         const mesh = object as THREE.Mesh;
@@ -1493,13 +1639,40 @@ function TakeoffModelPreview({
         if (Array.isArray(material)) material.forEach((entry) => entry.dispose());
         else material?.dispose?.();
       });
+      loadedTextures.forEach((texture) => texture.dispose());
       container.removeChild(renderer.domElement);
     };
-  }, [floor, onSelectRoom, selectedRoomId]);
+  }, [floor, onSelectRoom, referenceUrl, selectedRoomId, visibleLayers]);
 
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
-      <div className="takeoff-model-caption">3D QA View · translucent rooms, walls, ceilings, openings, and vaulted ridges</div>
+      <div className="takeoff-model-caption">3D QA View · right-click drag to orbit · scroll to zoom · drag to pan</div>
+      <div className="takeoff-model-layer-controls" aria-label="3D layer controls">
+        {([
+          ["reference", "Plan PDF"],
+          ["windows", "Windows"],
+          ["doors", "Doors"],
+          ["ceilings", "Ceilings"],
+          ["floors", "Floors"],
+          ["walls", "Walls"],
+        ] as Array<[ModelLayerKey, string]>).map(([key, label]) => (
+          <label key={key}>
+            <input
+              type="checkbox"
+              checked={visibleLayers[key]}
+              onChange={(event) => setVisibleLayers((current) => ({ ...current, [key]: event.target.checked }))}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+      <div className="takeoff-model-view-controls" aria-label="3D view controls">
+        <button type="button" onClick={() => setModelViewPreset("iso")}>Iso</button>
+        <button type="button" onClick={() => setModelViewPreset("front")}>Front</button>
+        <button type="button" onClick={() => setModelViewPreset("rear")}>Rear</button>
+        <button type="button" onClick={() => setModelViewPreset("left")}>Left</button>
+        <button type="button" onClick={() => setModelViewPreset("right")}>Right</button>
+      </div>
     </div>
   );
 }
@@ -3438,7 +3611,7 @@ export function TakeoffApp() {
 
           <div className="takeoff-canvas-scroll" ref={canvasScrollRef}>
             {planReviewMode === "elevation" ? (
-              <TakeoffModelPreview floor={floor} selectedRoomId={selectedRoomId} onSelectRoom={setSelectedRoomId} />
+              <TakeoffModelPreview floor={floor} referenceUrl={referenceUrl} selectedRoomId={selectedRoomId} onSelectRoom={setSelectedRoomId} />
             ) : (
             <div className="takeoff-drawing-layer" style={{ width: drawingWidth, height: drawingHeight }}>
               {referenceUrl && floor.reference && (
