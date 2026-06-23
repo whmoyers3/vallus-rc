@@ -315,8 +315,12 @@ Implemented:
 - Dragged room creation now also uses the same clipped unassigned-space geometry as validation, preventing adjacent open hallway bands from being missed when direct room clipping drops a section.
 - Hid Takeoff JSON and Payload Preview output panels by default behind explicit Show/Hide controls.
 - Grouped the plan grid zoom controls so minus, zoom percent, and plus sit together beside Fit Grid/Fit Plan.
+- Added floor default ceiling height, vaulted ridge direction, and room-level ceiling geometry approval fields to editable takeoff JSON.
+- Added ceiling geometry validation for large height changes, including an estimated raised wall/knee-wall exposure warning.
+- Added a first-pass Ceiling Geometry QA sketch in Room Profile to visualize flat/taller and vaulted ceiling height/ridge direction before export.
+- Added draggable vaulted-ceiling ridge offset in the QA sketch; approval refreshes vaulted ceiling component area from the estimated sloped surface.
 
 Still pending:
 
 - More detailed adjacent-space export treatment for attic/crawl/garage wall assemblies.
-- Vaulted ceiling sketching and richer knee-wall/gable-end geometry.
+- Richer multi-view elevation/stick-frame navigation and full knee-wall/gable-end export behavior.

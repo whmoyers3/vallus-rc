@@ -1190,7 +1190,63 @@ button.toolbar-primary:hover {
 .takeoff-ceiling-shape-grid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.takeoff-ceiling-qa {
+  border: 1px solid #dde6ed;
+  border-radius: 8px;
+  margin: 10px 0;
+  padding: 10px;
+}
+
+.takeoff-ceiling-qa--warning {
+  background: #fff9ed;
+  border-color: #f2d19c;
+}
+
+.takeoff-ceiling-qa-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 1fr) minmax(180px, 0.5fr);
+}
+
+.takeoff-ceiling-qa svg {
+  background: #f8fafc;
+  border: 1px solid #dde6ed;
+  border-radius: 6px;
+  display: block;
+  min-height: 150px;
+  width: 100%;
+}
+
+.takeoff-ridge-line {
+  cursor: ew-resize;
+  pointer-events: stroke;
+  stroke: #b35b2f;
+  stroke-linecap: round;
+  stroke-width: 8;
+}
+
+.takeoff-ceiling-qa-copy {
+  align-content: start;
+  display: grid;
+  gap: 7px;
+}
+
+.takeoff-ceiling-qa-copy span {
+  background: #f4f8fb;
+  border: 1px solid #dde6ed;
+  border-radius: 6px;
+  color: #657384;
+  font-size: 11px;
+  padding: 7px 8px;
+}
+
+.takeoff-ceiling-qa-copy strong {
+  color: #1f2933;
+  display: block;
+  font-size: 13px;
 }
 
 .takeoff-quick-actions {
@@ -1549,6 +1605,10 @@ button.toolbar-primary:hover {
   }
   .takeoff-room-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .takeoff-ceiling-shape-grid,
+  .takeoff-ceiling-qa-grid {
+    grid-template-columns: 1fr;
   }
 }
 

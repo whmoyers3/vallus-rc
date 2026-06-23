@@ -53,6 +53,9 @@ export type TakeoffRectRoom = {
   ceilingType?: "none" | "flat" | "vaulted";
   ceilingLowHeight?: number;
   ceilingPeakHeight?: number;
+  ceilingRidgeDirection?: "E-W" | "N-S";
+  ceilingRidgeOffset?: number;
+  ceilingGeometryApproved?: boolean;
   floorType?: "none" | "slab" | "framed";
   ceilingLoadArea?: number;
   floorLoadArea?: number;
@@ -82,6 +85,7 @@ export type TakeoffFloor = {
     feetPerGrid: number;
     gridSnapInches: number;
   };
+  defaultCeilingHeight?: number;
   reference?: {
     filename: string;
     kind: "pdf" | "image";
