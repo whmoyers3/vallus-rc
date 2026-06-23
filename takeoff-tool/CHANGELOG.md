@@ -329,6 +329,7 @@ Implemented:
 - Added the uploaded/rendered plan reference as a translucent floor texture in 3D QA, with a Plan PDF checkbox so it can be shown for context or hidden during component verification.
 - Split the 3D wall layer into default-on load/perimeter walls and default-off faint interior walls so the QA view focuses on load components while still allowing interior partitions for orientation.
 - Expanded 3D ceiling QA rendering so taller flat ceilings show raised/knee-wall panels and vaulted ceilings show sloped ceiling planes, gable/knee-wall panels, and ridge geometry aligned with the current vaulted ceiling area calculation.
+- Fixed long validation messages so they wrap in the tools rail, and clipped 3D vaulted ceiling surfaces/gable panels to the actual room polygon instead of the room bounding box to avoid apparent offset duplicate ceiling sections.
 
 Still pending:
 

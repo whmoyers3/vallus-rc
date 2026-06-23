@@ -1365,6 +1365,55 @@ function raisedWallMeshesForPoints(points: TakeoffPoint[], center: TakeoffPoint,
   ], material));
 }
 
+function vaultedRoofHeightAtPoint(point: TakeoffPoint, bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>) {
+  const peakDelta = Math.max(0, ceilingInfo.peakHeight - ceilingInfo.lowHeight);
+  if (peakDelta <= 0) return ceilingInfo.lowHeight;
+  const ridgeCoord = ceilingInfo.ridgeDirection === "E-W"
+    ? bounds.y + bounds.depth * ceilingInfo.ridgeRatio
+    : bounds.x + bounds.width * ceilingInfo.ridgeRatio;
+  const minCoord = ceilingInfo.ridgeDirection === "E-W" ? bounds.y : bounds.x;
+  const maxCoord = ceilingInfo.ridgeDirection === "E-W" ? bounds.y + bounds.depth : bounds.x + bounds.width;
+  const coord = ceilingInfo.ridgeDirection === "E-W" ? point.y : point.x;
+  const run = coord <= ridgeCoord ? ridgeCoord - minCoord : maxCoord - ridgeCoord;
+  if (run <= 0.01) return ceilingInfo.peakHeight;
+  const ratio = coord <= ridgeCoord
+    ? (coord - minCoord) / run
+    : (maxCoord - coord) / run;
+  return ceilingInfo.lowHeight + peakDelta * clamp(ratio, 0, 1);
+}
+
+function createSlopedShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>, material: THREE.Material) {
+  const geometry = new THREE.ShapeGeometry(shapeFromPoints(points, center));
+  const positions = geometry.attributes.position;
+  for (let index = 0; index < positions.count; index += 1) {
+    const localX = positions.getX(index);
+    const localPlanY = positions.getY(index);
+    const point = { x: localX + center.x, y: localPlanY + center.y };
+    positions.setXYZ(index, localX, vaultedRoofHeightAtPoint(point, bounds, ceilingInfo), localPlanY);
+  }
+  positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, material);
+}
+
+function splitEdgeAtVaultRidge(edge: { a: TakeoffPoint; b: TakeoffPoint }, bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>) {
+  const ridgeCoord = ceilingInfo.ridgeDirection === "E-W"
+    ? bounds.y + bounds.depth * ceilingInfo.ridgeRatio
+    : bounds.x + bounds.width * ceilingInfo.ridgeRatio;
+  const aCoord = ceilingInfo.ridgeDirection === "E-W" ? edge.a.y : edge.a.x;
+  const bCoord = ceilingInfo.ridgeDirection === "E-W" ? edge.b.y : edge.b.x;
+  if ((ridgeCoord - aCoord) * (ridgeCoord - bCoord) >= 0 || Math.abs(aCoord - bCoord) <= 0.001) return [edge.a, edge.b];
+  const ratio = (ridgeCoord - aCoord) / (bCoord - aCoord);
+  return [
+    edge.a,
+    {
+      x: edge.a.x + (edge.b.x - edge.a.x) * ratio,
+      y: edge.a.y + (edge.b.y - edge.a.y) * ratio,
+    },
+    edge.b,
+  ];
+}
+
 function wallMeshForEdge(a: TakeoffPoint, b: TakeoffPoint, center: TakeoffPoint, height: number, material: THREE.Material) {
   const dx = b.x - a.x;
   const dz = b.y - a.y;
@@ -1466,76 +1515,29 @@ function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCei
 
 function vaultedCeilingMeshesForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, ceilingMaterial: THREE.Material, kneeWallMaterial: THREE.Material) {
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
-  const bounds = polygonBounds(roomCorners(room));
-  const minX = bounds.x;
-  const maxX = bounds.x + bounds.width;
-  const minY = bounds.y;
-  const maxY = bounds.y + bounds.depth;
+  const points = roomCorners(room);
+  const bounds = polygonBounds(points);
   const meshes: THREE.Mesh[] = [];
-  meshes.push(...raisedWallMeshesForPoints(roomCorners(room), center, defaultCeilingHeight, ceilingInfo.lowHeight, kneeWallMaterial));
+  meshes.push(...raisedWallMeshesForPoints(points, center, defaultCeilingHeight, ceilingInfo.lowHeight, kneeWallMaterial));
+  meshes.push(createSlopedShapeMesh(points, center, bounds, ceilingInfo, ceilingMaterial));
 
-  if (ceilingInfo.ridgeDirection === "E-W") {
-    const ridgeY = minY + bounds.depth * ceilingInfo.ridgeRatio;
-    const ridgeLeft = { x: minX, y: ridgeY };
-    const ridgeRight = { x: maxX, y: ridgeY };
-    if (ridgeY > minY + 0.01) {
+  for (const edge of pointsToEdges(points)) {
+    const splitPoints = splitEdgeAtVaultRidge(edge, bounds, ceilingInfo);
+    for (let index = 0; index < splitPoints.length - 1; index += 1) {
+      const a = splitPoints[index];
+      const b = splitPoints[index + 1];
+      const aHeight = vaultedRoofHeightAtPoint(a, bounds, ceilingInfo);
+      const bHeight = vaultedRoofHeightAtPoint(b, bounds, ceilingInfo);
+      if (Math.max(aHeight, bHeight) <= ceilingInfo.lowHeight + 0.01) continue;
       meshes.push(createPanelMesh([
-        modelPoint({ x: minX, y: minY }, center, ceilingInfo.lowHeight),
-        modelPoint({ x: maxX, y: minY }, center, ceilingInfo.lowHeight),
-        modelPoint(ridgeRight, center, ceilingInfo.peakHeight),
-        modelPoint(ridgeLeft, center, ceilingInfo.peakHeight),
-      ], ceilingMaterial));
+        modelPoint(a, center, ceilingInfo.lowHeight),
+        modelPoint(b, center, ceilingInfo.lowHeight),
+        modelPoint(b, center, bHeight),
+        modelPoint(a, center, aHeight),
+      ], kneeWallMaterial));
     }
-    if (ridgeY < maxY - 0.01) {
-      meshes.push(createPanelMesh([
-        modelPoint(ridgeLeft, center, ceilingInfo.peakHeight),
-        modelPoint(ridgeRight, center, ceilingInfo.peakHeight),
-        modelPoint({ x: maxX, y: maxY }, center, ceilingInfo.lowHeight),
-        modelPoint({ x: minX, y: maxY }, center, ceilingInfo.lowHeight),
-      ], ceilingMaterial));
-    }
-    meshes.push(createPanelMesh([
-      modelPoint({ x: minX, y: minY }, center, ceilingInfo.lowHeight),
-      modelPoint({ x: minX, y: maxY }, center, ceilingInfo.lowHeight),
-      modelPoint(ridgeLeft, center, ceilingInfo.peakHeight),
-    ], kneeWallMaterial));
-    meshes.push(createPanelMesh([
-      modelPoint({ x: maxX, y: maxY }, center, ceilingInfo.lowHeight),
-      modelPoint({ x: maxX, y: minY }, center, ceilingInfo.lowHeight),
-      modelPoint(ridgeRight, center, ceilingInfo.peakHeight),
-    ], kneeWallMaterial));
-    return meshes;
   }
 
-  const ridgeX = minX + bounds.width * ceilingInfo.ridgeRatio;
-  const ridgeTop = { x: ridgeX, y: minY };
-  const ridgeBottom = { x: ridgeX, y: maxY };
-  if (ridgeX > minX + 0.01) {
-    meshes.push(createPanelMesh([
-      modelPoint({ x: minX, y: maxY }, center, ceilingInfo.lowHeight),
-      modelPoint({ x: minX, y: minY }, center, ceilingInfo.lowHeight),
-      modelPoint(ridgeTop, center, ceilingInfo.peakHeight),
-      modelPoint(ridgeBottom, center, ceilingInfo.peakHeight),
-    ], ceilingMaterial));
-  }
-  if (ridgeX < maxX - 0.01) {
-    meshes.push(createPanelMesh([
-      modelPoint(ridgeBottom, center, ceilingInfo.peakHeight),
-      modelPoint(ridgeTop, center, ceilingInfo.peakHeight),
-      modelPoint({ x: maxX, y: minY }, center, ceilingInfo.lowHeight),
-      modelPoint({ x: maxX, y: maxY }, center, ceilingInfo.lowHeight),
-    ], ceilingMaterial));
-  }
-  meshes.push(createPanelMesh([
-    modelPoint({ x: minX, y: minY }, center, ceilingInfo.lowHeight),
-    modelPoint({ x: maxX, y: minY }, center, ceilingInfo.lowHeight),
-    modelPoint(ridgeTop, center, ceilingInfo.peakHeight),
-  ], kneeWallMaterial));
-  meshes.push(createPanelMesh([
-    modelPoint({ x: maxX, y: maxY }, center, ceilingInfo.lowHeight),
-    modelPoint({ x: minX, y: maxY }, center, ceilingInfo.lowHeight),
-    modelPoint(ridgeBottom, center, ceilingInfo.peakHeight),
-  ], kneeWallMaterial));
   return meshes;
 }
 
