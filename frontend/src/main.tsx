@@ -4673,11 +4673,13 @@ function AirflowWizard() {
     return roomList.every(r => um[r.name] || supplyTotal(uid, r.name) > 0);
   }
 
-  /** 3-tier color: green ≤10%, yellow 11-20%, red >20% */
-  function deltaColor(pct: number): string {
+  /** 4-tier color: green if within 15 CFM or ≤10%, yellow 11-15%, orange 16-25%, red >25% */
+  function deltaColor(pct: number, cfmDelta?: number): string {
+    if (cfmDelta !== undefined && Math.abs(cfmDelta) <= 15) return "#16a34a";
     const abs = Math.abs(pct);
     if (abs <= 10) return "#16a34a";
-    if (abs <= 20) return "#ca8a04";
+    if (abs <= 15) return "#ca8a04";
+    if (abs <= 25) return "#ea580c";
     return "#dc2626";
   }
 
@@ -4753,7 +4755,17 @@ function AirflowWizard() {
         filter_type: s.filter_type,
       };
     }
-    return { supply, return: ret, static_pressure: sp, checklist };
+    const mg: Record<string, Record<string, string>> = {};
+    for (const [uid, rm] of Object.entries(merges)) {
+      const filtered = Object.fromEntries(Object.entries(rm).filter(([, to]) => to));
+      if (Object.keys(filtered).length) mg[uid] = filtered;
+    }
+    const ts: Record<string, string[]> = {};
+    for (const [uid, rooms] of Object.entries(tstatRooms)) {
+      const list = Object.entries(rooms).filter(([, v]) => v).map(([k]) => k);
+      if (list.length) ts[uid] = list;
+    }
+    return { supply, return: ret, static_pressure: sp, checklist, merges: mg, tstat: ts };
   }
 
   async function downloadFile(endpoint: string, mimeType: string, ext: string) {
@@ -4851,10 +4863,12 @@ function AirflowWizard() {
           const hasStatics = !!(sp.supply_esp || sp.return_esp);
           const cl = getChecklist(unitId);
           const clDone = CHECKLIST_ITEMS.filter(c => cl[c.key] === "y" || cl[c.key] === "n").length;
+          const supDelta = supTotal && nominal ? supTotal - nominal : null;
           const supPct = nominal && supTotal ? Math.round(Math.abs(supTotal - nominal) / nominal * 100) : null;
-          const supColor = supPct !== null ? deltaColor(supPct) : undefined;
+          const supColor = supPct !== null ? deltaColor(supPct, supDelta ?? undefined) : undefined;
+          const retDelta = retTotal && nominal ? retTotal - nominal : null;
           const retPct = nominal && retTotal ? Math.round(Math.abs(retTotal - nominal) / nominal * 100) : null;
-          const retColor = retPct !== null ? deltaColor(retPct) : undefined;
+          const retColor = retPct !== null ? deltaColor(retPct, retDelta ?? undefined) : undefined;
           return (
             <div className="wiz-phase-nav">
               {units.length > 1 && <div style={{ fontSize: 12, color: "#666", marginBottom: 4, textAlign: "center" }}>{unit.name}</div>}
@@ -4984,7 +4998,7 @@ function AirflowWizard() {
                     </div>
                     <div className="wiz-total">
                       <span>Total: <strong>{total || "—"}</strong> CFM</span>
-                      {total > 0 && adjTarget > 0 && <span className="delta" style={{ color: deltaColor(pct) }}>Δ {delta > 0 ? "+" : ""}{delta} CFM ({pct > 0 ? "+" : ""}{pct}%)</span>}
+                      {total > 0 && adjTarget > 0 && <span className="delta" style={{ color: deltaColor(pct, delta) }}>Δ {delta > 0 ? "+" : ""}{delta} CFM ({pct > 0 ? "+" : ""}{pct}%)</span>}
                     </div>
                     {/* Inline return quick-add */}
                     <WizardReturnQuickAdd
@@ -5004,7 +5018,9 @@ function AirflowWizard() {
                   const retGrand = retEntries.reduce((s, e) => s + e.readings.reduce((a: number, v) => a + (typeof v === "number" ? v : 0), 0), 0);
                   const tons = unitTons[unitId] || 0;
                   const nominal = Math.round(tons * 400);
+                  const supDelta = systemTotal && nominal ? systemTotal - nominal : null;
                   const supPct = nominal && systemTotal ? Math.round(Math.abs(systemTotal - nominal) / nominal * 100) : null;
+                  const retDelta = retGrand && nominal ? retGrand - nominal : null;
                   const retPct = nominal && retGrand ? Math.round(Math.abs(retGrand - nominal) / nominal * 100) : null;
                   return (
                     <table>
@@ -5023,7 +5039,7 @@ function AirflowWizard() {
                               <td>{r.name}{isTstat(unitId, r.name) && <b> (T)</b>} {merged ? `→ ${um[r.name]}` : s > 0 ? "✓" : ""}</td>
                               <td>{merged ? "—" : s || "—"}</td>
                               <td>{merged ? "—" : at > 0 ? at : eff}</td>
-                              <td style={{ color: (!merged && at && s > 0) ? deltaColor(p) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
+                              <td style={{ color: (!merged && at && s > 0) ? deltaColor(p, d) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
                               <td>{!merged && s > 0 && at > 0 ? `${p}%` : "—"}</td>
                             </tr>
                           );
@@ -5031,9 +5047,9 @@ function AirflowWizard() {
                         {/* Supply total */}
                         <tr style={{ borderTop: "2px solid #333", fontWeight: 700 }}>
                           <td>Supply Total</td>
-                          <td style={{ color: supPct !== null ? deltaColor(supPct) : undefined }}>{systemTotal || "—"}</td>
+                          <td style={{ color: supPct !== null ? deltaColor(supPct, supDelta ?? undefined) : undefined }}>{systemTotal || "—"}</td>
                           <td>{nominal || "—"}</td>
-                          <td colSpan={2} style={{ color: supPct !== null ? deltaColor(supPct) : undefined, fontSize: 12 }}>
+                          <td colSpan={2} style={{ color: supPct !== null ? deltaColor(supPct, supDelta ?? undefined) : undefined, fontSize: 12 }}>
                             {nominal && systemTotal ? `${systemTotal > nominal ? "+" : ""}${systemTotal - nominal} CFM (${supPct! > 0 ? (systemTotal > nominal ? "+" : "-") : ""}${supPct}%)` : ""}
                           </td>
                         </tr>
@@ -5055,9 +5071,9 @@ function AirflowWizard() {
                             })}
                             <tr style={{ borderTop: "2px solid #333", fontWeight: 700 }}>
                               <td>Return Total</td>
-                              <td style={{ color: retPct !== null ? deltaColor(retPct) : undefined }}>{retGrand || "—"}</td>
+                              <td style={{ color: retPct !== null ? deltaColor(retPct, retDelta ?? undefined) : undefined }}>{retGrand || "—"}</td>
                               <td>{nominal || "—"}</td>
-                              <td colSpan={2} style={{ color: retPct !== null ? deltaColor(retPct) : undefined, fontSize: 12 }}>
+                              <td colSpan={2} style={{ color: retPct !== null ? deltaColor(retPct, retDelta ?? undefined) : undefined, fontSize: 12 }}>
                                 {nominal && retGrand ? `${retGrand > nominal ? "+" : ""}${retGrand - nominal} CFM (${retPct! > 0 ? (retGrand > nominal ? "+" : "-") : ""}${retPct}%)` : ""}
                               </td>
                             </tr>
@@ -5210,7 +5226,7 @@ function AirflowWizard() {
                               <td style={{ padding: "4px 6px" }}>{r.name}{isTstat(unitId, r.name) && <b> (T)</b>}{merged ? ` → ${um[r.name]}` : ""}</td>
                               <td style={{ textAlign: "center" }}>{merged ? "—" : s || "—"}</td>
                               <td style={{ textAlign: "center" }}>{merged ? "—" : at > 0 ? at : eff}</td>
-                              <td style={{ textAlign: "center", color: (!merged && at && s > 0) ? deltaColor(p) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
+                              <td style={{ textAlign: "center", color: (!merged && at && s > 0) ? deltaColor(p, d) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
                             </tr>
                           );
                         })}
