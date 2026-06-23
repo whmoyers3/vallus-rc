@@ -206,6 +206,25 @@ function componentAreaTotal(room: TakeoffRectRoom, surface: TakeoffRoomComponent
   return roomSurfaceComponents(room, surface).reduce((sum, component) => sum + Math.max(0, component.area || 0), 0);
 }
 
+function roomSurfaceNoLoad(room: TakeoffRectRoom, surface: TakeoffRoomComponent["surface"]) {
+  return (surface === "floor" && room.floorType === "none") || (surface === "ceiling" && room.ceilingType === "none");
+}
+
+function roomAreaReconciliation(room: TakeoffRectRoom, surface: "floor" | "ceiling") {
+  const roomArea = rectArea(room);
+  const assignedArea = componentAreaTotal(room, surface);
+  const noLoad = roomSurfaceNoLoad(room, surface);
+  return {
+    roomArea,
+    assignedArea,
+    openArea: Math.max(0, roomArea - assignedArea),
+    overArea: Math.max(0, assignedArea - roomArea),
+    noLoad,
+    isBalanced: noLoad || Math.abs(roomArea - assignedArea) <= 0.5,
+    isOver: !noLoad && assignedArea > roomArea + 0.5,
+  };
+}
+
 function defaultComponent(surface: TakeoffRoomComponent["surface"], area: number): TakeoffRoomComponent {
   const defaults: Record<TakeoffRoomComponent["surface"], { assembly: string; label: string; direction?: TakeoffRoomComponent["direction"] }> = {
     floor: { assembly: "F2", label: "Slab" },
@@ -747,13 +766,15 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
     const roomArea = rectArea(room);
     const floorArea = componentAreaTotal(room, "floor");
     const ceilingArea = componentAreaTotal(room, "ceiling");
+    const noFloorLoad = roomSurfaceNoLoad(room, "floor");
+    const noCeilingLoad = roomSurfaceNoLoad(room, "ceiling");
     const exteriorDirections = roomExteriorDirections(floor, room);
     const openingAreas = openingAreaByDirection(room);
     const wallAreas = wallAreaByDirection(room);
-    if (floorArea > roomArea + 0.5) {
+    if (!noFloorLoad && floorArea > roomArea + 0.5) {
       issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.` });
     }
-    if (ceilingArea > roomArea + 0.5) {
+    if (!noCeilingLoad && ceilingArea > roomArea + 0.5) {
       issues.push({ severity: "error", message: `${room.name || "Room"} ceiling components exceed room area by ${Math.round(ceilingArea - roomArea)} sf.` });
     }
     for (const component of roomComponents(room)) {
@@ -797,10 +818,10 @@ function buildValidation(floor: TakeoffFloor): TakeoffValidationIssue[] {
         });
       }
     }
-    if (floorArea < roomArea - 0.5) {
+    if (!noFloorLoad && floorArea < roomArea - 0.5) {
       issues.push({ severity: "warning", message: `${room.name || "Room"} floor components leave ${Math.round(roomArea - floorArea)} sf unassigned.` });
     }
-    if (ceilingArea < roomArea - 0.5) {
+    if (!noCeilingLoad && ceilingArea < roomArea - 0.5) {
       issues.push({ severity: "warning", message: `${room.name || "Room"} ceiling components leave ${Math.round(roomArea - ceilingArea)} sf unassigned.` });
     }
   }
@@ -1213,6 +1234,47 @@ export function TakeoffApp() {
         };
       }),
     }));
+  }
+
+  function setRoomSurfaceFullArea(roomId: string, surface: "floor" | "ceiling") {
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        const existing = roomSurfaceComponents(room, surface)[0];
+        const component = {
+          ...(existing ?? defaultComponent(surface, rectArea(room))),
+          area: Number(rectArea(room).toFixed(3)),
+        };
+        return {
+          ...room,
+          floorType: surface === "floor" ? (component.assembly === "F1" ? "framed" : "slab") : room.floorType,
+          ceilingType: surface === "ceiling" ? (component.assembly === "C2" ? "vaulted" : "flat") : room.ceilingType,
+          components: [
+            ...roomComponents(room).filter((entry) => entry.surface !== surface),
+            component,
+          ],
+        };
+      }),
+    }));
+    setMessage(`${componentSurfaceLabel(surface)} set to full room area.`);
+  }
+
+  function setRoomSurfaceNoLoad(roomId: string, surface: "floor" | "ceiling") {
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => (
+        room.id === roomId
+          ? {
+              ...room,
+              floorType: surface === "floor" ? "none" : room.floorType,
+              ceilingType: surface === "ceiling" ? "none" : room.ceilingType,
+              components: roomComponents(room).filter((entry) => entry.surface !== surface),
+            }
+          : room
+      )),
+    }));
+    setMessage(`${componentSurfaceLabel(surface)} load marked as none for this room.`);
   }
 
   function removeRoomComponent(roomId: string, componentId: string) {
@@ -3298,6 +3360,8 @@ export function TakeoffApp() {
                   const assigned = componentAreaTotal(selectedRoom, surface);
                   const delta = roomArea - assigned;
                   const isAreaChecked = surface === "floor" || surface === "ceiling";
+                  const areaSurface = isAreaChecked ? surface as "floor" | "ceiling" : null;
+                  const areaCheck = areaSurface ? roomAreaReconciliation(selectedRoom, areaSurface) : null;
                   const options = scheduleOptionsBySurface[surface];
                   const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
                   return (
@@ -3315,6 +3379,29 @@ export function TakeoffApp() {
                         <p className="takeoff-component-total">
                           {Math.round(assigned)} sf total · {surface === "wall" ? "wall area is gross; same-direction windows/doors subtract in payload." : "enter area manually until click-to-place openings is enabled."}
                         </p>
+                      )}
+                      {areaCheck && (
+                        <div className={`takeoff-area-reconciliation ${areaCheck.isOver ? "takeoff-area-reconciliation--error" : ""}`}>
+                          <div className="takeoff-area-reconciliation-grid">
+                            <span>Measured <strong>{Math.round(areaCheck.roomArea)} sf</strong></span>
+                            <span>Assigned <strong>{Math.round(areaCheck.assignedArea)} sf</strong></span>
+                            <span>Open <strong>{Math.round(areaCheck.openArea)} sf</strong></span>
+                            <span>Over <strong>{Math.round(areaCheck.overArea)} sf</strong></span>
+                          </div>
+                          <p>
+                            {areaCheck.noLoad
+                              ? `No ${componentSurfaceLabel(surface).toLowerCase()} load marked for this room.`
+                              : areaCheck.isBalanced
+                                ? `${componentSurfaceLabel(surface)} area is balanced.`
+                                : areaCheck.isOver
+                                  ? `${componentSurfaceLabel(surface)} area is over-assigned by ${Math.round(areaCheck.overArea)} sf.`
+                                  : `${componentSurfaceLabel(surface)} area has ${Math.round(areaCheck.openArea)} sf unassigned.`}
+                          </p>
+                          <div className="takeoff-quick-actions">
+                            <button onClick={() => areaSurface && setRoomSurfaceFullArea(selectedRoom.id, areaSurface)}>Set = room area</button>
+                            <button onClick={() => areaSurface && setRoomSurfaceNoLoad(selectedRoom.id, areaSurface)}>No {componentSurfaceLabel(surface)} load</button>
+                          </div>
+                        </div>
                       )}
                       {roomSurfaceComponents(selectedRoom, surface).length === 0 ? (
                         <p className="takeoff-muted">No {componentSurfaceLabel(surface).toLowerCase()} load components.</p>

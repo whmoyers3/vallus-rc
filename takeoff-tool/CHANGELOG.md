@@ -298,6 +298,8 @@ Implemented:
 - Improved Room Profile side-panel scaling so reconciliation rows and component remove buttons fit inside the panel.
 - Added adjacent-space tagging for garage, attic, crawl space, and exterior areas on the plan grid.
 - Garage-adjacent walls are shown in room reconciliation and glass placement/editing is blocked or flagged on garage-adjacent walls.
+- Added floor and ceiling area reconciliation cards with quick actions to set full room area or intentionally mark no load.
+- Validation now respects intentional no-load floor and ceiling selections.
 
 Still pending:
 
