@@ -77,6 +77,18 @@ type PlanRect = { x: number; y: number; width: number; depth: number };
 type UnassignedCell = { x: number; y: number; width: number; depth: number; polygon?: TakeoffPoint[]; area?: number };
 type ModelViewPreset = "iso" | "front" | "rear" | "left" | "right";
 type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "interiorWalls";
+type ModelSurfaceKind = "floor" | "ceiling" | "load-wall" | "interior-wall" | "knee-wall" | "window" | "door";
+type ModelSurfaceSelection = {
+  roomId: string;
+  roomName: string;
+  kind: ModelSurfaceKind;
+  label: string;
+  surface?: TakeoffRoomComponent["surface"];
+  direction?: TakeoffRoomComponent["direction"];
+  area?: number;
+  componentId?: string;
+  assembly?: string;
+};
 type UnassignedRegion = {
   id: string;
   label: string;
@@ -1541,16 +1553,37 @@ function vaultedCeilingMeshesForRoom(room: TakeoffRectRoom, center: TakeoffPoint
   return meshes;
 }
 
+function modelSurfaceFromObject(object: THREE.Object3D) {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (current.userData.modelSurface) return current.userData.modelSurface as ModelSurfaceSelection;
+    current = current.parent;
+  }
+  return null;
+}
+
+function modelScheduleCategory(surface: TakeoffRoomComponent["surface"]) {
+  if (surface === "glass") return "Glass";
+  if (surface === "door") return "Door";
+  if (surface === "ceiling") return "Ceiling";
+  if (surface === "floor") return "Floor";
+  return "Wall";
+}
+
 function TakeoffModelPreview({
   floor,
   referenceUrl,
+  componentSchedule,
   selectedRoomId,
   onSelectRoom,
+  onAssignSurfaceComponent,
 }: {
   floor: TakeoffFloor;
   referenceUrl: string;
+  componentSchedule: TakeoffComponentDefinition[];
   selectedRoomId: string | null;
   onSelectRoom: (roomId: string) => void;
+  onAssignSurfaceComponent: (selection: ModelSurfaceSelection, assembly: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -1565,6 +1598,21 @@ function TakeoffModelPreview({
     walls: true,
     interiorWalls: false,
   });
+  const [selectedSurface, setSelectedSurface] = useState<ModelSurfaceSelection | null>(null);
+  const [selectedSurfaceAssembly, setSelectedSurfaceAssembly] = useState("");
+
+  const selectedSurfaceOptions = selectedSurface?.surface
+    ? componentSchedule.filter((component) => component.category === modelScheduleCategory(selectedSurface.surface!))
+    : [];
+
+  useEffect(() => {
+    if (!selectedSurface?.surface) {
+      setSelectedSurfaceAssembly("");
+      return;
+    }
+    const firstOption = componentSchedule.find((component) => component.category === modelScheduleCategory(selectedSurface.surface!));
+    setSelectedSurfaceAssembly(selectedSurface.assembly || firstOption?.code || "");
+  }, [componentSchedule, selectedSurface]);
 
   function setModelViewPreset(preset: ModelViewPreset) {
     const camera = cameraRef.current;
@@ -1666,6 +1714,15 @@ function TakeoffModelPreview({
       if (visibleLayers.floors) {
         const floorMesh = createHorizontalShapeMesh(points, center, 0, roomFloorMaterial);
         floorMesh.userData.roomId = room.id;
+        floorMesh.userData.modelSurface = {
+          roomId: room.id,
+          roomName: room.name,
+          kind: "floor",
+          label: "Floor surface",
+          surface: "floor",
+          area: Number(rectArea(room).toFixed(3)),
+          assembly: roomSurfaceComponents(room, "floor")[0]?.assembly,
+        } satisfies ModelSurfaceSelection;
         scene.add(floorMesh);
       }
 
@@ -1673,6 +1730,16 @@ function TakeoffModelPreview({
         for (const segment of roomExteriorSegments(floor, room)) {
           const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(room.ceilingHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
           wallMesh.userData.roomId = room.id;
+          wallMesh.userData.modelSurface = {
+            roomId: room.id,
+            roomName: room.name,
+            kind: "load-wall",
+            label: `${segment.direction ?? "Exterior"} load wall`,
+            surface: "wall",
+            direction: segment.direction,
+            area: Number((segment.length * Math.max(room.ceilingHeight, 0)).toFixed(3)),
+            assembly: roomSurfaceComponents(room, "wall").find((component) => component.direction === segment.direction)?.assembly,
+          } satisfies ModelSurfaceSelection;
           scene.add(wallMesh);
         }
       }
@@ -1685,6 +1752,12 @@ function TakeoffModelPreview({
           if (isLoadWall) continue;
           const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), interiorWallMaterial);
           wallMesh.userData.roomId = room.id;
+          wallMesh.userData.modelSurface = {
+            roomId: room.id,
+            roomName: room.name,
+            kind: "interior-wall",
+            label: "Interior wall",
+          } satisfies ModelSurfaceSelection;
           scene.add(wallMesh);
         }
       }
@@ -1694,14 +1767,41 @@ function TakeoffModelPreview({
         if (ceilingInfo.ceilingType === "vaulted") {
           for (const mesh of vaultedCeilingMeshesForRoom(room, center, floor.defaultCeilingHeight ?? 9, roomCeilingMaterial, kneeWallMaterial)) {
             mesh.userData.roomId = room.id;
+            mesh.userData.modelSurface = {
+              roomId: room.id,
+              roomName: room.name,
+              kind: "ceiling",
+              label: "Vaulted ceiling surface",
+              surface: "ceiling",
+              area: Number(ceilingInfo.slopedCeilingArea.toFixed(3)),
+              assembly: roomSurfaceComponents(room, "ceiling")[0]?.assembly,
+            } satisfies ModelSurfaceSelection;
             scene.add(mesh);
           }
         } else {
           const ceilingMesh = createHorizontalShapeMesh(points, center, room.ceilingHeight, roomCeilingMaterial);
           ceilingMesh.userData.roomId = room.id;
+          ceilingMesh.userData.modelSurface = {
+            roomId: room.id,
+            roomName: room.name,
+            kind: "ceiling",
+            label: "Ceiling surface",
+            surface: "ceiling",
+            area: Number(rectArea(room).toFixed(3)),
+            assembly: roomSurfaceComponents(room, "ceiling")[0]?.assembly,
+          } satisfies ModelSurfaceSelection;
           scene.add(ceilingMesh);
           for (const mesh of raisedWallMeshesForPoints(points, center, floor.defaultCeilingHeight ?? 9, room.ceilingHeight, kneeWallMaterial)) {
             mesh.userData.roomId = room.id;
+            mesh.userData.modelSurface = {
+              roomId: room.id,
+              roomName: room.name,
+              kind: "knee-wall",
+              label: "Raised height / knee-wall panel",
+              surface: "wall",
+              area: Number(Math.max(0, roomPerimeter(room) * (room.ceilingHeight - (floor.defaultCeilingHeight ?? 9))).toFixed(3)),
+              assembly: roomSurfaceComponents(room, "wall")[0]?.assembly,
+            } satisfies ModelSurfaceSelection;
             scene.add(mesh);
           }
         }
@@ -1714,7 +1814,20 @@ function TakeoffModelPreview({
         if (component.surface === "glass" && !visibleLayers.windows) continue;
         if (component.surface === "door" && !visibleLayers.doors) continue;
         const openingMesh = openingMeshForComponent(component, room, center, component.surface === "glass" ? glassMaterial : doorMaterial, openingFrameMaterial);
-        if (openingMesh) scene.add(openingMesh);
+        if (openingMesh) {
+          openingMesh.userData.modelSurface = {
+            roomId: room.id,
+            roomName: room.name,
+            kind: component.surface === "glass" ? "window" : "door",
+            label: component.label || (component.surface === "glass" ? "Window" : "Door"),
+            surface: component.surface,
+            direction: component.direction,
+            area: component.area,
+            componentId: component.id,
+            assembly: component.assembly,
+          } satisfies ModelSurfaceSelection;
+          scene.add(openingMesh);
+        }
       }
     }
 
@@ -1726,8 +1839,15 @@ function TakeoffModelPreview({
       pointer.x = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
       pointer.y = -(((event.clientY - rect.top) / Math.max(rect.height, 1)) * 2 - 1);
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(scene.children, true).find((entry) => entry.object.userData.roomId);
-      if (hit?.object.userData.roomId) onSelectRoom(hit.object.userData.roomId);
+      const hit = raycaster.intersectObjects(scene.children, true).find((entry) => entry.object.userData.roomId || modelSurfaceFromObject(entry.object));
+      if (!hit) return;
+      const surface = modelSurfaceFromObject(hit.object);
+      if (surface) {
+        setSelectedSurface(surface);
+        onSelectRoom(surface.roomId);
+        return;
+      }
+      if (hit.object.userData.roomId) onSelectRoom(hit.object.userData.roomId);
     }
     function handleContextMenu(event: MouseEvent) {
       event.preventDefault();
@@ -1794,10 +1914,45 @@ function TakeoffModelPreview({
               checked={visibleLayers[key]}
               onChange={(event) => setVisibleLayers((current) => ({ ...current, [key]: event.target.checked }))}
             />
+            <span className="takeoff-model-checkbox" aria-hidden="true" />
             {label}
           </label>
         ))}
       </div>
+      {selectedSurface && (
+        <div className="takeoff-model-surface-panel">
+          <div className="takeoff-model-surface-head">
+            <strong>{selectedSurface.label}</strong>
+            <button type="button" onClick={() => setSelectedSurface(null)} aria-label="Close selected 3D surface">Close</button>
+          </div>
+          <span>{selectedSurface.roomName}</span>
+          {selectedSurface.direction && <span>{selectedSurface.direction} facing</span>}
+          {selectedSurface.area !== undefined && <span>{Math.round(selectedSurface.area)} sf</span>}
+          {selectedSurface.surface && selectedSurface.kind !== "window" && selectedSurface.kind !== "door" && selectedSurfaceOptions.length > 0 ? (
+            <>
+              <select value={selectedSurfaceAssembly} onChange={(event) => setSelectedSurfaceAssembly(event.target.value)}>
+                {selectedSurfaceOptions.map((option) => (
+                  <option key={option.id} value={option.code}>
+                    {option.code} - {option.description}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="toolbar-primary"
+                onClick={() => {
+                  if (!selectedSurfaceAssembly) return;
+                  onAssignSurfaceComponent(selectedSurface, selectedSurfaceAssembly);
+                }}
+              >
+                Apply Component
+              </button>
+            </>
+          ) : (
+            <span>Selectable for review. Component assignment for this surface is coming next.</span>
+          )}
+        </div>
+      )}
       <div className="takeoff-model-view-controls" aria-label="3D view controls">
         <button type="button" onClick={() => setModelViewPreset("iso")}>Iso</button>
         <button type="button" onClick={() => setModelViewPreset("front")}>Front</button>
@@ -2095,6 +2250,41 @@ export function TakeoffApp() {
         };
       }),
     }));
+  }
+
+  function assignModelSurfaceComponent(selection: ModelSurfaceSelection, assembly: string) {
+    if (!selection.surface || !selection.area || selection.kind === "window" || selection.kind === "door") {
+      setMessage("That 3D surface is selectable, but direct component assignment for it is not wired yet.");
+      return;
+    }
+    const surface = selection.surface;
+    const option = componentSchedule.find((component) => component.code === assembly);
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== selection.roomId) return room;
+        const components = roomComponents(room);
+        const existing = components.find((component) => {
+          if (component.surface !== surface) return false;
+          if (surface === "wall") return component.direction === selection.direction;
+          return true;
+        });
+        const nextComponent: TakeoffRoomComponent = {
+          ...(existing ?? defaultComponent(surface, selection.area ?? rectArea(room))),
+          assembly,
+          area: Number((selection.area ?? existing?.area ?? rectArea(room)).toFixed(3)),
+          direction: selection.direction ?? existing?.direction,
+          label: selection.label || option?.description || existing?.label,
+        };
+        return {
+          ...room,
+          components: existing
+            ? components.map((component) => (component.id === existing.id ? nextComponent : component))
+            : [...components, nextComponent],
+        };
+      }),
+    }));
+    setMessage(`${selection.label} assigned to ${assembly}${option?.description ? ` - ${option.description}` : ""}.`);
   }
 
   function setRoomSurfaceFullArea(roomId: string, surface: "floor" | "ceiling") {
@@ -3743,7 +3933,14 @@ export function TakeoffApp() {
 
           <div className="takeoff-canvas-scroll" ref={canvasScrollRef}>
             {planReviewMode === "elevation" ? (
-              <TakeoffModelPreview floor={floor} referenceUrl={referenceUrl} selectedRoomId={selectedRoomId} onSelectRoom={setSelectedRoomId} />
+              <TakeoffModelPreview
+                floor={floor}
+                referenceUrl={referenceUrl}
+                componentSchedule={componentSchedule}
+                selectedRoomId={selectedRoomId}
+                onSelectRoom={setSelectedRoomId}
+                onAssignSurfaceComponent={assignModelSurfaceComponent}
+              />
             ) : (
             <div className="takeoff-drawing-layer" style={{ width: drawingWidth, height: drawingHeight }}>
               {referenceUrl && floor.reference && (
