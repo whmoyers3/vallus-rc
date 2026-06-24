@@ -1414,7 +1414,11 @@ function App() {
 
   async function viewProjectSchematic(id: number, name?: string) {
     try {
-      const payload = await fetch(`/api/projects/${id}`).then((r) => r.json());
+      const response = await fetch(`/api/projects/${id}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail ?? "Could not load project.");
+      }
       setSchematicPayload(payload);
       setSchematicTitle(name ?? "Project");
       setShowSchematic(true);
