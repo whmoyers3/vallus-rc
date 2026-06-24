@@ -28,6 +28,9 @@ frontend/dist/
 # macOS
 .DS_Store
 
+# Presentations / non-code assets
+*.pptx
+
 # IDE
 .idea/
 .vscode/

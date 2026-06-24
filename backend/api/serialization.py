@@ -61,6 +61,9 @@ def project_from_payload(payload: dict[str, Any]) -> Project:
                     lighting_area=room.get("lighting_area"),
                     unit_id=room.get("unit_id"),
                     zone_id=room.get("zone_id"),
+                    room_type=room.get("room_type"),
+                    people_override=room.get("people_override"),
+                    appliance_watts_override=room.get("appliance_watts_override"),
                 )
                 for room in level.get("rooms", [])
             ],
@@ -68,6 +71,7 @@ def project_from_payload(payload: dict[str, Any]) -> Project:
             heating_cfm_divisor=level.get("heating_cfm_divisor"),
             auto_lighting_w_per_sf=level.get("auto_lighting_w_per_sf"),
             auto_infiltration=level.get("auto_infiltration", False),
+            auto_internal_gains=level.get("auto_internal_gains", False),
             line_items=[
                 line_item_from_dict(item, assemblies)
                 for item in level.get("line_items", [])

@@ -80,6 +80,17 @@ PEOPLE_SENSIBLE_BTUH = 256.0
 WATT_TO_BTUH = 3.413
 DEFAULT_LIGHTING_W_PER_SF = 0.502
 
+# Room-type internal-load catalog (ADR 0007).
+# people = seed occupant count (per-room, overridable; drives sensible gain only)
+# appliance_watts = default appliance load for the room type
+ROOM_TYPE_INTERNAL_LOADS: dict[str, dict[str, float]] = {
+    "kitchen": {"people": 0, "appliance_watts": 680},
+    "entertainment": {"people": 1, "appliance_watts": 250},
+    "laundry": {"people": 0, "appliance_watts": 200},
+    "bedroom": {"people": 1, "appliance_watts": 0},
+    "plain": {"people": 0, "appliance_watts": 0},
+}
+
 STANDARD_INFILTRATION_COOLING_FACTOR = 0.09
 STANDARD_INFILTRATION_HEATING_FACTOR = 0.243
 

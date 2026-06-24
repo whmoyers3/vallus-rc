@@ -1,5 +1,7 @@
 export type TakeoffAuthoringMode = "pdf_trace" | "image_trace" | "grid_manual";
 
+export type TakeoffRoomType = "plain" | "bedroom" | "kitchen" | "entertainment" | "laundry";
+
 export type TakeoffPoint = {
   x: number;
   y: number;
@@ -59,6 +61,9 @@ export type TakeoffRectRoom = {
   floorType?: "none" | "slab" | "framed";
   ceilingLoadArea?: number;
   floorLoadArea?: number;
+  roomType?: TakeoffRoomType;
+  peopleOverride?: number;
+  applianceWattsOverride?: number;
   components?: TakeoffRoomComponent[];
   polygon?: TakeoffPoint[];
   areaAdjustment?: number;
@@ -127,6 +132,7 @@ export type TakeoffFloor = {
 export type TakeoffProject = {
   schemaVersion: "takeoff.v1";
   name: string;
+  location?: string;
   frontDoorFaces: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
   componentSchedule?: TakeoffComponentDefinition[];
   floors: TakeoffFloor[];

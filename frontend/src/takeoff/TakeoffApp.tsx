@@ -15,6 +15,7 @@ import type {
   TakeoffProject,
   TakeoffRectRoom,
   TakeoffRoomComponent,
+  TakeoffRoomType,
   TakeoffScaleLine,
   TakeoffValidationIssue,
 } from "./types";
@@ -155,6 +156,7 @@ function makeInitialFloor(): TakeoffFloor {
 
 function makeTakeoffProject(
   name: string,
+  location: string,
   frontDoorFaces: TakeoffProject["frontDoorFaces"],
   floor: TakeoffFloor,
   componentSchedule: TakeoffComponentDefinition[],
@@ -162,10 +164,19 @@ function makeTakeoffProject(
   return {
     schemaVersion: "takeoff.v1",
     name,
+    location,
     frontDoorFaces,
     componentSchedule,
     floors: [floor],
   };
+}
+
+const COMPASS_ORDER = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
+
+function rotateCompass(direction: string | undefined, steps: number): string | undefined {
+  const index = COMPASS_ORDER.indexOf(direction as (typeof COMPASS_ORDER)[number]);
+  if (index < 0) return direction;
+  return COMPASS_ORDER[(index + steps) % COMPASS_ORDER.length];
 }
 
 function closeRing(points: TakeoffPoint[]): Ring {
@@ -1194,9 +1205,13 @@ function buildVrcPayload(project: TakeoffProject) {
     ceiling_height: room.ceilingHeight,
     volume: rectArea(room) * room.ceilingHeight,
     lighting_basis: "Floor",
+    room_type: room.roomType ?? "plain",
+    ...(room.peopleOverride != null ? { people_override: room.peopleOverride } : {}),
+    ...(room.applianceWattsOverride != null ? { appliance_watts_override: room.applianceWattsOverride } : {}),
     unit_id: "unit-whole-house",
     zone_id: "zone-default",
   }));
+  const bedroomCount = floor.rooms.filter((room) => room.roomType === "bedroom").length;
   const lineItems = floor.rooms.flatMap((room) => {
     return payloadComponentsForRoom(room).map((component) => ({
       name: `${room.name} ${component.label || component.assembly}`,
@@ -1211,7 +1226,7 @@ function buildVrcPayload(project: TakeoffProject) {
   return {
     project: {
       name: project.name,
-      location: "",
+      location: project.location || "",
       description: "Generated from Baseline Takeoff Tool",
       building_type: "single_family",
       design_conditions: {
@@ -1226,7 +1241,7 @@ function buildVrcPayload(project: TakeoffProject) {
       infiltration: { mode: "standard_ach" },
       metadata: {
         ach50: 5,
-        bedrooms: 1,
+        bedrooms: Math.max(bedroomCount, 1),
         seer: 14,
         front_door_faces: project.frontDoorFaces,
         units: [{ id: "unit-whole-house", name: "Whole House", selected_tons: 1, selected_kw: 5 }],
@@ -1247,6 +1262,7 @@ function buildVrcPayload(project: TakeoffProject) {
           heating_cfm_divisor: 20.2,
           auto_lighting_w_per_sf: defaultLightingWPerSf,
           auto_infiltration: true,
+          auto_internal_gains: true,
           rooms,
           line_items: lineItems,
         },
@@ -1307,6 +1323,7 @@ function normalizeTakeoffProject(rawProject: Partial<TakeoffProject>): TakeoffPr
     : "S";
   return makeTakeoffProject(
     rawProject.name || "Takeoff V1 Draft",
+    rawProject.location ?? "",
     frontDoorFaces,
     normalizeFloor(rawProject.floors?.[0]),
     rawProject.componentSchedule?.length ? rawProject.componentSchedule : defaultComponentSchedule,
@@ -2011,13 +2028,16 @@ function scheduleIdFor(component: Pick<TakeoffComponentDefinition, "code" | "uVa
 
 export function TakeoffApp() {
   const [projectName, setProjectName] = useState("Takeoff V1 Draft");
+  const [location, setLocation] = useState("");
   const [frontDoorFaces, setFrontDoorFaces] = useState<(typeof directionOptions)[number]>("S");
+  const [calcLoading, setCalcLoading] = useState(false);
+  const [calcResult, setCalcResult] = useState<{ facing: string; cooling: number; heating: number; tons: number } | null>(null);
   const [componentSchedule, setComponentSchedule] = useState<TakeoffComponentDefinition[]>(() => defaultComponentSchedule);
   const [floor, setFloor] = useState<TakeoffFloor>(() => makeInitialFloor());
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
-  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "S", makeInitialFloor(), defaultComponentSchedule)));
+  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", "S", makeInitialFloor(), defaultComponentSchedule)));
   const [saveLoading, setSaveLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
   const [openDialogLoading, setOpenDialogLoading] = useState(false);
@@ -2077,8 +2097,8 @@ export function TakeoffApp() {
   }, [referenceUrl]);
 
   const takeoffProject = useMemo<TakeoffProject>(
-    () => makeTakeoffProject(projectName, frontDoorFaces, floor, componentSchedule),
-    [componentSchedule, floor, frontDoorFaces, projectName],
+    () => makeTakeoffProject(projectName, location, frontDoorFaces, floor, componentSchedule),
+    [componentSchedule, floor, frontDoorFaces, location, projectName],
   );
   const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
   const serializedTakeoff = useMemo(() => takeoffSnapshot(persistableTakeoff), [persistableTakeoff]);
@@ -3476,6 +3496,57 @@ export function TakeoffApp() {
     return await response.json() as UploadedTakeoffAsset;
   }
 
+  async function runCalculate() {
+    let resolvedLocation = location.trim();
+    if (!resolvedLocation) {
+      if (window.confirm("No location set. Use Atlanta, GA?")) {
+        resolvedLocation = "Atlanta, GA";
+        setLocation(resolvedLocation);
+      } else {
+        setMessage("Enter a location before calculating.");
+        return;
+      }
+    }
+    setCalcLoading(true);
+    setMessage("");
+    try {
+      const basePayload = buildVrcPayload({ ...takeoffProject, location: resolvedLocation });
+      const frontIndex = COMPASS_ORDER.indexOf(takeoffProject.frontDoorFaces as (typeof COMPASS_ORDER)[number]);
+      let best: { facing: string; cooling: number; heating: number; tons: number } | null = null;
+      // Worst-case orientation: rotate every surface direction through all 8 facings, keep the max.
+      for (let steps = 0; steps < COMPASS_ORDER.length; steps += 1) {
+        const rotated = JSON.parse(JSON.stringify(basePayload));
+        for (const item of rotated.project.levels[0].line_items) {
+          if (item.direction) item.direction = rotateCompass(item.direction, steps);
+        }
+        const response = await fetch("/api/calculate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(rotated),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail ?? "Calculation failed.");
+        const cooling = data.whole_house_sensible_cooling ?? 0;
+        const heating = data.whole_house_heating ?? 0;
+        const score = cooling + heating;
+        if (!best || score > best.cooling + best.heating) {
+          best = {
+            facing: COMPASS_ORDER[(frontIndex + steps + COMPASS_ORDER.length) % COMPASS_ORDER.length] ?? "?",
+            cooling,
+            heating,
+            tons: data.units?.[0]?.recommended_tons ?? data.system_tons ?? 0,
+          };
+        }
+      }
+      setCalcResult(best);
+      setMessage("Calculated worst-case orientation.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Calculation failed.");
+    } finally {
+      setCalcLoading(false);
+    }
+  }
+
   async function saveTakeoff() {
     setSaveLoading(true);
     setMessage("");
@@ -3533,6 +3604,7 @@ export function TakeoffApp() {
       setReferenceRenderStatus(loadedReference ? "Reference metadata reopened, but the stored file was not available." : "");
       }
       setProjectName(loadedProject.name);
+      setLocation(loadedProject.location ?? "");
       setFrontDoorFaces(loadedProject.frontDoorFaces);
       setComponentSchedule(loadedProject.componentSchedule?.length ? loadedProject.componentSchedule : defaultComponentSchedule);
       setFloor(loadedProject.floors[0]);
@@ -3675,6 +3747,9 @@ export function TakeoffApp() {
           <button className="toolbar-primary" onClick={saveTakeoff} disabled={saveLoading}>
             {saveLoading ? "Saving..." : takeoffId ? "Save" : "Save Draft"}
           </button>
+          <button className="toolbar-primary" onClick={runCalculate} disabled={calcLoading}>
+            {calcLoading ? "Calculating..." : "Calculate"}
+          </button>
           <span className={`takeoff-save-status ${isDirty ? "takeoff-save-status--dirty" : ""}`}>
             {isDirty ? "Unsaved" : "Saved"}
           </span>
@@ -3682,6 +3757,15 @@ export function TakeoffApp() {
           <a className="button" href="/#/projects">Projects</a>
         </div>
       </header>
+
+      {calcResult && (
+        <div className="takeoff-calc-result">
+          <strong>Worst-case load</strong> (house faces {calcResult.facing}):
+          {" "}Cooling <strong>{calcResult.cooling.toLocaleString()}</strong> BTU/hr ·
+          {" "}Heating <strong>{calcResult.heating.toLocaleString()}</strong> BTU/hr ·
+          {" "}<strong>{calcResult.tons}</strong> tons
+        </div>
+      )}
 
       <section className={`takeoff-layout ${!leftPanelOpen ? "takeoff-layout--left-collapsed" : ""} ${!rightPanelOpen ? "takeoff-layout--right-collapsed" : ""}`}>
         <aside className={`takeoff-sidebar ${!leftPanelOpen ? "takeoff-sidebar--collapsed" : ""}`}>
@@ -3697,6 +3781,10 @@ export function TakeoffApp() {
             <label>
               Name
               <input value={projectName} onChange={(event) => setProjectName(event.target.value)} />
+            </label>
+            <label>
+              Location <span className="required-star">*</span>
+              <input value={location} placeholder="City, ST (e.g. Atlanta, GA)" onChange={(event) => setLocation(event.target.value)} />
             </label>
             <label>
               Floor
@@ -5054,6 +5142,19 @@ export function TakeoffApp() {
                 <label>
                   Name
                   <input value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
+                </label>
+                <label>
+                  Room type
+                  <select
+                    value={selectedRoom.roomType ?? "plain"}
+                    onChange={(event) => updateRoom(selectedRoom.id, { roomType: event.target.value as TakeoffRoomType })}
+                  >
+                    <option value="plain">Plain (no internal load)</option>
+                    <option value="bedroom">Bedroom (1 person)</option>
+                    <option value="kitchen">Kitchen (680 W)</option>
+                    <option value="entertainment">Entertainment (250 W + 1 person)</option>
+                    <option value="laundry">Laundry (200 W)</option>
+                  </select>
                 </label>
                 <label>
                   Ceiling height ft

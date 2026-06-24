@@ -250,6 +250,16 @@ def _build_unit_sheet(
     ref_name_col = f"Ref!$A$2:$A${ref_last_row}"
     ref_val_range = f"Ref!$B$2:$Y${ref_last_row}"
 
+    # Merge support: compute effective loads when wizard merges are present
+    unit_merges: dict[str, str] = {}
+    if readings and "merges" in readings:
+        unit_merges = readings["merges"].get(unit["id"], {})
+    unit_tstat: list[str] = []
+    if readings and "tstat" in readings:
+        unit_tstat = readings["tstat"].get(unit["id"], [])
+
+    _strike_font = Font(name=_base_font.name, size=_base_font.size, strikethrough=True, color="999999")
+
     for offset in range(n_rows):
         r = data_start + offset
         ws[f"F{r}"] = f'=IF(SUM(B{r}:E{r})=0,"",SUM(B{r}:E{r}))'
@@ -257,8 +267,7 @@ def _build_unit_sheet(
         ws[f"H{r}"] = f'=IF(OR(G{r}="",$G${total_row}=0),"",G{r}/$G${total_row})'
         ws[f"I{r}"] = f'=IF(OR(F{r}="",H{r}=""),"",$F${total_row}*H{r})'
         ws[f"J{r}"] = f'=IF(OR(G{r}="",F{r}="",I{r}=0),"",F{r}-I{r})'
-        # % the room must move to reach target, relative to its current reading
-        ws[f"K{r}"] = f'=IF(OR(I{r}="",F{r}="",F{r}=0),"",(F{r}-I{r})/F{r})'
+        ws[f"K{r}"] = f'=IF(OR(I{r}="",F{r}="",I{r}=0),"",J{r}/I{r})'
         ws[f"H{r}"].number_format = "0%"   # whole percent
         ws[f"I{r}"].number_format = "0"    # whole CFM
         ws[f"J{r}"].number_format = "0"    # whole CFM (signed)
@@ -267,17 +276,50 @@ def _build_unit_sheet(
         zone_fill = None
         if offset < len(unit["rooms"]):
             room = unit["rooms"][offset]
-            ws[f"A{r}"] = room["name"]
-            ws[f"G{r}"] = (
-                f'=IFERROR(INDEX({ref_val_range},'
-                f'MATCH($A{r},{ref_name_col},0),'
-                f'MATCH($B$4&"_"&$K$4,{ref_key_row},0)),"")'
-            )
-            ws[f"G{r}"].fill = _blue_fill
-            ws[f"G{r}"].font = _load_font
-            ws[f"G{r}"].alignment = _center
+            room_name = room["name"]
+            merged_into = unit_merges.get(room_name)
+            is_tstat = room_name in unit_tstat
+            label = room_name
+            if is_tstat:
+                label += " (T)"
+            if merged_into:
+                label += f" → {merged_into}"
+            ws[f"A{r}"] = label
+
+            if merged_into:
+                # Merged room: zero load, strikethrough styling
+                ws[f"G{r}"] = 0
+                ws[f"G{r}"].fill = _blue_fill
+                ws[f"G{r}"].font = _strike_font
+                ws[f"G{r}"].alignment = _center
+                for c in ("A", "F", "H", "I", "J", "K"):
+                    ws[f"{c}{r}"].font = _strike_font
+            else:
+                ws[f"G{r}"] = (
+                    f'=IFERROR(INDEX({ref_val_range},'
+                    f'MATCH("{room_name}",{ref_name_col},0),'
+                    f'MATCH($B$4&"_"&$K$4,{ref_key_row},0)),"")'
+                )
+                # Add loads from rooms merged into this one
+                donors = [rn for rn, target in unit_merges.items() if target == room_name]
+                if donors:
+                    donor_parts = "".join(
+                        f'+IFERROR(INDEX({ref_val_range},'
+                        f'MATCH("{dn}",{ref_name_col},0),'
+                        f'MATCH($B$4&"_"&$K$4,{ref_key_row},0)),0)'
+                        for dn in donors
+                    )
+                    ws[f"G{r}"] = (
+                        f'=IFERROR(INDEX({ref_val_range},'
+                        f'MATCH("{room_name}",{ref_name_col},0),'
+                        f'MATCH($B$4&"_"&$K$4,{ref_key_row},0)),0)'
+                        f'{donor_parts}'
+                    )
+                ws[f"G{r}"].fill = _blue_fill
+                ws[f"G{r}"].font = _load_font
+                ws[f"G{r}"].alignment = _center
             if readings and "supply" in readings:
-                room_readings = readings["supply"].get(unit["id"], {}).get(room["name"], [])
+                room_readings = readings["supply"].get(unit["id"], {}).get(room_name, [])
                 for ci, val in enumerate(room_readings[:4]):
                     if val not in (None, "", 0):
                         ws.cell(row=r, column=2 + ci, value=val)
@@ -386,6 +428,14 @@ def _build_unit_sheet(
         val = cl_data.get(checklist_keys[i])
         if val in ("y", "n"):
             ws[f"L{r}"] = val
+        _add_validation(ws, f"L{r}", ["y", "n"])
+    cl_start = rh + 1
+    cl_end = rh + len(checklist_labels)
+    _no_fill = PatternFill("solid", fgColor="FECACA")
+    ws.conditional_formatting.add(
+        f"L{cl_start}:L{cl_end}",
+        FormulaRule(formula=[f'OR(EXACT(L{cl_start},"n"),EXACT(L{cl_start},"N"))'], fill=_no_fill),
+    )
     _grid(ws, 10, rh, 12, rh + len(checklist_labels))  # J..L
 
     # Notes box

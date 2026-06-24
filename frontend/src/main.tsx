@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TakeoffApp } from "./takeoff/TakeoffApp";
+import PlanSchematic from "./PlanSchematic";
 
 type AssemblyRow = { code: string; u_value?: number | null; shgc?: number | null; label: string };
 type TypeCategory = "Wall" | "Glass" | "Ceiling" | "Floor" | "Door";
@@ -713,6 +714,9 @@ function App() {
   const [isDirty, setIsDirty] = useState(false);
   const [calculateLoading, setCalculateLoading] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  const [showSchematic, setShowSchematic] = useState(false);
+  const [schematicPayload, setSchematicPayload] = useState<any | null>(null);
+  const [schematicTitle, setSchematicTitle] = useState<string>("");
   const [saveLoading, setSaveLoading] = useState(false);
   const [importFidelity, setImportFidelity] = useState<{ passed: boolean | null; details: Record<string, unknown> | null } | null>(null);
   const [batteryStatus, setBatteryStatus] = useState<"none" | "eligible" | "added" | "loading">("none");
@@ -1408,6 +1412,23 @@ function App() {
     }
   }
 
+  async function viewProjectSchematic(id: number, name?: string) {
+    try {
+      const payload = await fetch(`/api/projects/${id}`).then((r) => r.json());
+      setSchematicPayload(payload);
+      setSchematicTitle(name ?? "Project");
+      setShowSchematic(true);
+    } catch {
+      setValidationMessage("Could not load that project's schematic.");
+    }
+  }
+
+  function closeSchematic() {
+    setShowSchematic(false);
+    setSchematicPayload(null);
+    setSchematicTitle("");
+  }
+
   async function loadSavedProject(id: number, row?: SavedProject) {
     try {
       const payload: FixturePayload = await fetch(`/api/projects/${id}`).then((r) => r.json());
@@ -2027,6 +2048,7 @@ function App() {
                     {projectId && (
                       <a className="button" href={`/api/projects/${projectId}/report`} onClick={() => setShowExportMenu(false)}>PDF Report</a>
                     )}
+                    <button onClick={() => { setShowExportMenu(false); setSchematicPayload(null); setSchematicTitle(""); setShowSchematic(true); }}>3D Schematic…</button>
                   </div>
                 )}
               </div>
@@ -2893,6 +2915,23 @@ function App() {
         </div>
       )}
 
+      {showSchematic && (
+        <div className="modal-backdrop" onClick={closeSchematic}>
+          <div className="modal schematic-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>3D Schematic — {schematicPayload ? schematicTitle : (project.name || "Project")}</h2>
+              <button className="modal-close" onClick={closeSchematic}>✕</button>
+            </div>
+            <p className="modal-empty" style={{ margin: "0 0 8px" }}>
+              Representative per-room boxes synthesized from load areas. Same-orientation walls are merged; this is a sense-check, not the plan.
+            </p>
+            <div style={{ width: "100%", height: "60vh", minHeight: 420 }}>
+              <PlanSchematic payload={schematicPayload ?? buildPayload(project, assemblies)} />
+            </div>
+          </div>
+        </div>
+      )}
+
       {showOpenDialog && (
         <div className="modal-backdrop open-dialog-backdrop" onClick={() => setShowOpenDialog(false)}>
           <div className="modal open-dialog-modal" onClick={(e) => e.stopPropagation()}>
@@ -2926,7 +2965,11 @@ function App() {
                       </td>
                       <td>{p.location}</td>
                       <td>{p.updated_at.slice(0, 16).replace("T", " ")}</td>
-                      <td><button className="danger-button" onClick={() => deleteSavedProject(p.id)}>Delete</button></td>
+                      <td>
+                        <button className="link-button" onClick={() => viewProjectSchematic(p.id, p.name)}>3D</button>
+                        {" · "}
+                        <button className="danger-button" onClick={() => deleteSavedProject(p.id)}>Delete</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2942,6 +2985,7 @@ function App() {
                       <span>{p.location}</span>
                       <span>{p.updated_at.slice(0, 10)}</span>
                     </div>
+                    <button className="link-button" onClick={() => viewProjectSchematic(p.id, p.name)}>3D Schematic</button>
                     <button className="project-card-delete danger-button" onClick={() => deleteSavedProject(p.id)}>Delete</button>
                   </div>
                 ))}
@@ -4938,11 +4982,13 @@ function AirflowWizard() {
     return roomList.every(r => um[r.name] || supplyTotal(uid, r.name) > 0);
   }
 
-  /** 3-tier color: green ≤10%, yellow 11-20%, red >20% */
-  function deltaColor(pct: number): string {
+  /** 4-tier color: green if within 15 CFM or ≤10%, yellow 11-15%, orange 16-25%, red >25% */
+  function deltaColor(pct: number, cfmDelta?: number): string {
+    if (cfmDelta !== undefined && Math.abs(cfmDelta) <= 15) return "#16a34a";
     const abs = Math.abs(pct);
     if (abs <= 10) return "#16a34a";
-    if (abs <= 20) return "#ca8a04";
+    if (abs <= 15) return "#ca8a04";
+    if (abs <= 25) return "#ea580c";
     return "#dc2626";
   }
 
@@ -5018,7 +5064,17 @@ function AirflowWizard() {
         filter_type: s.filter_type,
       };
     }
-    return { supply, return: ret, static_pressure: sp, checklist };
+    const mg: Record<string, Record<string, string>> = {};
+    for (const [uid, rm] of Object.entries(merges)) {
+      const filtered = Object.fromEntries(Object.entries(rm).filter(([, to]) => to));
+      if (Object.keys(filtered).length) mg[uid] = filtered;
+    }
+    const ts: Record<string, string[]> = {};
+    for (const [uid, rooms] of Object.entries(tstatRooms)) {
+      const list = Object.entries(rooms).filter(([, v]) => v).map(([k]) => k);
+      if (list.length) ts[uid] = list;
+    }
+    return { supply, return: ret, static_pressure: sp, checklist, merges: mg, tstat: ts };
   }
 
   async function downloadFile(endpoint: string, mimeType: string, ext: string) {
@@ -5116,10 +5172,12 @@ function AirflowWizard() {
           const hasStatics = !!(sp.supply_esp || sp.return_esp);
           const cl = getChecklist(unitId);
           const clDone = CHECKLIST_ITEMS.filter(c => cl[c.key] === "y" || cl[c.key] === "n").length;
+          const supDelta = supTotal && nominal ? supTotal - nominal : null;
           const supPct = nominal && supTotal ? Math.round(Math.abs(supTotal - nominal) / nominal * 100) : null;
-          const supColor = supPct !== null ? deltaColor(supPct) : undefined;
+          const supColor = supPct !== null ? deltaColor(supPct, supDelta ?? undefined) : undefined;
+          const retDelta = retTotal && nominal ? retTotal - nominal : null;
           const retPct = nominal && retTotal ? Math.round(Math.abs(retTotal - nominal) / nominal * 100) : null;
-          const retColor = retPct !== null ? deltaColor(retPct) : undefined;
+          const retColor = retPct !== null ? deltaColor(retPct, retDelta ?? undefined) : undefined;
           return (
             <div className="wiz-phase-nav">
               {units.length > 1 && <div style={{ fontSize: 12, color: "#666", marginBottom: 4, textAlign: "center" }}>{unit.name}</div>}
@@ -5249,7 +5307,7 @@ function AirflowWizard() {
                     </div>
                     <div className="wiz-total">
                       <span>Total: <strong>{total || "—"}</strong> CFM</span>
-                      {total > 0 && adjTarget > 0 && <span className="delta" style={{ color: deltaColor(pct) }}>Δ {delta > 0 ? "+" : ""}{delta} CFM ({pct > 0 ? "+" : ""}{pct}%)</span>}
+                      {total > 0 && adjTarget > 0 && <span className="delta" style={{ color: deltaColor(pct, delta) }}>Δ {delta > 0 ? "+" : ""}{delta} CFM ({pct > 0 ? "+" : ""}{pct}%)</span>}
                     </div>
                     {/* Inline return quick-add */}
                     <WizardReturnQuickAdd
@@ -5269,7 +5327,9 @@ function AirflowWizard() {
                   const retGrand = retEntries.reduce((s, e) => s + e.readings.reduce((a: number, v) => a + (typeof v === "number" ? v : 0), 0), 0);
                   const tons = unitTons[unitId] || 0;
                   const nominal = Math.round(tons * 400);
+                  const supDelta = systemTotal && nominal ? systemTotal - nominal : null;
                   const supPct = nominal && systemTotal ? Math.round(Math.abs(systemTotal - nominal) / nominal * 100) : null;
+                  const retDelta = retGrand && nominal ? retGrand - nominal : null;
                   const retPct = nominal && retGrand ? Math.round(Math.abs(retGrand - nominal) / nominal * 100) : null;
                   return (
                     <table>
@@ -5288,7 +5348,7 @@ function AirflowWizard() {
                               <td>{r.name}{isTstat(unitId, r.name) && <b> (T)</b>} {merged ? `→ ${um[r.name]}` : s > 0 ? "✓" : ""}</td>
                               <td>{merged ? "—" : s || "—"}</td>
                               <td>{merged ? "—" : at > 0 ? at : eff}</td>
-                              <td style={{ color: (!merged && at && s > 0) ? deltaColor(p) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
+                              <td style={{ color: (!merged && at && s > 0) ? deltaColor(p, d) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
                               <td>{!merged && s > 0 && at > 0 ? `${p}%` : "—"}</td>
                             </tr>
                           );
@@ -5296,9 +5356,9 @@ function AirflowWizard() {
                         {/* Supply total */}
                         <tr style={{ borderTop: "2px solid #333", fontWeight: 700 }}>
                           <td>Supply Total</td>
-                          <td style={{ color: supPct !== null ? deltaColor(supPct) : undefined }}>{systemTotal || "—"}</td>
+                          <td style={{ color: supPct !== null ? deltaColor(supPct, supDelta ?? undefined) : undefined }}>{systemTotal || "—"}</td>
                           <td>{nominal || "—"}</td>
-                          <td colSpan={2} style={{ color: supPct !== null ? deltaColor(supPct) : undefined, fontSize: 12 }}>
+                          <td colSpan={2} style={{ color: supPct !== null ? deltaColor(supPct, supDelta ?? undefined) : undefined, fontSize: 12 }}>
                             {nominal && systemTotal ? `${systemTotal > nominal ? "+" : ""}${systemTotal - nominal} CFM (${supPct! > 0 ? (systemTotal > nominal ? "+" : "-") : ""}${supPct}%)` : ""}
                           </td>
                         </tr>
@@ -5320,9 +5380,9 @@ function AirflowWizard() {
                             })}
                             <tr style={{ borderTop: "2px solid #333", fontWeight: 700 }}>
                               <td>Return Total</td>
-                              <td style={{ color: retPct !== null ? deltaColor(retPct) : undefined }}>{retGrand || "—"}</td>
+                              <td style={{ color: retPct !== null ? deltaColor(retPct, retDelta ?? undefined) : undefined }}>{retGrand || "—"}</td>
                               <td>{nominal || "—"}</td>
-                              <td colSpan={2} style={{ color: retPct !== null ? deltaColor(retPct) : undefined, fontSize: 12 }}>
+                              <td colSpan={2} style={{ color: retPct !== null ? deltaColor(retPct, retDelta ?? undefined) : undefined, fontSize: 12 }}>
                                 {nominal && retGrand ? `${retGrand > nominal ? "+" : ""}${retGrand - nominal} CFM (${retPct! > 0 ? (retGrand > nominal ? "+" : "-") : ""}${retPct}%)` : ""}
                               </td>
                             </tr>
@@ -5475,7 +5535,7 @@ function AirflowWizard() {
                               <td style={{ padding: "4px 6px" }}>{r.name}{isTstat(unitId, r.name) && <b> (T)</b>}{merged ? ` → ${um[r.name]}` : ""}</td>
                               <td style={{ textAlign: "center" }}>{merged ? "—" : s || "—"}</td>
                               <td style={{ textAlign: "center" }}>{merged ? "—" : at > 0 ? at : eff}</td>
-                              <td style={{ textAlign: "center", color: (!merged && at && s > 0) ? deltaColor(p) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
+                              <td style={{ textAlign: "center", color: (!merged && at && s > 0) ? deltaColor(p, d) : undefined }}>{!merged && s > 0 && at > 0 ? d : "—"}</td>
                             </tr>
                           );
                         })}

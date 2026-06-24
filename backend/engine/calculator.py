@@ -8,6 +8,7 @@ from .constants import (
     BTUH_PER_KW,
     CFM_PER_TON,
     PEOPLE_SENSIBLE_BTUH,
+    ROOM_TYPE_INTERNAL_LOADS,
     SCLEFF_BY_DIRECTION,
     SENSIBLE_BTUH_PER_NOMINAL_TON,
     SPECIAL_CLTD,
@@ -295,6 +296,38 @@ def calculate_level(
                     room_name=room.name,
                 )
             )
+        if level.auto_internal_gains and room.room_type:
+            defaults = ROOM_TYPE_INTERNAL_LOADS.get(
+                room.room_type, ROOM_TYPE_INTERNAL_LOADS["plain"]
+            )
+            people = (
+                room.people_override
+                if room.people_override is not None
+                else defaults["people"]
+            )
+            if people:
+                line_results.append(
+                    LineResult(
+                        name=f"People - {room.name}",
+                        cooling_btuh=people * PEOPLE_SENSIBLE_BTUH,
+                        heating_btuh=0.0,
+                        room_name=room.name,
+                    )
+                )
+            watts = (
+                room.appliance_watts_override
+                if room.appliance_watts_override is not None
+                else defaults["appliance_watts"]
+            )
+            if watts:
+                line_results.append(
+                    LineResult(
+                        name=f"Appliances - {room.name}",
+                        cooling_btuh=watts * WATT_TO_BTUH,
+                        heating_btuh=0.0,
+                        room_name=room.name,
+                    )
+                )
     raw_cooling_subtotal = sum(result.cooling_btuh for result in line_results)
     raw_heating_subtotal = sum(result.heating_btuh for result in line_results)
     cooling_subtotal = round_half_up(raw_cooling_subtotal)

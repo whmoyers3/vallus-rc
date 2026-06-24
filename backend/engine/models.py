@@ -87,6 +87,7 @@ class Level:
     heating_cfm_divisor: float | None = None
     auto_lighting_w_per_sf: float | None = None
     auto_infiltration: bool = False
+    auto_internal_gains: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,3 +115,6 @@ class Room:
     lighting_area: float | None = None
     unit_id: str | None = None
     zone_id: str | None = None
+    room_type: str | None = None
+    people_override: float | None = None
+    appliance_watts_override: float | None = None
