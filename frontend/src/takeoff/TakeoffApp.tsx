@@ -416,6 +416,66 @@ function ceilingGeometryInfo(room: TakeoffRectRoom, defaultCeilingHeight = 9) {
   };
 }
 
+type CeilingWallSuggestion = {
+  key: string;
+  direction: TakeoffRoomComponent["direction"];
+  area: number;
+  label: string;
+  description: string;
+  basis: "raised-wall" | "gable-end";
+  length?: number;
+  addedHeight?: number;
+};
+
+function ceilingWallSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom, defaultCeilingHeight = 9): CeilingWallSuggestion[] {
+  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
+  const suggestions: CeilingWallSuggestion[] = [];
+  const addedLowHeight = ceilingInfo.ceilingType === "vaulted"
+    ? Math.max(0, ceilingInfo.lowHeight - defaultCeilingHeight)
+    : Math.max(0, room.ceilingHeight - defaultCeilingHeight);
+  if (ceilingInfo.ceilingType !== "none" && addedLowHeight > 0.25) {
+    for (const edge of pointsToEdges(roomCorners(room))) {
+      if (edgeSharesSameHeightRoom(floor, room, edge, addedLowHeight)) continue;
+      const length = distance(edge.a, edge.b);
+      const direction = edgeDirectionFromRoom(edge, room);
+      const area = Math.round(length * addedLowHeight * 10) / 10;
+      if (area <= 0.5) continue;
+      suggestions.push({
+        key: `ceiling-raised-${direction}-${Math.round(edge.a.x * 10)}-${Math.round(edge.a.y * 10)}`,
+        direction,
+        area,
+        label: `Raised ceiling wall - ${direction}`,
+        description: `${direction}-facing raised wall band`,
+        basis: "raised-wall",
+        length,
+        addedHeight: addedLowHeight,
+      });
+    }
+  }
+  if (ceilingInfo.ceilingType !== "vaulted" || ceilingInfo.gableArea <= 0) return suggestions;
+  const directions: Array<NonNullable<TakeoffRoomComponent["direction"]>> = ceilingInfo.ridgeDirection === "N-S"
+    ? ["N", "S"]
+    : ["E", "W"];
+  const area = Math.round((ceilingInfo.gableArea / 2) * 10) / 10;
+  suggestions.push(...directions.map((direction, index) => ({
+    key: `ceiling-gable-${direction}`,
+    direction,
+    area,
+    label: `Vault gable end ${index + 1}`,
+    description: `${direction}-facing gable end`,
+    basis: "gable-end" as const,
+  })));
+  return suggestions;
+}
+
+function ceilingWallSuggestionApplied(room: TakeoffRectRoom, suggestion: CeilingWallSuggestion) {
+  return roomSurfaceComponents(room, "wall").some((component) =>
+    component.label === suggestion.label &&
+    component.direction === suggestion.direction &&
+    Math.abs((component.area || 0) - Math.round(suggestion.area)) <= 0.5
+  );
+}
+
 function legacyComponentsForRoom(room: TakeoffRectRoom): TakeoffRoomComponent[] {
   const components: TakeoffRoomComponent[] = [];
   if ((room.floorType ?? "slab") !== "none") {
@@ -792,6 +852,27 @@ function compassFromVector(dx: number, dy: number): (typeof directionOptions)[nu
   return "NE";
 }
 
+function edgeDirectionFromRoom(edge: { a: TakeoffPoint; b: TakeoffPoint }, room: TakeoffRectRoom) {
+  const midpoint = {
+    x: (edge.a.x + edge.b.x) / 2,
+    y: (edge.a.y + edge.b.y) / 2,
+  };
+  const center = roomCenter(room);
+  return compassFromVector(midpoint.x - center.x, midpoint.y - center.y);
+}
+
+function edgeSharesSameHeightRoom(floor: TakeoffFloor, room: TakeoffRectRoom, edge: { a: TakeoffPoint; b: TakeoffPoint }, addedHeight: number) {
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  return floor.rooms.some((other) => {
+    if (other.id === room.id) return false;
+    const otherHeight = (other.ceilingType === "vaulted" ? other.ceilingLowHeight ?? other.ceilingHeight : other.ceilingHeight);
+    if (Math.abs(otherHeight - (room.ceilingType === "vaulted" ? room.ceilingLowHeight ?? room.ceilingHeight : room.ceilingHeight)) > 0.25) return false;
+    return pointsToEdges(roomCorners(other)).some((otherEdge) =>
+      sharedSegmentLength(edge, otherEdge, tolerance) >= Math.max(0.5, Math.min(distance(edge.a, edge.b), 4) * 0.5)
+    );
+  }) && addedHeight > 0;
+}
+
 function exteriorRingPoints(floor: TakeoffFloor) {
   if (floor.exteriorPolygon.length >= 3) return floor.exteriorPolygon;
   const bounds = footprintBounds(floor);
@@ -1123,6 +1204,15 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
+    const missingCeilingWallSuggestions = ceilingWallSuggestionsForRoom(floor, room, defaultCeilingHeight)
+      .filter((suggestion) => !ceilingWallSuggestionApplied(room, suggestion));
+    if (room.ceilingGeometryApproved && missingCeilingWallSuggestions.length > 0) {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} approved ceiling geometry is missing ${missingCeilingWallSuggestions.length} generated raised wall/gable component${missingCeilingWallSuggestions.length === 1 ? "" : "s"}. Re-approve the ceiling geometry or add the wall sections manually.`,
+        target: roomTarget,
+      });
+    }
     const roomArea = rectArea(room);
     const floorArea = componentAreaTotal(room, "floor");
     const ceilingArea = componentAreaTotal(room, "ceiling");
@@ -1134,7 +1224,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     if (!noFloorLoad && floorArea > roomArea + 0.5) {
       issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.`, target: roomTarget });
     }
-    if (!noCeilingLoad && ceilingArea > roomArea + 0.5) {
+    if (!noCeilingLoad && ceilingArea > roomArea + 0.5 && !(ceilingInfo.ceilingType === "vaulted" && room.ceilingGeometryApproved)) {
       issues.push({ severity: "error", message: `${room.name || "Room"} ceiling components exceed room area by ${Math.round(ceilingArea - roomArea)} sf.`, target: roomTarget });
     }
     for (const component of roomComponents(room)) {
@@ -2093,6 +2183,7 @@ export function TakeoffApp() {
   const [componentScheduleOpen, setComponentScheduleOpen] = useState(false);
   const [componentSearch, setComponentSearch] = useState("");
   const [pendingComponentAssignment, setPendingComponentAssignment] = useState<TakeoffComponentDefinition | null>(null);
+  const [ceilingWallAssemblies, setCeilingWallAssemblies] = useState<Record<string, string>>({});
   const [libraryComponents, setLibraryComponents] = useState<TakeoffComponentDefinition[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [componentDraft, setComponentDraft] = useState<Omit<TakeoffComponentDefinition, "id" | "source">>({
@@ -2260,31 +2351,64 @@ export function TakeoffApp() {
     updateRoom(roomId, { ...patch, ceilingGeometryApproved: false });
   }
 
-  function approveRoomCeilingGeometry(roomId: string) {
+  function scrollToWallComponents(roomId: string) {
+    window.requestAnimationFrame(() => {
+      document.getElementById(`room-wall-components-${roomId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  function approveRoomCeilingGeometry(roomId: string, wallAssemblies: Record<string, string> = {}) {
     setFloor((current) => ({
       ...current,
       rooms: current.rooms.map((room) => {
         if (room.id !== roomId) return room;
         const ceilingInfo = ceilingGeometryInfo(room, current.defaultCeilingHeight ?? 9);
-        if (ceilingInfo.ceilingType !== "vaulted") return { ...room, ceilingGeometryApproved: true };
         const components = roomComponents(room);
-        const ceilingComponents = components.filter((component) => component.surface === "ceiling");
-        const nextCeilingArea = Math.max(0, Math.round(ceilingInfo.slopedCeilingArea));
-        const defaultCeiling = defaultComponent("ceiling", nextCeilingArea);
-        const nextCeilingComponents = ceilingComponents.length > 0
-          ? ceilingComponents.map((component, index) => index === 0 ? { ...component, area: nextCeilingArea, assembly: component.assembly || "C2" } : component)
-          : [{ ...defaultCeiling, assembly: "C2" }];
+        const ceilingSuggestions = ceilingWallSuggestionsForRoom(current, room, current.defaultCeilingHeight ?? 9);
+        const suggestionLabels = new Set(ceilingSuggestions.map((suggestion) => suggestion.label));
+        const nextWallComponents = ceilingSuggestions.map((suggestion) => {
+          const existing = components.find((component) => component.surface === "wall" && component.label === suggestion.label);
+          const assembly = wallAssemblies[`${room.id}:${suggestion.key}`] || existing?.assembly || "W1";
+          return {
+            ...(existing ?? defaultComponent("wall", suggestion.area)),
+            assembly,
+            area: Math.round(suggestion.area),
+            direction: suggestion.direction,
+            label: suggestion.label,
+          };
+        });
+        const baseComponents = components.filter((component) =>
+          !(component.surface === "wall" && component.label && suggestionLabels.has(component.label)) &&
+          !(ceilingInfo.ceilingType === "vaulted" && component.surface === "ceiling")
+        );
+        if (ceilingInfo.ceilingType === "vaulted") {
+          const ceilingComponents = components.filter((component) => component.surface === "ceiling");
+          const nextCeilingArea = Math.max(0, Math.round(ceilingInfo.slopedCeilingArea));
+          const defaultCeiling = defaultComponent("ceiling", nextCeilingArea);
+          const nextCeilingComponents = ceilingComponents.length > 0
+            ? ceilingComponents.map((component, index) => index === 0 ? { ...component, area: nextCeilingArea, assembly: component.assembly || "C2" } : component)
+            : [{ ...defaultCeiling, assembly: "C2" }];
+          return {
+            ...room,
+            ceilingGeometryApproved: true,
+            components: [
+              ...baseComponents,
+              ...nextCeilingComponents,
+              ...nextWallComponents,
+            ],
+          };
+        }
         return {
           ...room,
           ceilingGeometryApproved: true,
           components: [
-            ...components.filter((component) => component.surface !== "ceiling"),
-            ...nextCeilingComponents,
+            ...baseComponents,
+            ...nextWallComponents,
           ],
         };
       }),
     }));
-    setMessage("Ceiling geometry reviewed and approved. Vaulted ceiling area was refreshed where applicable.");
+    setMessage("Ceiling geometry reviewed and approved. Suggested raised wall and gable components were added where applicable.");
   }
 
   function addRoomComponent(roomId: string, surface: TakeoffRoomComponent["surface"]) {
@@ -4781,6 +4905,14 @@ export function TakeoffApp() {
                     const lowRise = Math.max(10, ceilingInfo.lowHeight * heightScale);
                     const peakExtra = ceilingInfo.ceilingType === "vaulted" ? Math.max(8, (ceilingInfo.peakHeight - ceilingInfo.lowHeight) * heightScale) : 0;
                     const backY = baseY - floorDepth;
+                    const floorFrontLeft = { x: baseX, y: baseY };
+                    const floorFrontRight = { x: baseX + floorWidth, y: baseY };
+                    const floorBackRight = { x: baseX + floorWidth + skew, y: backY };
+                    const floorBackLeft = { x: baseX + skew, y: backY };
+                    const topFrontLeft = { x: floorFrontLeft.x, y: floorFrontLeft.y - lowRise };
+                    const topFrontRight = { x: floorFrontRight.x, y: floorFrontRight.y - lowRise };
+                    const topBackRight = { x: floorBackRight.x, y: floorBackRight.y - lowRise };
+                    const topBackLeft = { x: floorBackLeft.x, y: floorBackLeft.y - lowRise };
                     const ridgeRunsEastWest = ceilingInfo.ridgeDirection === "E-W";
                     const ridgeStart = ridgeRunsEastWest
                       ? { x: baseX + skew * ceilingInfo.ridgeRatio, y: baseY - lowRise - floorDepth * ceilingInfo.ridgeRatio - peakExtra }
@@ -4788,6 +4920,18 @@ export function TakeoffApp() {
                     const ridgeEnd = ridgeRunsEastWest
                       ? { x: baseX + floorWidth + skew * ceilingInfo.ridgeRatio, y: baseY - lowRise - floorDepth * ceilingInfo.ridgeRatio - peakExtra }
                       : { x: baseX + floorWidth * ceilingInfo.ridgeRatio + skew, y: backY - lowRise - peakExtra };
+                    const roofPlaneOne = ridgeRunsEastWest
+                      ? [topFrontLeft, topFrontRight, ridgeEnd, ridgeStart]
+                      : [topFrontLeft, topBackLeft, ridgeEnd, ridgeStart];
+                    const roofPlaneTwo = ridgeRunsEastWest
+                      ? [topBackLeft, topBackRight, ridgeEnd, ridgeStart]
+                      : [topFrontRight, topBackRight, ridgeEnd, ridgeStart];
+                    const gableTriangles = ridgeRunsEastWest
+                      ? [[topFrontLeft, topBackLeft, ridgeStart], [topFrontRight, topBackRight, ridgeEnd]]
+                      : [[topFrontLeft, topFrontRight, ridgeStart], [topBackLeft, topBackRight, ridgeEnd]];
+                    const pointList = (points: TakeoffPoint[]) => points.map((point) => `${point.x},${point.y}`).join(" ");
+                    const ceilingSuggestions = ceilingWallSuggestionsForRoom(floor, selectedRoom, floor.defaultCeilingHeight ?? 9);
+                    const hasCeilingSuggestions = ceilingSuggestions.length > 0;
                     const updateRidgeOffsetFromEvent = (event: React.PointerEvent<SVGLineElement>) => {
                       const svg = event.currentTarget.ownerSVGElement;
                       if (!svg) return;
@@ -4803,34 +4947,39 @@ export function TakeoffApp() {
                       <div className={`takeoff-ceiling-qa ${ceilingInfo.needsReview ? "takeoff-ceiling-qa--warning" : ""}`}>
                         <div className="takeoff-component-head">
                           <h3>Ceiling Geometry QA</h3>
-                          <button className={selectedRoom.ceilingGeometryApproved ? "toolbar-primary" : ""} onClick={() => approveRoomCeilingGeometry(selectedRoom.id)}>
+                          <button className={selectedRoom.ceilingGeometryApproved ? "toolbar-primary" : ""} onClick={() => approveRoomCeilingGeometry(selectedRoom.id, ceilingWallAssemblies)}>
                             {selectedRoom.ceilingGeometryApproved ? "Approved" : "Approve"}
                           </button>
                         </div>
                         <div className="takeoff-ceiling-qa-grid">
                           <svg viewBox={`0 ${sketchViewMinY} ${sketchViewWidth} ${sketchViewHeight}`} role="img" aria-label="Ceiling geometry preview">
                             <polygon
-                              points={`${baseX},${baseY} ${baseX + floorWidth},${baseY} ${baseX + floorWidth + skew},${backY} ${baseX + skew},${backY}`}
+                              points={pointList([floorFrontLeft, floorFrontRight, floorBackRight, floorBackLeft])}
                               fill="rgba(31,111,178,0.08)"
                               stroke="#7fa6c7"
                             />
                             <polygon
-                              points={`${baseX},${baseY} ${baseX + floorWidth},${baseY} ${baseX + floorWidth},${baseY - lowRise} ${baseX},${baseY - lowRise}`}
+                              points={pointList([floorFrontLeft, floorFrontRight, topFrontRight, topFrontLeft])}
                               fill="rgba(72,128,93,0.13)"
                               stroke="#7ea48b"
                             />
                             <polygon
-                              points={`${baseX + floorWidth},${baseY} ${baseX + floorWidth + skew},${backY} ${baseX + floorWidth + skew},${backY - lowRise} ${baseX + floorWidth},${baseY - lowRise}`}
+                              points={pointList([floorFrontRight, floorBackRight, topBackRight, topFrontRight])}
                               fill="rgba(72,128,93,0.1)"
                               stroke="#7ea48b"
                             />
                             <polygon
-                              points={`${baseX + skew},${backY} ${baseX + floorWidth + skew},${backY} ${baseX + floorWidth + skew},${backY - lowRise} ${baseX + skew},${backY - lowRise}`}
+                              points={pointList([floorBackLeft, floorBackRight, topBackRight, topBackLeft])}
                               fill="rgba(72,128,93,0.16)"
                               stroke="#7ea48b"
                             />
                             {ceilingInfo.ceilingType === "vaulted" ? (
                               <>
+                                <polygon points={pointList(roofPlaneOne)} fill="rgba(179,91,47,0.18)" stroke="#b35b2f" />
+                                <polygon points={pointList(roofPlaneTwo)} fill="rgba(179,91,47,0.1)" stroke="#b35b2f" />
+                                {gableTriangles.map((triangle, index) => (
+                                  <polygon key={`gable-${index}`} points={pointList(triangle)} fill="rgba(179,91,47,0.16)" stroke="#8f4a27" strokeDasharray="4 3" />
+                                ))}
                                 <line
                                   className="takeoff-ridge-line"
                                   x1={ridgeStart.x}
@@ -4846,8 +4995,6 @@ export function TakeoffApp() {
                                     updateRidgeOffsetFromEvent(event);
                                   }}
                                 />
-                                <line x1={baseX} y1={baseY - lowRise} x2={ridgeStart.x} y2={ridgeStart.y} stroke="#b35b2f" strokeDasharray="5 4" />
-                                <line x1={baseX + floorWidth} y1={baseY - lowRise} x2={ridgeEnd.x} y2={ridgeEnd.y} stroke="#b35b2f" strokeDasharray="5 4" />
                                 <text x="18" y="18" fill="#344558" fontSize="12">Drag ridge · {ceilingInfo.ridgeDirection}</text>
                               </>
                             ) : (
@@ -4865,10 +5012,54 @@ export function TakeoffApp() {
                         </div>
                         {ceilingInfo.needsReview ? (
                           <p className="takeoff-note">
-                            This ceiling height change may create about {Math.round(ceilingInfo.estimatedAddedWallArea)} sf of raised wall or knee-wall exposure if attic space is above. Review ridge direction and approve or adjust the geometry.
+                            This ceiling height change may create about {Math.round(ceilingInfo.estimatedAddedWallArea)} sf of raised wall or knee-wall exposure if attic space is above. Review ridge direction, assign the wall sections, then approve the geometry.
                           </p>
                         ) : (
                           <p className="takeoff-muted">Use this sketch to confirm ridge direction and relative ceiling heights before export.</p>
+                        )}
+                        {hasCeilingSuggestions && (
+                          <div className="takeoff-ceiling-wall-suggestions">
+                            <div className="takeoff-component-head">
+                              <h4>Generated Wall Sections</h4>
+                              <span>{ceilingSuggestions.filter((suggestion) => ceilingWallSuggestionApplied(selectedRoom, suggestion)).length} / {ceilingSuggestions.length} added</span>
+                            </div>
+                            {ceilingSuggestions.map((suggestion) => {
+                              const key = `${selectedRoom.id}:${suggestion.key}`;
+                              const applied = ceilingWallSuggestionApplied(selectedRoom, suggestion);
+                              return (
+                                <button
+                                  key={suggestion.key}
+                                  className={`takeoff-ceiling-wall-suggestion ${applied ? "takeoff-ceiling-wall-suggestion--applied" : ""}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (!applied) return;
+                                    setMessage(`${suggestion.label} has been added. Review it in Wall Components below.`);
+                                    scrollToWallComponents(selectedRoom.id);
+                                  }}
+                                >
+                                  <span>
+                                    <strong>{suggestion.description}</strong>
+                                    <small>
+                                      {Math.round(suggestion.area)} sf
+                                      {suggestion.length && suggestion.addedHeight ? ` · ${Number(suggestion.length.toFixed(1))} lf x ${Number(suggestion.addedHeight.toFixed(1))} ft` : ""}
+                                      {suggestion.basis === "gable-end" ? " · vault gable" : " · raised wall band"}
+                                    </small>
+                                  </span>
+                                  <select
+                                    value={ceilingWallAssemblies[key] || "W1"}
+                                    disabled={applied}
+                                    onClick={(event) => event.stopPropagation()}
+                                    onChange={(event) => setCeilingWallAssemblies((current) => ({ ...current, [key]: event.target.value }))}
+                                  >
+                                    {scheduleOptionsBySurface.wall.map((option) => (
+                                      <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                                    ))}
+                                  </select>
+                                  <em>{applied ? "Added" : "Pending"}</em>
+                                </button>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
                     );
@@ -4883,7 +5074,7 @@ export function TakeoffApp() {
                     const options = scheduleOptionsBySurface[surface];
                     const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
                     return (
-                      <div key={surface} className="takeoff-component-editor">
+                      <div key={surface} id={surface === "wall" ? `room-wall-components-${selectedRoom.id}` : undefined} className="takeoff-component-editor">
                         <div className="takeoff-component-head">
                           <h3>{componentSurfaceLabel(surface)} Components</h3>
                           <button onClick={() => addRoomComponent(selectedRoom.id, surface)}>Add</button>

@@ -1441,6 +1441,59 @@ button.toolbar-primary:hover {
   font-size: 13px;
 }
 
+.takeoff-ceiling-wall-suggestions {
+  border-top: 1px solid #dde6ed;
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.takeoff-ceiling-wall-suggestion {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d8e3ea;
+  border-radius: 6px;
+  color: #263545;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, 0.6fr) auto;
+  padding: 8px;
+  text-align: left;
+}
+
+.takeoff-ceiling-wall-suggestion span {
+  display: grid;
+  gap: 2px;
+}
+
+.takeoff-ceiling-wall-suggestion small {
+  color: #657384;
+}
+
+.takeoff-ceiling-wall-suggestion em {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 999px;
+  color: #9a3412;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+
+.takeoff-ceiling-wall-suggestion--applied {
+  background: #f1f5f8;
+  color: #6b7785;
+}
+
+.takeoff-ceiling-wall-suggestion--applied em {
+  background: #e8f3ec;
+  border-color: #bed9c9;
+  color: #23533c;
+}
+
 .takeoff-quick-actions {
   display: flex;
   flex-wrap: wrap;
