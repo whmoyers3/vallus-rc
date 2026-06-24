@@ -7,6 +7,9 @@ export type TakeoffPoint = {
   y: number;
 };
 
+export type TakeoffRoomComponentSource = "manual" | "exterior-perimeter" | "opening-placement" | "raised-ceiling" | "vault-gable";
+export type TakeoffWallAdjacency = "outside" | "attic" | "garage" | "crawlspace" | "conditioned" | "unknown";
+
 export type TakeoffRoomComponent = {
   id: string;
   surface: "floor" | "ceiling" | "wall" | "glass" | "door";
@@ -17,6 +20,9 @@ export type TakeoffRoomComponent = {
   direction?: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
   label?: string;
   placement?: TakeoffPoint;
+  source?: TakeoffRoomComponentSource;
+  adjacency?: TakeoffWallAdjacency;
+  geometryLabel?: string;
 };
 
 export type TakeoffAdjacentSpaceKind = "garage" | "attic" | "crawl" | "exterior";

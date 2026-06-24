@@ -1458,7 +1458,7 @@ button.toolbar-primary:hover {
   cursor: pointer;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) minmax(210px, 0.6fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.42fr) minmax(210px, 0.58fr) auto;
   padding: 8px;
   text-align: left;
 }
