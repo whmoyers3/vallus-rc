@@ -1570,6 +1570,36 @@ function App() {
     }
   }
 
+  async function exportDiagnosticReport() {
+    setExportLoading(true);
+    try {
+      const response = await fetch("/api/export/diagnostics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload(project, assemblies))
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail ?? "Diagnostic report export failed.");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : "diagnostic-report.json";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      setValidationMessage("Exported diagnostic report. Not saved.");
+    } catch (error) {
+      setValidationMessage(error instanceof Error ? error.message : "Could not export diagnostic report.");
+    } finally {
+      setExportLoading(false);
+    }
+  }
+
   async function startAirflowWizard() {
     setExportLoading(true);
     try {
@@ -2053,6 +2083,9 @@ function App() {
                     {projectId && (
                       <a className="button" href={`/api/projects/${projectId}/report`} onClick={() => setShowExportMenu(false)}>PDF Report</a>
                     )}
+                    <button onClick={() => { setShowExportMenu(false); exportDiagnosticReport(); }}>
+                      {exportLoading ? "Exporting…" : "Diagnostic Report JSON"}
+                    </button>
                     <button onClick={() => { setShowExportMenu(false); setSchematicPayload(null); setSchematicTitle(""); setShowSchematic(true); }}>3D Schematic…</button>
                   </div>
                 )}

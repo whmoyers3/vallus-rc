@@ -17,6 +17,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from backend.api.airflow_export import build_airflow_workbook, _orientation_table, _group_units, _plan_label
+from backend.api.component_diagnostics import build_component_diagnostics, diagnostics_filename
 from backend.api.database import Database, ProjectNotFound, TakeoffProjectNotFound, TakeoffAssetNotFound, BatteryError
 from backend.api.detail_report import build_detail_report
 from backend.api.glass_audit import build_glass_factor_audit
@@ -372,6 +373,18 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
         return Response(
             content=xlsx_bytes,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @api.post("/api/export/diagnostics")
+    def export_diagnostics(payload: ProjectPayload) -> Response:
+        raw = payload.model_dump()
+        report = build_component_diagnostics(raw)
+        filename = diagnostics_filename(raw, "diagnostic-report")
+        content = json.dumps(report, indent=2, default=str)
+        return Response(
+            content=content,
+            media_type="application/json",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 

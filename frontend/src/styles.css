@@ -781,6 +781,11 @@ button.toolbar-primary:hover {
   padding: 0;
 }
 
+.takeoff-left-details {
+  padding: 0;
+}
+
+.takeoff-left-details summary,
 .takeoff-right-details summary {
   color: #263545;
   cursor: pointer;
@@ -790,10 +795,22 @@ button.toolbar-primary:hover {
   padding: 10px 12px;
 }
 
+.takeoff-left-details summary {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  list-style-position: outside;
+}
+
+.takeoff-left-details[open] {
+  padding: 0 12px 12px;
+}
+
 .takeoff-right-details[open] {
   padding: 0 12px 12px;
 }
 
+.takeoff-left-details[open] summary,
 .takeoff-right-details[open] summary {
   border-bottom: 1px solid #e8edf1;
   margin: 0 -12px 10px;
@@ -804,9 +821,85 @@ button.toolbar-primary:hover {
   grid-template-columns: 1fr 1fr;
 }
 
+.takeoff-advanced-subsection {
+  border-top: 1px solid #e8edf1;
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.takeoff-advanced-subsection h3 {
+  color: #405060;
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+
 .takeoff-stage-head {
   border-bottom: 1px solid #e8edf1;
   padding: 12px 14px;
+}
+
+.takeoff-mode-guidance {
+  align-items: center;
+  border-bottom: 1px solid #d9e0e6;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 48px;
+  padding: 9px 14px;
+}
+
+.takeoff-mode-guidance div {
+  display: grid;
+  gap: 2px;
+}
+
+.takeoff-mode-guidance strong {
+  color: #1f2933;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.takeoff-mode-guidance span {
+  color: #405060;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.takeoff-mode-guidance button {
+  background: #ffffff;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.takeoff-mode-guidance--warning {
+  background: #fff8e8;
+  box-shadow: inset 4px 0 0 #d18b20;
+  color: #815a15;
+}
+
+.takeoff-mode-guidance--info,
+.takeoff-mode-guidance--neutral {
+  background: #f4f8fb;
+  box-shadow: inset 4px 0 0 #4f83ad;
+  color: #31516b;
+}
+
+.takeoff-mode-guidance--active {
+  background: #eef5fb;
+  box-shadow: inset 4px 0 0 #1f6fb2;
+  color: #1f6fb2;
+}
+
+.takeoff-mode-guidance--success {
+  background: #eef8f0;
+  box-shadow: inset 4px 0 0 #2f7a4f;
+  color: #2f7a4f;
 }
 
 .takeoff-stage-actions {

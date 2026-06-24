@@ -118,6 +118,7 @@ type StaleCeilingWallPrompt = {
 type OrientationLoadResult = { facing: string; cooling: number; heating: number; tons: number };
 type TakeoffCalcResult = OrientationLoadResult & { orientations: OrientationLoadResult[]; baseFacing: string };
 type ValidationSection = "merge" | "wall-suggestions" | "wall-components" | "glass-components" | "door-components" | "floor-components" | "ceiling-components" | "ceiling-geometry" | "room-profile";
+type LeftSetupSection = "project" | "mode" | "scale" | "grid" | "exterior";
 type ActiveValidationTarget = {
   key: string;
   roomId?: string;
@@ -2656,6 +2657,10 @@ function validationSectionElementId(roomId: string, section: ValidationSection) 
   return `validation-target-${roomId}-${section}`;
 }
 
+function scaleLineHasKnownDimension(line: TakeoffScaleLine) {
+  return line.knownFeet > 0 && lineLength(scaleLineSourcePoints(line)) > 0;
+}
+
 export function TakeoffApp() {
   const [projectName, setProjectName] = useState("Takeoff V1 Draft");
   const [location, setLocation] = useState("");
@@ -2693,6 +2698,13 @@ export function TakeoffApp() {
   });
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [leftSectionsOpen, setLeftSectionsOpen] = useState<Record<LeftSetupSection, boolean>>({
+    project: true,
+    mode: true,
+    scale: true,
+    grid: false,
+    exterior: false,
+  });
   const [zoom, setZoom] = useState(1);
   const [planReviewMode, setPlanReviewMode] = useState<PlanReviewMode>("plan");
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
@@ -2745,6 +2757,11 @@ export function TakeoffApp() {
   const unassignedArea = computedFootprintArea - assignedArea;
   const payload = useMemo(() => buildVrcPayload(takeoffProject), [takeoffProject]);
   const selectedRoom = floor.rooms.find((room) => room.id === selectedRoomId) ?? null;
+  const projectInfoComplete = projectName.trim().length > 0 && location.trim().length > 0;
+  const hasReference = Boolean(floor.reference);
+  const hasHorizontalScale = floor.calibration.lines.some((line) => line.orientation === "horizontal" && scaleLineHasKnownDimension(line));
+  const hasVerticalScale = floor.calibration.lines.some((line) => line.orientation === "vertical" && scaleLineHasKnownDimension(line));
+  const scaleReady = hasHorizontalScale && hasVerticalScale && !floor.calibration.confirmed;
   const activeRoomValidationTarget = activeValidationTarget && selectedRoom && activeValidationTarget.roomId === selectedRoom.id
     ? activeValidationTarget
     : null;
@@ -2754,6 +2771,9 @@ export function TakeoffApp() {
       : ""
   );
   const validationTargetId = (section: ValidationSection) => selectedRoom ? validationSectionElementId(selectedRoom.id, section) : undefined;
+  const setLeftSectionOpen = (section: LeftSetupSection, open: boolean) => {
+    setLeftSectionsOpen((current) => ({ ...current, [section]: open }));
+  };
   const floorScheduleOptions = componentSchedule.filter((component) => component.category === "Floor");
   const ceilingScheduleOptions = componentSchedule.filter((component) => component.category === "Ceiling");
   const scheduleOptionsBySurface = {
@@ -2850,6 +2870,16 @@ export function TakeoffApp() {
     if (!stillPresent) setActiveValidationTarget(null);
   }, [activeValidationTarget, validation]);
 
+  useEffect(() => {
+    setLeftSectionsOpen((current) => ({
+      ...current,
+      project: projectInfoComplete ? false : current.project,
+      mode: hasReference ? false : current.mode,
+      scale: hasReference && !floor.calibration.confirmed ? true : false,
+      exterior: floor.calibration.confirmed && floor.exteriorPolygon.length < 3 ? true : current.exterior,
+    }));
+  }, [floor.calibration.confirmed, floor.exteriorPolygon.length, hasReference, projectInfoComplete]);
+
   const canvasWidth = 720;
   const canvasHeight = 420;
   const baseScale = Math.min(
@@ -2899,6 +2929,33 @@ export function TakeoffApp() {
 
   function exportPayloadJson() {
     downloadJsonFile(`${fileSafeName(projectName)}-calculator-payload.json`, payload);
+  }
+
+  async function exportDiagnosticReport() {
+    try {
+      const response = await fetch("/api/export/diagnostics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail ?? "Diagnostic report export failed.");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `${fileSafeName(projectName)}-diagnostic-report.json`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      setMessage("Exported diagnostic report from the current calculator payload.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not export diagnostic report.");
+    }
   }
 
   function roomWithCeilingType(room: TakeoffRectRoom, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>): TakeoffRectRoom {
@@ -3806,6 +3863,20 @@ export function TakeoffApp() {
       calibration: { ...current.calibration, lines: [...current.calibration.lines, line], confirmed: false, areaConfirmed: false },
     }));
     setCalibrationStart(null);
+    const nextLines = [...floor.calibration.lines, line];
+    const nextHasHorizontal = nextLines.some((entry) => entry.orientation === "horizontal" && scaleLineHasKnownDimension(entry));
+    const nextHasVertical = nextLines.some((entry) => entry.orientation === "vertical" && scaleLineHasKnownDimension(entry));
+    if (calibrationOrientation === "horizontal" && !nextHasVertical) {
+      setCalibrationOrientation("vertical");
+      setMessage("Horizontal scale line added. Enter the real dimension, then set a known vertical measurement.");
+      return;
+    }
+    if (nextHasHorizontal && nextHasVertical) {
+      setWorkflowStep("trace");
+      setTraceTool("select");
+      setMessage("Horizontal and vertical scale measurements are set. Review dimensions, then apply scale.");
+      return;
+    }
     setMessage("Scale line added. Enter the real dimension, then add another line or apply scale.");
   }
 
@@ -3833,7 +3904,7 @@ export function TakeoffApp() {
     setMessage("Scale lines cleared.");
   }
 
-  function applyCalibration() {
+  function applyCalibration(clearLinesAfterApply = false) {
     const factor = calibrationFactor(floor.calibration.lines);
     if (!factor) {
       setMessage("Add at least one scale line with a known dimension before applying scale.");
@@ -3869,11 +3940,13 @@ export function TakeoffApp() {
         })),
         calibration: {
           ...current.calibration,
-          lines: current.calibration.lines.map((line) => ({
-            ...scaleLine(line, relativeFactor),
-            sourceStart: line.sourceStart ?? line.start,
-            sourceEnd: line.sourceEnd ?? line.end,
-          })),
+          lines: clearLinesAfterApply
+            ? []
+            : current.calibration.lines.map((line) => ({
+                ...scaleLine(line, relativeFactor),
+                sourceStart: line.sourceStart ?? line.start,
+                sourceEnd: line.sourceEnd ?? line.end,
+              })),
           confirmed: true,
           appliedFactor: Number(factor.toFixed(5)),
           areaConfirmed: false,
@@ -3883,7 +3956,7 @@ export function TakeoffApp() {
     setWorkflowStep("trace");
     setTraceTool("exterior");
     setCalibrationStart(null);
-    setMessage(`Scale recorded in world feet. Average correction factor: ${factor.toFixed(3)}.`);
+    setMessage(`Scale recorded in world feet. Average correction factor: ${factor.toFixed(3)}.${clearLinesAfterApply ? " Scale guide lines cleared." : ""}`);
   }
 
   function skipCalibration() {
@@ -4750,6 +4823,82 @@ export function TakeoffApp() {
     };
   }
 
+  const modeGuidance = (() => {
+    if (!projectName.trim()) {
+      return {
+        tone: "warning" as const,
+        title: "Please name your project",
+        body: "Start with a recognizable plan name so saved takeoffs and exports are easy to identify.",
+      };
+    }
+    if (!location.trim()) {
+      return {
+        tone: "warning" as const,
+        title: "Select a location",
+        body: "Location is required before calculation. Most Atlanta-area plans can start with Atlanta, GA.",
+        actionLabel: "Use Atlanta, GA",
+        action: () => setLocation("Atlanta, GA"),
+      };
+    }
+    if (!floor.reference) {
+      return {
+        tone: "info" as const,
+        title: "Ready to upload a PDF",
+        body: "Upload one floor-plan page. After upload, the tool will enter crop mode so you can focus on the plan and measurement markers.",
+        actionLabel: "Upload PDF",
+        action: () => document.getElementById("takeoff-reference-input")?.click(),
+      };
+    }
+    if (workflowStep === "crop") {
+      return {
+        tone: "active" as const,
+        title: "Crop mode enabled",
+        body: "Select the area of the plan you want to focus on. Include the measurement markers you plan to use for scaling, and leave a little space around the floor plan.",
+      };
+    }
+    if (scaleReady) {
+      return {
+        tone: "success" as const,
+        title: "Horizontal and vertical scale measurements are set",
+        body: "Review the known dimensions, then apply scale to convert the reference into world feet and clear the guide lines.",
+        actionLabel: "Apply scale and clear lines",
+        action: () => applyCalibration(true),
+      };
+    }
+    if (workflowStep === "calibrate") {
+      const label = calibrationOrientation === "horizontal" ? "Horizontal line mode enabled" : calibrationOrientation === "vertical" ? "Vertical line mode enabled" : "Known dimension mode enabled";
+      const body = calibrationStart
+        ? "First point is set. Move to the second endpoint of the known measurement and click to finish the scale line."
+        : calibrationOrientation === "horizontal"
+          ? "Click the first endpoint of a known horizontal measurement, then click the second endpoint. The tool will move you to vertical next."
+          : calibrationOrientation === "vertical"
+            ? "Click the first endpoint of a known vertical measurement, then click the second endpoint. Once horizontal and vertical are set, you can apply scale."
+            : "Click the two endpoints of any known measurement, then enter the real dimension in the scale list.";
+      return {
+        tone: "active" as const,
+        title: label,
+        body,
+      };
+    }
+    if (!floor.calibration.confirmed && floor.reference) {
+      return {
+        tone: "info" as const,
+        title: "Set import scale",
+        body: "Add one horizontal and one vertical known measurement for the most reliable PDF scale before tracing rooms.",
+        actionLabel: "Start horizontal line",
+        action: () => {
+          setWorkflowStep("calibrate");
+          setCalibrationOrientation("horizontal");
+        },
+      };
+    }
+    return {
+      tone: "neutral" as const,
+      title: "Trace mode enabled",
+      body: "Draw or edit the exterior, rooms, adjacent spaces, and openings. Validation will guide you to any missing wall or opening assignments.",
+    };
+  })();
+
   return (
     <main className="takeoff-root">
       <header className="takeoff-toolbar">
@@ -4804,11 +4953,21 @@ export function TakeoffApp() {
             <button className="takeoff-rail-toggle" onClick={() => setLeftPanelOpen(true)} aria-label="Show setup panel">Setup</button>
           ) : (
           <>
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Project</h2>
-              <button className="takeoff-icon-button" onClick={() => setLeftPanelOpen(false)} aria-label="Hide setup panel">Hide</button>
-            </div>
+          <details className="takeoff-panel takeoff-left-details" open={leftSectionsOpen.project} onToggle={(event) => setLeftSectionOpen("project", event.currentTarget.open)}>
+            <summary>
+              Project
+              <button
+                className="takeoff-icon-button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setLeftPanelOpen(false);
+                }}
+                aria-label="Hide setup panel"
+              >
+                Hide
+              </button>
+            </summary>
             <label>
               Name
               <input value={projectName} onChange={(event) => setProjectName(event.target.value)} />
@@ -4826,6 +4985,39 @@ export function TakeoffApp() {
               <select value={frontDoorFaces} onChange={(event) => setFrontDoorFaces(event.target.value as typeof frontDoorFaces)}>
                 {directionOptions.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
               </select>
+            </label>
+            <label>
+              Default ceiling height ft
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={floor.defaultCeilingHeight ?? 9}
+                onChange={(event) => setFloor((current) => ({
+                  ...current,
+                  defaultCeilingHeight: Number(event.target.value),
+                  rooms: current.rooms.map((room) => ({ ...room, ceilingGeometryApproved: false })),
+                }))}
+              />
+            </label>
+            <label>
+              Floor elevation ft
+              <input
+                type="number"
+                step="0.5"
+                value={floor.elevation ?? 0}
+                onChange={(event) => updateFloor({ elevation: Number(event.target.value), coordinateSpace: "world_feet" })}
+              />
+            </label>
+            <label>
+              Floor-to-floor height ft
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={floor.floorToFloorHeight ?? 10}
+                onChange={(event) => updateFloor({ floorToFloorHeight: Number(event.target.value), coordinateSpace: "world_feet" })}
+              />
             </label>
             <label className="check-field">Mechanical ventilation
               <input
@@ -4854,12 +5046,10 @@ export function TakeoffApp() {
                 </p>
               </>
             )}
-          </section>
+          </details>
 
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Mode</h2>
-            </div>
+          <details className="takeoff-panel takeoff-left-details" open={leftSectionsOpen.mode} onToggle={(event) => setLeftSectionOpen("mode", event.currentTarget.open)}>
+            <summary>Mode</summary>
             <div className="takeoff-segmented">
               {authoringModes.map((mode) => (
                 <button
@@ -4873,7 +5063,7 @@ export function TakeoffApp() {
             </div>
             <label>
               Reference
-              <input type="file" accept=".pdf,image/*" onChange={(event) => handleReference(event.target.files?.[0])} />
+              <input id="takeoff-reference-input" type="file" accept=".pdf,image/*" onChange={(event) => handleReference(event.target.files?.[0])} />
             </label>
             {floor.reference && (
               <p className="takeoff-muted">
@@ -4888,13 +5078,11 @@ export function TakeoffApp() {
                 The reference is shown under the grid. Upload one floor-plan page at a time, up to 7 MB.
               </p>
             )}
-          </section>
+          </details>
 
           {floor.reference && (
-            <section className="takeoff-panel">
-              <div className="takeoff-panel-head">
-                <h2>Import Scale</h2>
-              </div>
+            <details className="takeoff-panel takeoff-left-details" open={leftSectionsOpen.scale} onToggle={(event) => setLeftSectionOpen("scale", event.currentTarget.open)}>
+              <summary>Import Scale</summary>
               <p className="takeoff-muted">
                 {workflowStep === "calibrate" ? "Click two endpoints for known dimensions on the preview." : "Scale setup complete."}
               </p>
@@ -4930,18 +5118,47 @@ export function TakeoffApp() {
                 {pendingScaleFactor ? `Average scale correction: ${pendingScaleFactor.toFixed(3)}x` : "Add at least one known dimension."}
               </p>
               <div className="takeoff-form-actions">
-                <button className="toolbar-primary" onClick={applyCalibration}>Apply Scale</button>
+                <button className="toolbar-primary" onClick={() => applyCalibration()}>Apply Scale</button>
+                {scaleReady && <button onClick={() => applyCalibration(true)}>Apply + Clear Lines</button>}
                 <button onClick={skipCalibration}>Skip</button>
                 <button onClick={clearScaleLines}>Clear Lines</button>
                 <button onClick={clearCrop}>Reset Crop</button>
               </div>
-            </section>
+            </details>
           )}
 
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Design Grid</h2>
+          <details className="takeoff-panel takeoff-left-details" open={leftSectionsOpen.exterior} onToggle={(event) => setLeftSectionOpen("exterior", event.currentTarget.open)}>
+            <summary>Exterior Trace</summary>
+            <div className="takeoff-form-actions">
+              <button className={traceTool === "exterior" ? "toolbar-primary" : ""} onClick={() => setTraceTool("exterior")}>Trace</button>
+              <button onClick={togglePerimeterLock}>{floor.perimeterLocked ? "Unlock" : "Lock"}</button>
+              <button onClick={clearExteriorTrace}>Clear</button>
             </div>
+            <p className="takeoff-muted">
+              {floor.exteriorPolygon.length} points · {floor.perimeterLocked ? "locked" : "editable"} · {Math.round(computedFootprintArea)} sf
+            </p>
+            {traceTool === "exterior" && !floor.perimeterLocked && (
+              <p className="takeoff-note">Click the grid corners around the conditioned exterior. Hold Shift before clicking to constrain the next line to 45/90 degrees. Lock it when the outline is closed.</p>
+            )}
+            <label>
+              Expected floor area sf
+              <input
+                type="number"
+                min="0"
+                value={floor.calibration.expectedArea ?? ""}
+                onChange={(event) => updateExpectedArea(Number(event.target.value))}
+              />
+            </label>
+            <p className="takeoff-muted">
+              Computed {Math.round(computedFootprintArea)} sf
+              {floor.calibration.expectedArea ? ` · ${areaDeltaPct >= 0 ? "+" : ""}${areaDeltaPct.toFixed(1)}% vs expected` : ""}
+              {floor.calibration.areaConfirmed ? " · confirmed" : ""}
+            </p>
+            <button onClick={confirmFootprintArea}>Confirm Area</button>
+          </details>
+
+          <details className="takeoff-panel takeoff-left-details" open={leftSectionsOpen.grid} onToggle={(event) => setLeftSectionOpen("grid", event.currentTarget.open)}>
+            <summary>Advanced Grid &amp; Footprint</summary>
             <label>
               Grid width ft
               <input type="number" min="1" value={floor.designGrid.width} onChange={(event) => updateDesignGrid("width", Number(event.target.value))} />
@@ -4970,89 +5187,20 @@ export function TakeoffApp() {
                 onChange={(event) => updateFloor({ scale: { ...floor.scale, gridSnapInches: Number(event.target.value) } })}
               />
             </label>
-            <label>
-              Default ceiling height ft
-              <input
-                type="number"
-                min="0"
-                step="0.5"
-                value={floor.defaultCeilingHeight ?? 9}
-                onChange={(event) => setFloor((current) => ({
-                  ...current,
-                  defaultCeilingHeight: Number(event.target.value),
-                  rooms: current.rooms.map((room) => ({ ...room, ceilingGeometryApproved: false })),
-                }))}
-              />
-            </label>
-            <label>
-              Floor elevation ft
-              <input
-                type="number"
-                step="0.5"
-                value={floor.elevation ?? 0}
-                onChange={(event) => updateFloor({ elevation: Number(event.target.value), coordinateSpace: "world_feet" })}
-              />
-            </label>
-            <label>
-              Floor-to-floor height ft
-              <input
-                type="number"
-                min="0"
-                step="0.5"
-                value={floor.floorToFloorHeight ?? 10}
-                onChange={(event) => updateFloor({ floorToFloorHeight: Number(event.target.value), coordinateSpace: "world_feet" })}
-              />
-            </label>
-            <p className="takeoff-muted">Coordinates are stored as world feet; PDF/image crop and calibration are authoring inputs.</p>
-          </section>
-
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Fallback Footprint</h2>
+            <div className="takeoff-advanced-subsection">
+              <h3>Fallback Footprint</h3>
+              <label>
+                Width ft
+                <input type="number" min="0" value={floor.conditionedPerimeter.width} onChange={(event) => updatePerimeter("width", Number(event.target.value))} />
+              </label>
+              <label>
+                Depth ft
+                <input type="number" min="0" value={floor.conditionedPerimeter.depth} onChange={(event) => updatePerimeter("depth", Number(event.target.value))} />
+              </label>
+              <button onClick={seedRectangularExterior}>Copy to Trace</button>
             </div>
-            <label>
-              Width ft
-              <input type="number" min="0" value={floor.conditionedPerimeter.width} onChange={(event) => updatePerimeter("width", Number(event.target.value))} />
-            </label>
-            <label>
-              Depth ft
-              <input type="number" min="0" value={floor.conditionedPerimeter.depth} onChange={(event) => updatePerimeter("depth", Number(event.target.value))} />
-            </label>
-            <button onClick={seedRectangularExterior}>Copy to Trace</button>
-            <p className="takeoff-muted">Used only until an exterior trace is drawn.</p>
-          </section>
-
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Exterior Trace</h2>
-            </div>
-            <div className="takeoff-form-actions">
-              <button className={traceTool === "exterior" ? "toolbar-primary" : ""} onClick={() => setTraceTool("exterior")}>Trace</button>
-              <button onClick={togglePerimeterLock}>{floor.perimeterLocked ? "Unlock" : "Lock"}</button>
-              <button onClick={clearExteriorTrace}>Clear</button>
-            </div>
-            <p className="takeoff-muted">
-              {floor.exteriorPolygon.length} points · {floor.perimeterLocked ? "locked" : "editable"} · {Math.round(computedFootprintArea)} sf
-            </p>
-            {traceTool === "exterior" && !floor.perimeterLocked && (
-              <p className="takeoff-note">Click the grid corners around the conditioned exterior. Hold Shift before clicking to constrain the next line to 45/90 degrees. Lock it when the outline is closed.</p>
-            )}
-            <label>
-              Expected floor area sf
-              <input
-                type="number"
-                min="0"
-                value={floor.calibration.expectedArea ?? ""}
-                onChange={(event) => updateExpectedArea(Number(event.target.value))}
-              />
-            </label>
-            <p className="takeoff-muted">
-              Computed {Math.round(computedFootprintArea)} sf
-              {floor.calibration.expectedArea ? ` · ${areaDeltaPct >= 0 ? "+" : ""}${areaDeltaPct.toFixed(1)}% vs expected` : ""}
-              {floor.calibration.areaConfirmed ? " · confirmed" : ""}
-            </p>
-            <button onClick={confirmFootprintArea}>Confirm Area</button>
-          </section>
+            <p className="takeoff-muted">Advanced controls for the drafting canvas, snapping, and fallback footprint before an exterior trace exists.</p>
+          </details>
           </>
           )}
         </aside>
@@ -5098,6 +5246,16 @@ export function TakeoffApp() {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className={`takeoff-mode-guidance takeoff-mode-guidance--${modeGuidance.tone}`}>
+            <div>
+              <strong>{modeGuidance.title}</strong>
+              <span>{modeGuidance.body}</span>
+            </div>
+            {modeGuidance.action && modeGuidance.actionLabel && (
+              <button onClick={modeGuidance.action}>{modeGuidance.actionLabel}</button>
+            )}
           </div>
 
           <div className="takeoff-canvas-scroll" ref={canvasScrollRef}>
@@ -6137,6 +6295,7 @@ export function TakeoffApp() {
             <div className="takeoff-form-actions">
               <button onClick={exportTakeoffJson}>Takeoff JSON</button>
               <button onClick={exportPayloadJson}>Payload JSON</button>
+              <button onClick={exportDiagnosticReport}>Diagnostic Report JSON</button>
             </div>
           </section>
 
