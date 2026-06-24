@@ -1082,6 +1082,24 @@ button.toolbar-primary:hover {
   padding: 5px 8px;
 }
 
+.takeoff-room-merge-tools {
+  align-items: center;
+  background: #f7fafc;
+  border: 1px solid #dde6ed;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(180px, 1fr) auto;
+  margin-bottom: 12px;
+  padding: 8px;
+}
+
+.takeoff-room-merge-tools span {
+  color: #526170;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .takeoff-room-tile-list {
   display: flex;
   flex-wrap: wrap;

@@ -2378,6 +2378,7 @@ export function TakeoffApp() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [roomTileMetric, setRoomTileMetric] = useState<RoomTileMetric>("floor");
   const [sliceRoomId, setSliceRoomId] = useState("");
+  const [mergeTargetRoomId, setMergeTargetRoomId] = useState("");
   const [selectedUnassignedRegionId, setSelectedUnassignedRegionId] = useState<string | null>(null);
   const [suggestedWallAssembly, setSuggestedWallAssembly] = useState("W1");
   const [openingPlacement, setOpeningPlacement] = useState<OpeningPlacement>(null);
@@ -2435,6 +2436,21 @@ export function TakeoffApp() {
     : 0;
   const activeDragRect = dragState ? rectFromPoints(dragState.start, dragState.current) : null;
   const visibleCrop = floor.reference?.crop ?? { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
+  const cropAspect = Math.max(visibleCrop.width, 1) / Math.max(visibleCrop.depth, 1);
+  const gridAspect = Math.max(floor.designGrid.width, 1) / Math.max(floor.designGrid.depth, 1);
+  const referenceDisplay = cropAspect >= gridAspect
+    ? {
+        x: 0,
+        y: (floor.designGrid.depth - floor.designGrid.width / cropAspect) / 2,
+        width: floor.designGrid.width,
+        depth: floor.designGrid.width / cropAspect,
+      }
+    : {
+        x: (floor.designGrid.width - floor.designGrid.depth * cropAspect) / 2,
+        y: 0,
+        width: floor.designGrid.depth * cropAspect,
+        depth: floor.designGrid.depth,
+      };
   const unassignedCells = useMemo(() => {
     if (floor.exteriorPolygon.length < 3 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
@@ -2482,6 +2498,7 @@ export function TakeoffApp() {
   const activeUnassignedCells = selectedUnassignedRegion?.cells ?? unassignedCells;
   const unassignedCellArea = activeUnassignedCells.reduce((sum, cell) => sum + unassignedCellMeasuredArea(cell), 0);
   const validation = useMemo(() => buildValidation(floor, unassignedRegions), [floor, unassignedRegions]);
+  const polygonDraftActive = roomPolygonMode && roomPolygonDraft.length > 0;
 
   const canvasWidth = 720;
   const canvasHeight = 420;
@@ -3599,24 +3616,64 @@ export function TakeoffApp() {
     setMessage(roomPolygonDraft.length >= 2 ? "Polygon point added. Click Close or press Enter to finish." : "Polygon point added.");
   }
 
+  function resizeBalancedAreaComponents(room: TakeoffRectRoom, nextArea: number) {
+    const currentArea = rectArea(room);
+    const components = roomComponents(room);
+    let nextComponents = components;
+    for (const surface of ["floor", "ceiling"] as const) {
+      if (roomSurfaceNoLoad(room, surface)) continue;
+      const surfaceComponents = roomSurfaceComponents(room, surface);
+      if (surfaceComponents.length === 0) continue;
+      const assigned = surfaceComponents.reduce((sum, component) => sum + Math.max(0, component.area || 0), 0);
+      if (Math.abs(assigned - currentArea) > 0.5) continue;
+      const scaleFactor = assigned > 0 ? nextArea / assigned : 1;
+      let runningTotal = 0;
+      let seen = 0;
+      nextComponents = nextComponents.map((component) => {
+        if (component.surface !== surface) return component;
+        seen += 1;
+        const area = seen === surfaceComponents.length
+          ? Math.max(0, Number((nextArea - runningTotal).toFixed(3)))
+          : Math.max(0, Number((component.area * scaleFactor).toFixed(3)));
+        runningTotal += area;
+        return { ...component, area };
+      });
+    }
+    return nextComponents;
+  }
+
+  function mergePolygonsIntoRoom(targetRoom: TakeoffRectRoom, polygons: Polygon[]) {
+    const merged = union(roomToClipPolygon(targetRoom), ...polygons);
+    const mergedPieces = simplePolygonsFromMultiPolygon(merged);
+    if (mergedPieces.length !== 1) return null;
+    const largest = largestClipPolygon(merged);
+    if (!largest) return null;
+    const polygon = clipPolygonToPoints(largest);
+    const bounds = polygonBounds(polygon);
+    const nextArea = polygonArea(polygon);
+    return {
+      ...targetRoom,
+      ...bounds,
+      polygon,
+      areaAdjustment: undefined,
+      components: resizeBalancedAreaComponents(targetRoom, nextArea),
+    };
+  }
+
   function assignHighlightedSlices() {
     const candidateRooms = selectedUnassignedRegion?.adjacentRoomIds.length ? selectedUnassignedRegion.adjacentRoomIds : floor.rooms.map((room) => room.id);
     const roomId = sliceRoomId && candidateRooms.includes(sliceRoomId) ? sliceRoomId : candidateRooms[0] || floor.rooms[0]?.id;
     if (!roomId || activeUnassignedCells.length === 0) return;
     const targetRoom = floor.rooms.find((room) => room.id === roomId);
     if (!targetRoom) return;
-    const cellPolygons = activeUnassignedCells.map((cell) => pointsToClipPolygon(unassignedCellPoints(cell)));
-    const merged = union(roomToClipPolygon(targetRoom), ...cellPolygons);
-    const largest = largestClipPolygon(merged);
-    if (!largest) {
+    const mergedRoom = mergePolygonsIntoRoom(targetRoom, activeUnassignedCells.map((cell) => pointsToClipPolygon(unassignedCellPoints(cell))));
+    if (!mergedRoom) {
       setMessage("Could not merge highlighted slices into that room.");
       return;
     }
-    const polygon = clipPolygonToPoints(largest);
-    const bounds = polygonBounds(polygon);
     setFloor((current) => ({
       ...current,
-      rooms: current.rooms.map((room) => (room.id === roomId ? { ...room, ...bounds, polygon, areaAdjustment: undefined } : room)),
+      rooms: current.rooms.map((room) => (room.id === roomId ? mergedRoom : room)),
       attributedSlices: [
         ...(current.attributedSlices ?? []),
         { id: nextId("slice"), roomId, cells: activeUnassignedCells },
@@ -3624,6 +3681,31 @@ export function TakeoffApp() {
     }));
     setSelectedUnassignedRegionId(null);
     setMessage(`${Math.round(unassignedCellArea)} sf merged into ${targetRoom.name}.`);
+  }
+
+  function mergeSelectedRoomIntoTarget() {
+    if (!selectedRoom) return;
+    const targetId = mergeTargetRoomId || floor.rooms.find((room) => room.id !== selectedRoom.id)?.id || "";
+    if (!targetId || targetId === selectedRoom.id) {
+      setMessage("Select another room to merge into.");
+      return;
+    }
+    const targetRoom = floor.rooms.find((room) => room.id === targetId);
+    if (!targetRoom) return;
+    const mergedRoom = mergePolygonsIntoRoom(targetRoom, [roomToClipPolygon(selectedRoom)]);
+    if (!mergedRoom) {
+      setMessage("Those rooms do not form one connected room yet. Merge only slices that touch the target room.");
+      return;
+    }
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms
+        .filter((room) => room.id !== selectedRoom.id)
+        .map((room) => (room.id === targetRoom.id ? mergedRoom : room)),
+    }));
+    setSelectedRoomId(targetRoom.id);
+    setMergeTargetRoomId("");
+    setMessage(`${selectedRoom.name} merged into ${targetRoom.name}.`);
   }
 
   function focusValidationIssue(issue: TakeoffValidationIssue) {
@@ -4458,10 +4540,10 @@ export function TakeoffApp() {
                 <div
                   className="takeoff-reference-layer"
                   style={{
-                    left: offsetX,
-                    top: offsetY,
-                    width: floor.designGrid.width * scale,
-                    height: floor.designGrid.depth * scale,
+                    left: offsetX + referenceDisplay.x * scale,
+                    top: offsetY + referenceDisplay.y * scale,
+                    width: referenceDisplay.width * scale,
+                    height: referenceDisplay.depth * scale,
                   }}
                 >
                   {floor.reference.kind === "image" ? (
@@ -4515,7 +4597,7 @@ export function TakeoffApp() {
               ) : (
                 <rect x={offsetX} y={offsetY} width={floor.conditionedPerimeter.width * scale} height={floor.conditionedPerimeter.depth * scale} fill="rgba(31, 111, 178, 0.07)" stroke="#1f6fb2" strokeDasharray="6 5" strokeWidth="2" />
               )}
-              {floor.exteriorPolygon.map((point, index) => (
+              {!polygonDraftActive && floor.exteriorPolygon.map((point, index) => (
                 <g key={`${point.x}-${point.y}-${index}`}>
                   <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="4" fill="#1f6fb2" stroke="#ffffff" strokeWidth="1.5" />
                   <text x={offsetX + point.x * scale + 6} y={offsetY + point.y * scale - 6} fontSize="10" fill="#1f2933">{index + 1}</text>
@@ -4617,6 +4699,7 @@ export function TakeoffApp() {
                 return (
                 <g
                   key={room.id}
+                  pointerEvents={polygonDraftActive ? "none" : undefined}
                   onClick={(event) => {
                     if (openingModeActive) return;
                     event.stopPropagation();
@@ -4695,7 +4778,7 @@ export function TakeoffApp() {
                       pointerEvents="none"
                     />
                   ))}
-                  {room.polygon?.map((point, pointIndex) => (
+                  {!polygonDraftActive && room.polygon?.map((point, pointIndex) => (
                     <circle key={`${room.id}-point-${pointIndex}`} cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="3.5" fill="#324457" stroke="#ffffff" strokeWidth="1.2" />
                   ))}
                   {editingRoomId === room.id ? (
@@ -4917,6 +5000,20 @@ export function TakeoffApp() {
               </div>
               {selectedRoom ? (
                 <>
+                  {floor.rooms.length > 1 && (
+                    <div className="takeoff-room-merge-tools">
+                      <span>Merge selected room into</span>
+                      <select
+                        value={mergeTargetRoomId && mergeTargetRoomId !== selectedRoom.id ? mergeTargetRoomId : floor.rooms.find((room) => room.id !== selectedRoom.id)?.id ?? ""}
+                        onChange={(event) => setMergeTargetRoomId(event.target.value)}
+                      >
+                        {floor.rooms.filter((room) => room.id !== selectedRoom.id).map((room) => (
+                          <option key={room.id} value={room.id}>{room.name}</option>
+                        ))}
+                      </select>
+                      <button onClick={mergeSelectedRoomIntoTarget}>Merge</button>
+                    </div>
+                  )}
                   {(() => {
                     const suggestions = roomExteriorWallSuggestions(floor, selectedRoom);
                     const reconciliation = roomWallReconciliation(floor, selectedRoom);
