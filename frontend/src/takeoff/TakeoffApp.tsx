@@ -1555,8 +1555,9 @@ function persistableTakeoffProject(project: TakeoffProject): TakeoffProject {
 }
 
 function shapeFromPoints(points: TakeoffPoint[], center: TakeoffPoint) {
+  const cleanedPoints = cleanPolygonPointsForRender(points);
   const shape = new THREE.Shape();
-  points.forEach((point, index) => {
+  cleanedPoints.forEach((point, index) => {
     const x = point.x - center.x;
     const y = point.y - center.y;
     if (index === 0) shape.moveTo(x, y);
@@ -1564,6 +1565,24 @@ function shapeFromPoints(points: TakeoffPoint[], center: TakeoffPoint) {
   });
   shape.closePath();
   return shape;
+}
+
+function cleanPolygonPointsForRender(points: TakeoffPoint[]) {
+  if (points.length <= 3) return points;
+  const duplicateTolerance = 0.02;
+  const collinearTolerance = 0.06;
+  const deduped = points.filter((point, index) => index === 0 || distance(point, points[index - 1]) > duplicateTolerance);
+  if (deduped.length > 2 && distance(deduped[0], deduped[deduped.length - 1]) <= duplicateTolerance) deduped.pop();
+  if (deduped.length <= 3) return deduped;
+  const simplified = deduped.filter((point, index) => {
+    const previous = deduped[(index - 1 + deduped.length) % deduped.length];
+    const next = deduped[(index + 1) % deduped.length];
+    const segmentLength = distance(previous, next);
+    if (segmentLength <= duplicateTolerance) return false;
+    const offLine = Math.abs((next.x - previous.x) * (previous.y - point.y) - (previous.x - point.x) * (next.y - previous.y)) / segmentLength;
+    return offLine > collinearTolerance;
+  });
+  return simplified.length >= 3 ? simplified : deduped;
 }
 
 function createHorizontalShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.Material) {
@@ -1767,6 +1786,7 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
 
   const material = new THREE.MeshBasicMaterial({
     map: texture,
+    depthWrite: false,
     opacity: 0.52,
     side: THREE.DoubleSide,
     transparent: true,
@@ -1966,13 +1986,13 @@ function TakeoffModelPreview({
       scene.add(referencePlaneForFloor(floor, center, texture));
     }
 
-    const exteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x8fc0b0, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
-    const floorMaterial = new THREE.MeshPhongMaterial({ color: 0xc8ddd5, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
-    const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x8fb4c8, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
-    const interiorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9aa9b5, transparent: true, opacity: 0.16, side: THREE.DoubleSide });
-    const selectedWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6aa0d6, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
-    const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
-    const kneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xb35b2f, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
+    const exteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x8fc0b0, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
+    const floorMaterial = new THREE.MeshPhongMaterial({ color: 0xc8ddd5, depthWrite: false, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
+    const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x8fb4c8, depthWrite: false, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
+    const interiorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9aa9b5, depthWrite: false, transparent: true, opacity: 0.16, side: THREE.DoubleSide });
+    const selectedWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6aa0d6, depthWrite: false, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+    const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, depthWrite: false, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
+    const kneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xb35b2f, depthWrite: false, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
     const glassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.78, side: THREE.DoubleSide });
     const doorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.82, side: THREE.DoubleSide });
     const openingFrameMaterial = new THREE.MeshBasicMaterial({ color: 0x2f3b1f, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
@@ -3173,6 +3193,24 @@ export function TakeoffApp() {
     return { x: Number(best.point.x.toFixed(3)), y: Number(best.point.y.toFixed(3)) };
   }
 
+  function constrainPointToAngle(previous: TakeoffPoint | undefined, point: TakeoffPoint) {
+    if (!previous) return point;
+    const dx = point.x - previous.x;
+    const dy = point.y - previous.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 0.001) return point;
+    const snappedAngle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+    return {
+      x: Number(clamp(previous.x + Math.cos(snappedAngle) * length, 0, floor.designGrid.width).toFixed(3)),
+      y: Number(clamp(previous.y + Math.sin(snappedAngle) * length, 0, floor.designGrid.depth).toFixed(3)),
+    };
+  }
+
+  function prepareCornerPoint(point: TakeoffPoint, previous: TakeoffPoint | undefined, constrainAngle: boolean) {
+    const snapped = snapToExistingGeometry(point);
+    return constrainAngle ? constrainPointToAngle(previous, snapped) : snapped;
+  }
+
   function findMovablePoint(point: TakeoffPoint) {
     const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
     let bestTarget: MovablePointTarget | null = null;
@@ -3551,8 +3589,8 @@ export function TakeoffApp() {
     return createPolygonRoom(roomPolygonDraft);
   }
 
-  function addPolygonRoomPoint(point: TakeoffPoint) {
-    const snapped = snapToExistingGeometry(point);
+  function addPolygonRoomPoint(point: TakeoffPoint, constrainAngle = false) {
+    const snapped = prepareCornerPoint(point, roomPolygonDraft[roomPolygonDraft.length - 1], constrainAngle);
     if (roomPolygonDraft.length >= 3 && distance(snapped, roomPolygonDraft[0]) <= Math.max(1, floor.scale.gridSnapInches / 12)) {
       finishPolygonRoom();
       return;
@@ -3759,7 +3797,7 @@ export function TakeoffApp() {
     }
     const point = pointFromCanvasEvent(event);
     if (!point) return;
-    if (event.shiftKey || dragState) return;
+    if (dragState) return;
     if (workflowStep === "calibrate") {
       addCalibrationPoint(point);
       return;
@@ -3769,11 +3807,11 @@ export function TakeoffApp() {
       return;
     }
     if (workflowStep === "trace" && roomPolygonMode) {
-      addPolygonRoomPoint(point);
+      addPolygonRoomPoint(point, event.shiftKey);
       return;
     }
     if (traceTool !== "exterior" || floor.perimeterLocked) return;
-    addExteriorPoint(snapToExistingGeometry(point));
+    addExteriorPoint(prepareCornerPoint(point, floor.exteriorPolygon[floor.exteriorPolygon.length - 1], event.shiftKey));
   }
 
   function addRoom() {
@@ -4342,7 +4380,7 @@ export function TakeoffApp() {
               {floor.exteriorPolygon.length} points · {floor.perimeterLocked ? "locked" : "editable"} · {Math.round(computedFootprintArea)} sf
             </p>
             {traceTool === "exterior" && !floor.perimeterLocked && (
-              <p className="takeoff-note">Click the grid corners around the conditioned exterior. Lock it when the outline is closed.</p>
+              <p className="takeoff-note">Click the grid corners around the conditioned exterior. Hold Shift before clicking to constrain the next line to 45/90 degrees. Lock it when the outline is closed.</p>
             )}
             <label>
               Expected floor area sf
