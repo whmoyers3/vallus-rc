@@ -787,6 +787,19 @@ function calibrationFactor(lines: TakeoffScaleLine[]) {
   return factors.reduce((sum, factor) => sum + factor, 0) / factors.length;
 }
 
+function scaleLinePrefix(line: TakeoffScaleLine) {
+  if (line.orientation === "horizontal") return "H";
+  if (line.orientation === "vertical") return "V";
+  return "A";
+}
+
+function scaleLineDisplayLabel(lines: TakeoffScaleLine[], line: TakeoffScaleLine, index: number) {
+  const prefix = scaleLinePrefix(line);
+  const ordinal = lines.slice(0, index + 1).filter((candidate) => scaleLinePrefix(candidate) === prefix).length;
+  const feet = line.knownFeet || Number(lineLength(line).toFixed(1));
+  return `${prefix}${ordinal} = ${feet} ft`;
+}
+
 function polygonArea(points: TakeoffPoint[]) {
   if (points.length < 3) return 0;
   const sum = points.reduce((total, point, index) => {
@@ -3739,7 +3752,13 @@ export function TakeoffApp() {
         event.currentTarget.setPointerCapture(event.pointerId);
         setDragState({ kind: "move-point", start: point, current: point, target });
         setMessage("Move point started. Drag to the new location.");
+        return;
       }
+    }
+    if (workflowStep === "calibrate") {
+      event.preventDefault();
+      addCalibrationPoint(point);
+      suppressNextCanvasClickRef.current = true;
       return;
     }
     if (workflowStep === "crop") {
@@ -3760,6 +3779,24 @@ export function TakeoffApp() {
     if (workflowStep === "trace" && roomDrawMode) {
       event.currentTarget.setPointerCapture(event.pointerId);
       setDragState({ kind: "room", start: point, current: point });
+      return;
+    }
+    if (workflowStep === "trace" && openingModeActive) {
+      event.preventDefault();
+      placeOpeningAt(point);
+      suppressNextCanvasClickRef.current = true;
+      return;
+    }
+    if (workflowStep === "trace" && roomPolygonMode) {
+      event.preventDefault();
+      addPolygonRoomPoint(point, event.shiftKey);
+      suppressNextCanvasClickRef.current = true;
+      return;
+    }
+    if (traceTool === "exterior" && !floor.perimeterLocked) {
+      event.preventDefault();
+      addExteriorPoint(prepareCornerPoint(point, floor.exteriorPolygon[floor.exteriorPolygon.length - 1], event.shiftKey));
+      suppressNextCanvasClickRef.current = true;
     }
   }
 
@@ -3880,20 +3917,8 @@ export function TakeoffApp() {
     const point = pointFromCanvasEvent(event);
     if (!point) return;
     if (dragState) return;
-    if (workflowStep === "calibrate") {
-      addCalibrationPoint(point);
-      return;
-    }
-    if (workflowStep === "trace" && openingModeActive) {
-      placeOpeningAt(point);
-      return;
-    }
-    if (workflowStep === "trace" && roomPolygonMode) {
-      addPolygonRoomPoint(point, event.shiftKey);
-      return;
-    }
-    if (traceTool !== "exterior" || floor.perimeterLocked) return;
-    addExteriorPoint(prepareCornerPoint(point, floor.exteriorPolygon[floor.exteriorPolygon.length - 1], event.shiftKey));
+    if (workflowStep === "calibrate") return;
+    if (workflowStep === "trace" && (openingModeActive || roomPolygonMode || (traceTool === "exterior" && !floor.perimeterLocked))) return;
   }
 
   function addRoom() {
@@ -4641,7 +4666,7 @@ export function TakeoffApp() {
                   <circle cx={offsetX + line.start.x * scale} cy={offsetY + line.start.y * scale} r="4" fill="#b3432f" stroke="#ffffff" strokeWidth="1.5" />
                   <circle cx={offsetX + line.end.x * scale} cy={offsetY + line.end.y * scale} r="4" fill="#b3432f" stroke="#ffffff" strokeWidth="1.5" />
                   <text x={offsetX + ((line.start.x + line.end.x) / 2) * scale + 6} y={offsetY + ((line.start.y + line.end.y) / 2) * scale - 6} fontSize="11" fill="#7f2d20">
-                    {line.knownFeet || lineLength(line).toFixed(1)} ft {index + 1}
+                    {scaleLineDisplayLabel(floor.calibration.lines, line, index)}
                   </text>
                 </g>
               ))}
@@ -4909,13 +4934,12 @@ export function TakeoffApp() {
                           if (!canClose) return;
                           event.preventDefault();
                           event.stopPropagation();
-                          finishPolygonRoom(true);
                         }}
                         onPointerDown={(event) => {
                           if (!canClose) return;
                           event.preventDefault();
                           event.stopPropagation();
-                          suppressNextCanvasClickRef.current = true;
+                          finishPolygonRoom(true);
                         }}
                         onPointerUp={(event) => {
                           if (!canClose) return;
