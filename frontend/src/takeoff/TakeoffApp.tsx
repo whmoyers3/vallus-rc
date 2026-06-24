@@ -1587,7 +1587,7 @@ function cleanPolygonPointsForRender(points: TakeoffPoint[]) {
 
 function createHorizontalShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.Material) {
   const geometry = new THREE.ShapeGeometry(shapeFromPoints(points, center));
-  geometry.rotateX(-Math.PI / 2);
+  geometry.rotateX(Math.PI / 2);
   geometry.translate(0, height, 0);
   return new THREE.Mesh(geometry, material);
 }
