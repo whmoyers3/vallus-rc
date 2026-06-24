@@ -619,6 +619,37 @@ button.toolbar-primary:hover {
   color: #fff;
 }
 
+.takeoff-calc-result details {
+  color: #d1e7dd;
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.takeoff-calc-result summary {
+  cursor: pointer;
+}
+
+.takeoff-orientation-sweep {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.takeoff-orientation-sweep span {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+
+.takeoff-orientation-sweep-best {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-color: #fff !important;
+  color: #fff;
+  font-weight: 700;
+}
+
 .takeoff-toolbar h1 {
   font-size: 18px;
   margin: 0;
@@ -940,6 +971,28 @@ button.toolbar-primary:hover {
   z-index: 1;
 }
 
+.takeoff-model-hover-panel {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #bfd2e4;
+  border-radius: 6px;
+  color: #304252;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 5px 8px;
+  left: 12px;
+  max-width: 420px;
+  padding: 7px 9px;
+  position: absolute;
+  top: 48px;
+  z-index: 2;
+}
+
+.takeoff-model-hover-panel strong {
+  color: #123d63;
+}
+
 .takeoff-model-view-controls {
   align-items: center;
   display: flex;
@@ -980,7 +1033,7 @@ button.toolbar-primary:hover {
   left: 12px;
   padding: 8px 10px;
   position: absolute;
-  top: 48px;
+  top: 88px;
   z-index: 1;
 }
 
@@ -1684,6 +1737,13 @@ button.toolbar-primary:hover {
   grid-template-columns: minmax(0, 1fr) minmax(86px, auto);
 }
 
+.takeoff-component-row--stale {
+  background: #fff7ed;
+  border: 1px solid #f3bc8b;
+  border-radius: 6px;
+  padding: 6px;
+}
+
 .takeoff-component-row--directional {
   grid-template-columns: minmax(0, 1fr) 76px minmax(86px, auto);
 }
@@ -1777,6 +1837,25 @@ button.toolbar-primary:hover {
 
 .takeoff-opening-component-meta {
   grid-column: 1 / -1;
+}
+
+.takeoff-stale-ceiling-modal {
+  max-width: 520px;
+}
+
+.takeoff-stale-ceiling-list {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0;
+}
+
+.takeoff-stale-ceiling-list span {
+  background: #fff7ed;
+  border: 1px solid #f3bc8b;
+  border-radius: 6px;
+  color: #7c3f12;
+  font-size: 12px;
+  padding: 7px 8px;
 }
 
 .takeoff-opening-area {

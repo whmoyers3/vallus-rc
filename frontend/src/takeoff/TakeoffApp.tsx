@@ -71,6 +71,7 @@ type OpeningPlacement = {
   width: number;
   height: number;
   label: string;
+  solarDirection?: TakeoffRoomComponent["solarDirection"];
 } | null;
 type PendingOpeningTarget = {
   roomId: string;
@@ -93,6 +94,8 @@ type ModelMeshPart = {
   direction?: TakeoffRoomComponent["direction"];
   area?: number;
   assembly?: string;
+  source?: TakeoffRoomComponentSource;
+  geometryLabel?: string;
 };
 type ModelSurfaceSelection = {
   roomId: string;
@@ -104,7 +107,16 @@ type ModelSurfaceSelection = {
   area?: number;
   componentId?: string;
   assembly?: string;
+  source?: TakeoffRoomComponentSource;
+  geometryLabel?: string;
 };
+type StaleCeilingWallPrompt = {
+  roomId: string;
+  roomName: string;
+  components: Array<{ id: string; label: string; area: number; source?: TakeoffRoomComponentSource }>;
+} | null;
+type OrientationLoadResult = { facing: string; cooling: number; heating: number; tons: number };
+type TakeoffCalcResult = OrientationLoadResult & { orientations: OrientationLoadResult[]; baseFacing: string };
 type UnassignedRegion = {
   id: string;
   label: string;
@@ -117,6 +129,7 @@ const adjacentSpaceKinds: Array<{ id: TakeoffAdjacentSpaceKind; label: string }>
   { id: "garage", label: "Garage" },
   { id: "attic", label: "Attic" },
   { id: "crawl", label: "Crawl space" },
+  { id: "covered_porch", label: "Covered porch" },
   { id: "exterior", label: "Exterior" },
 ];
 const roomTileMetrics: Array<{ id: RoomTileMetric; label: string }> = [
@@ -450,6 +463,35 @@ function defaultWallAssemblyForAdjacency(adjacency: TakeoffWallAdjacency) {
   return "W1";
 }
 
+function wallAdjacencyFromAdjacentKinds(kinds: TakeoffAdjacentSpaceKind[]): TakeoffWallAdjacency {
+  if (kinds.includes("garage")) return "garage";
+  if (kinds.includes("attic")) return "attic";
+  if (kinds.includes("crawl")) return "crawlspace";
+  return "outside";
+}
+
+function wallAdjacencyLabel(adjacency: TakeoffWallAdjacency) {
+  const labels: Record<TakeoffWallAdjacency, string> = {
+    outside: "Exterior wall",
+    attic: "Attic wall",
+    garage: "Garage wall",
+    crawlspace: "Crawlspace wall",
+    conditioned: "Conditioned partition",
+    unknown: "Unknown adjacent wall",
+  };
+  return labels[adjacency];
+}
+
+function recommendedWallTreatment(kinds: TakeoffAdjacentSpaceKind[], fallbackAssembly = "W1") {
+  const adjacency = wallAdjacencyFromAdjacentKinds(kinds);
+  const assembly = adjacency === "outside" ? fallbackAssembly : defaultWallAssemblyForAdjacency(adjacency);
+  return {
+    adjacency,
+    assembly,
+    label: wallAdjacencyLabel(adjacency),
+  };
+}
+
 function ceilingWallSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom, defaultCeilingHeight = 9): CeilingWallSuggestion[] {
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
   const suggestions: CeilingWallSuggestion[] = [];
@@ -612,7 +654,28 @@ function componentIsGeneratedCeilingWall(component: TakeoffRoomComponent) {
   if (component.surface !== "wall") return false;
   if (component.source === "raised-ceiling" || component.source === "vault-gable") return true;
   const label = `${component.label ?? ""} ${component.geometryLabel ?? ""}`.toLowerCase();
-  return label.includes("gable") || label.includes("raised ceiling wall") || label.includes("raised wall band");
+  return (
+    label.includes("gable") ||
+    label.includes("raised ceiling wall") ||
+    label.includes("raised wall band") ||
+    label.includes("knee-wall") ||
+    label.includes("kneewall") ||
+    label.includes("vault")
+  );
+}
+
+function staleGeneratedCeilingWallComponents(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  const currentSuggestions = ceilingWallSuggestionsForRoom(floor, room, floor.defaultCeilingHeight ?? 9);
+  return roomSurfaceComponents(room, "wall").filter((component) => {
+    if (!componentIsGeneratedCeilingWall(component)) return false;
+    if (currentSuggestions.length === 0) return true;
+    return !currentSuggestions.some((suggestion) =>
+      suggestion.source === component.source &&
+      suggestion.label === component.label &&
+      suggestion.direction === component.direction &&
+      Math.abs(Math.round(suggestion.area) - (component.area || 0)) <= 0.5
+    );
+  });
 }
 
 function componentRequiresDirection(component: TakeoffRoomComponent) {
@@ -692,20 +755,64 @@ function roomWallReconciliation(floor: TakeoffFloor, room: TakeoffRectRoom) {
     .filter((entry) => entry.grossArea > 0 || entry.openingArea > 0);
 }
 
+function missingSuggestedExteriorWalls(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  return roomWallReconciliation(floor, room).filter((entry) => entry.suggestedGross > 0 && !entry.isAssigned);
+}
+
+function wallAdjacentSpaceMismatches(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  const adjacent = adjacentKindsByDirection(floor, room);
+  return roomSurfaceComponents(room, "wall").flatMap((component) => {
+    if (!isCompassDirection(component.direction) || componentIsGeneratedCeilingWall(component)) return [];
+    const adjacentKinds = adjacent.get(component.direction) ?? [];
+    if (adjacentKinds.length === 0) return [];
+    const recommendation = recommendedWallTreatment(adjacentKinds, component.assembly || "W1");
+    if (recommendation.adjacency === "outside") return [];
+    const mismatches: string[] = [];
+    if (component.adjacency !== recommendation.adjacency) {
+      mismatches.push(`${wallAdjacencyLabel(recommendation.adjacency).toLowerCase()} adjacency`);
+    }
+    if (recommendation.assembly !== component.assembly) {
+      mismatches.push(`${recommendation.assembly} assembly`);
+    }
+    if (mismatches.length === 0) return [];
+    return [{
+      component,
+      adjacentKinds,
+      recommendation,
+      mismatches,
+    }];
+  });
+}
+
+function exportedWallComponent(component: TakeoffRoomComponent): TakeoffRoomComponent {
+  if (component.surface !== "wall" || component.adjacency !== "garage") return component;
+  const label = component.label || wallAdjacencyLabel("garage");
+  return {
+    ...component,
+    direction: undefined,
+    label: /garage/i.test(label) ? label : `${label} - Garage`,
+  };
+}
+
+function payloadDirectionForComponent(component: TakeoffRoomComponent) {
+  if (component.surface === "glass" && component.solarDirection) return component.solarDirection;
+  return component.direction;
+}
+
 function payloadComponentsForRoom(room: TakeoffRectRoom) {
   const remainingOpenings = new Map(openingAreaByDirection(room));
   return roomComponents(room)
     .map((component) => {
-      if (component.surface !== "wall" || !isCompassDirection(component.direction) || !wallCanHostOpenings(component)) return component;
+      if (component.surface !== "wall" || !isCompassDirection(component.direction) || !wallCanHostOpenings(component)) return exportedWallComponent(component);
       const remaining = remainingOpenings.get(component.direction) ?? 0;
       const grossArea = Math.max(0, component.area || 0);
       const subtract = Math.min(grossArea, remaining);
       remainingOpenings.set(component.direction, Math.max(0, remaining - subtract));
-      return {
+      return exportedWallComponent({
         ...component,
         area: Number(Math.max(0, grossArea - subtract).toFixed(3)),
-        label: subtract > 0 ? `${component.label || "Exterior wall"} net of openings` : component.label,
-      };
+        label: subtract > 0 ? `${component.label || wallAdjacencyLabel(component.adjacency ?? "outside")} net of openings` : component.label,
+      });
     })
     .filter((component) => Math.max(0, component.area || 0) > 0);
 }
@@ -1107,6 +1214,19 @@ function adjacentKindsByDirection(floor: TakeoffFloor, room: TakeoffRectRoom) {
   return byDirection;
 }
 
+function adjacentKindsForPlacedOpening(floor: TakeoffFloor, room: TakeoffRectRoom, component: TakeoffRoomComponent) {
+  if (!component.placement || !isCompassDirection(component.direction)) return [];
+  const tolerance = Math.max(1.5, floor.scale.feetPerGrid * 1.5);
+  const kinds = new Set<TakeoffAdjacentSpaceKind>();
+  for (const segment of roomExteriorSegments(floor, room).filter((entry) => entry.direction === component.direction)) {
+    const distanceToSegment = distance(closestPointOnSegment(component.placement, segment.a, segment.b), component.placement);
+    if (distanceToSegment <= tolerance) {
+      adjacentKindsForSegment(floor, segment).forEach((kind) => kinds.add(kind));
+    }
+  }
+  return Array.from(kinds);
+}
+
 function isCompassDirection(value: TakeoffRoomComponent["direction"] | undefined): value is (typeof directionOptions)[number] {
   return !!value && (directionOptions as readonly string[]).includes(value);
 }
@@ -1289,6 +1409,14 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
+    const staleCeilingWalls = staleGeneratedCeilingWallComponents(floor, room);
+    if (staleCeilingWalls.length > 0) {
+      issues.push({
+        severity: "error",
+        message: `${room.name || "Room"} has ${staleCeilingWalls.length} generated ceiling-wall component${staleCeilingWalls.length === 1 ? "" : "s"} that no longer match the current ceiling shape: ${staleCeilingWalls.map((component) => component.label || component.geometryLabel || component.assembly).join(", ")}. Remove them or rebuild the ceiling geometry.`,
+        target: roomTarget,
+      });
+    }
     const roomArea = rectArea(room);
     const floorArea = componentAreaTotal(room, "floor");
     const ceilingArea = componentAreaTotal(room, "ceiling");
@@ -1297,6 +1425,22 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const exteriorDirections = roomExteriorDirections(floor, room);
     const openingAreas = openingAreaByDirection(room);
     const wallAreas = wallAreaByDirection(room);
+    const missingSuggestedWalls = missingSuggestedExteriorWalls(floor, room);
+    if (missingSuggestedWalls.length > 0) {
+      issues.push({
+        severity: "error",
+        message: `${room.name || "Room"} has ${missingSuggestedWalls.length} suggested exterior wall area${missingSuggestedWalls.length === 1 ? "" : "s"} not assigned: ${missingSuggestedWalls.map((entry) => `${entry.direction} ${Math.round(entry.suggestedGross)} sf`).join(", ")}.`,
+        target: roomTarget,
+      });
+    }
+    const adjacentWallMismatches = wallAdjacentSpaceMismatches(floor, room);
+    if (adjacentWallMismatches.length > 0) {
+      issues.push({
+        severity: "error",
+        message: `${room.name || "Room"} has wall component${adjacentWallMismatches.length === 1 ? "" : "s"} touching adjacent space but still classified differently: ${adjacentWallMismatches.map(({ component, recommendation }) => `${component.direction} should be ${recommendation.label} (${recommendation.assembly})`).join(", ")}.`,
+        target: roomTarget,
+      });
+    }
     if (!noFloorLoad && floorArea > roomArea + 0.5) {
       issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.`, target: roomTarget });
     }
@@ -1345,14 +1489,12 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${component.surface} component with no area.`, target: roomTarget });
       }
       if (component.surface === "glass" && component.placement && isCompassDirection(component.direction)) {
-        const garageAdjacent = roomExteriorSegments(floor, room)
-          .filter((segment) => segment.direction === component.direction)
-          .some((segment) =>
-            distance(closestPointOnSegment(component.placement!, segment.a, segment.b), component.placement!) <= Math.max(1.5, floor.scale.feetPerGrid * 1.5) &&
-            adjacentKindsForSegment(floor, segment).includes("garage")
-          );
-        if (garageAdjacent) {
+        const adjacentKinds = adjacentKindsForPlacedOpening(floor, room, component);
+        if (adjacentKinds.includes("garage")) {
           issues.push({ severity: "error", message: `${room.name || "Room"} has glass on a garage-adjacent ${component.direction} wall.`, target: roomTarget });
+        }
+        if (adjacentKinds.includes("covered_porch") && component.solarDirection !== "Shaded") {
+          issues.push({ severity: "warning", message: `${room.name || "Room"} has glass on a covered-porch ${component.direction} wall. Mark it shaded if Salas treats that opening as shaded.`, target: roomTarget });
         }
       }
     }
@@ -1435,11 +1577,12 @@ function buildVrcPayload(project: TakeoffProject) {
       kind: componentPayloadKind(component.surface),
       room_name: room.name,
       assembly: component.assembly,
-      direction: component.direction,
+      direction: payloadDirectionForComponent(component),
       area: component.area,
       ...(component.source ? { source: component.source } : {}),
       ...(component.adjacency ? { adjacency: component.adjacency } : {}),
       ...(component.geometryLabel ? { geometry_label: component.geometryLabel } : {}),
+      ...(component.solarDirection ? { solar_direction: component.solarDirection, wall_direction: component.direction } : {}),
     }));
   });
 
@@ -1508,6 +1651,7 @@ function adjacentSpaceColor(kind: TakeoffAdjacentSpaceKind) {
     garage: { fill: "rgba(138, 101, 50, 0.22)", stroke: "#8a6532" },
     attic: { fill: "rgba(117, 91, 145, 0.18)", stroke: "#755b91" },
     crawl: { fill: "rgba(73, 119, 117, 0.18)", stroke: "#497775" },
+    covered_porch: { fill: "rgba(53, 121, 107, 0.16)", stroke: "#35796b" },
     exterior: { fill: "rgba(93, 106, 118, 0.14)", stroke: "#5d6a76" },
   };
   return colors[kind];
@@ -1650,6 +1794,8 @@ function raisedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint,
       surface: "wall",
       direction,
       area: Number((length * Math.max(0, topHeight - baseHeight)).toFixed(3)),
+      source: "raised-ceiling",
+      geometryLabel: `Raised wall band - ${direction}`,
     };
   });
 }
@@ -1870,6 +2016,8 @@ function vaultedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint
         surface: "wall",
         direction,
         area: Number((distance(a, b) * averageHeight).toFixed(3)),
+        source: "vault-gable",
+        geometryLabel: `Vault gable / knee-wall - ${direction}`,
       });
     }
   }
@@ -1884,6 +2032,28 @@ function modelSurfaceFromObject(object: THREE.Object3D) {
     current = current.parent;
   }
   return null;
+}
+
+function meshFromObject(object: THREE.Object3D) {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (current instanceof THREE.Mesh && current.geometry) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
+function modelSurfaceKey(surface: ModelSurfaceSelection | null) {
+  if (!surface) return "";
+  return [
+    surface.roomId,
+    surface.kind,
+    surface.surface ?? "",
+    surface.direction ?? "",
+    surface.componentId ?? "",
+    surface.label,
+    surface.area ?? "",
+  ].join("|");
 }
 
 function modelScheduleCategory(surface: TakeoffRoomComponent["surface"]) {
@@ -1923,6 +2093,7 @@ function TakeoffModelPreview({
     interiorWalls: false,
   });
   const [selectedSurface, setSelectedSurface] = useState<ModelSurfaceSelection | null>(null);
+  const [hoveredSurface, setHoveredSurface] = useState<ModelSurfaceSelection | null>(null);
   const [selectedSurfaceAssembly, setSelectedSurfaceAssembly] = useState("");
 
   const selectedSurfaceOptions = selectedSurface?.surface
@@ -1958,6 +2129,7 @@ function TakeoffModelPreview({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    setHoveredSurface(null);
     const bounds = footprintBounds(floor);
     const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.depth / 2 };
     const width = Math.max(container.clientWidth, 720);
@@ -2023,6 +2195,7 @@ function TakeoffModelPreview({
     const doorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.82, side: THREE.DoubleSide });
     const openingFrameMaterial = new THREE.MeshBasicMaterial({ color: 0x2f3b1f, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
     const lineMaterial = new THREE.LineBasicMaterial({ color: 0xb35b2f });
+    const hoverOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x0f5fa8, depthTest: false, transparent: true, opacity: 0.95 });
 
     const exteriorPoints = exteriorRingPoints(floor);
     if (exteriorPoints.length >= 3) scene.add(createHorizontalShapeMesh(exteriorPoints, center, -0.02, exteriorMaterial));
@@ -2086,6 +2259,8 @@ function TakeoffModelPreview({
             area: part.area,
             assembly: component?.assembly ?? part.assembly,
             componentId: component?.id,
+            source: component?.source ?? part.source,
+            geometryLabel: component?.geometryLabel ?? part.geometryLabel,
           } satisfies ModelSurfaceSelection;
           scene.add(part.mesh);
         }
@@ -2122,6 +2297,8 @@ function TakeoffModelPreview({
               surface: part.surface,
               area: part.area,
               assembly: part.assembly,
+              source: part.source,
+              geometryLabel: part.geometryLabel,
             } satisfies ModelSurfaceSelection;
             scene.add(part.mesh);
           }
@@ -2167,13 +2344,61 @@ function TakeoffModelPreview({
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    function handlePointerDown(event: PointerEvent) {
-      if (event.button === 2) return;
+    let hoverOutline: THREE.LineSegments | null = null;
+    let hoverSurfaceKey = "";
+
+    function clearHoverOutline() {
+      if (!hoverOutline) return;
+      hoverOutline.parent?.remove(hoverOutline);
+      hoverOutline.geometry.dispose();
+      hoverOutline = null;
+    }
+
+    function setPointerFromEvent(event: PointerEvent) {
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
       pointer.y = -(((event.clientY - rect.top) / Math.max(rect.height, 1)) * 2 - 1);
+    }
+
+    function firstSelectableHit() {
+      return raycaster.intersectObjects(scene.children, true).find((entry) =>
+        !entry.object.userData.hoverOutline &&
+        (entry.object.userData.roomId || modelSurfaceFromObject(entry.object))
+      );
+    }
+
+    function updateHover(event: PointerEvent) {
+      setPointerFromEvent(event);
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(scene.children, true).find((entry) => entry.object.userData.roomId || modelSurfaceFromObject(entry.object));
+      const hit = firstSelectableHit();
+      const surface = hit ? modelSurfaceFromObject(hit.object) : null;
+      const nextKey = modelSurfaceKey(surface);
+      if (nextKey === hoverSurfaceKey) return;
+      hoverSurfaceKey = nextKey;
+      clearHoverOutline();
+      if (hit && surface) {
+        const mesh = meshFromObject(hit.object);
+        if (mesh) {
+          hoverOutline = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), hoverOutlineMaterial);
+          hoverOutline.userData.hoverOutline = true;
+          hoverOutline.renderOrder = 999;
+          mesh.add(hoverOutline);
+        }
+      }
+      setHoveredSurface(surface);
+    }
+
+    function clearHover() {
+      hoverSurfaceKey = "";
+      clearHoverOutline();
+      setHoveredSurface(null);
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (event.button === 2) return;
+      setPointerFromEvent(event);
+      raycaster.setFromCamera(pointer, camera);
+      const hit = firstSelectableHit();
       if (!hit) return;
       const surface = modelSurfaceFromObject(hit.object);
       if (surface) {
@@ -2186,6 +2411,8 @@ function TakeoffModelPreview({
     function handleContextMenu(event: MouseEvent) {
       event.preventDefault();
     }
+    renderer.domElement.addEventListener("pointermove", updateHover);
+    renderer.domElement.addEventListener("pointerleave", clearHover);
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
     renderer.domElement.addEventListener("contextmenu", handleContextMenu);
 
@@ -2211,8 +2438,12 @@ function TakeoffModelPreview({
     return () => {
       window.cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
+      renderer.domElement.removeEventListener("pointermove", updateHover);
+      renderer.domElement.removeEventListener("pointerleave", clearHover);
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
       renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
+      hoverSurfaceKey = "";
+      clearHoverOutline();
       controls.dispose();
       controlsRef.current = null;
       cameraRef.current = null;
@@ -2225,6 +2456,7 @@ function TakeoffModelPreview({
         else material?.dispose?.();
       });
       loadedTextures.forEach((texture) => texture.dispose());
+      hoverOutlineMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
   }, [floor, onSelectRoom, referenceUrl, selectedRoomId, visibleLayers]);
@@ -2232,6 +2464,14 @@ function TakeoffModelPreview({
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
       <div className="takeoff-model-caption">3D QA View · right-click drag to orbit · scroll to zoom · drag to pan</div>
+      {hoveredSurface && (
+        <div className="takeoff-model-hover-panel">
+          <strong>{hoveredSurface.label}</strong>
+          <span>{hoveredSurface.roomName}</span>
+          {hoveredSurface.direction && <span>{hoveredSurface.direction}</span>}
+          {hoveredSurface.area !== undefined && <span>{Math.round(hoveredSurface.area)} sf</span>}
+        </div>
+      )}
       <div className="takeoff-model-layer-controls" aria-label="3D layer controls">
         {([
           ["reference", "Plan PDF"],
@@ -2354,7 +2594,7 @@ export function TakeoffApp() {
   const [ventilationCfm, setVentilationCfm] = useState(0);
   const [frontDoorFaces, setFrontDoorFaces] = useState<(typeof directionOptions)[number]>("S");
   const [calcLoading, setCalcLoading] = useState(false);
-  const [calcResult, setCalcResult] = useState<{ facing: string; cooling: number; heating: number; tons: number } | null>(null);
+  const [calcResult, setCalcResult] = useState<TakeoffCalcResult | null>(null);
   const [componentSchedule, setComponentSchedule] = useState<TakeoffComponentDefinition[]>(() => defaultComponentSchedule);
   const [floor, setFloor] = useState<TakeoffFloor>(() => makeInitialFloor());
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
@@ -2371,6 +2611,7 @@ export function TakeoffApp() {
   const [pendingComponentAssignment, setPendingComponentAssignment] = useState<TakeoffComponentDefinition | null>(null);
   const [ceilingWallAssemblies, setCeilingWallAssemblies] = useState<Record<string, string>>({});
   const [ceilingWallAdjacencies, setCeilingWallAdjacencies] = useState<Record<string, TakeoffWallAdjacency>>({});
+  const [staleCeilingWallPrompt, setStaleCeilingWallPrompt] = useState<StaleCeilingWallPrompt>(null);
   const [libraryComponents, setLibraryComponents] = useState<TakeoffComponentDefinition[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [componentDraft, setComponentDraft] = useState<Omit<TakeoffComponentDefinition, "id" | "source">>({
@@ -2561,6 +2802,62 @@ export function TakeoffApp() {
     });
   }
 
+  function roomWithCeilingType(room: TakeoffRectRoom, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>): TakeoffRectRoom {
+    if (ceilingType === "none") {
+      return {
+        ...room,
+        ceilingType,
+        ceilingGeometryApproved: false,
+        ceilingLowHeight: undefined,
+        ceilingPeakHeight: undefined,
+        ceilingRidgeDirection: undefined,
+        ceilingRidgeOffset: undefined,
+        components: roomComponents(room).filter((component) => component.surface !== "ceiling"),
+      };
+    }
+    const ceilingComponents = roomSurfaceComponents(room, "ceiling");
+    const defaultCeiling = defaultComponent("ceiling", rectArea(room));
+    const normalizedCeiling = ceilingComponents.length > 0
+      ? ceilingComponents.map((component, index) => {
+        if (index !== 0) return component;
+        const nextAssembly = ceilingType === "vaulted"
+          ? "C2"
+          : component.assembly === "C2" ? "C1" : component.assembly || "C1";
+        return { ...component, assembly: nextAssembly, area: Number((component.area || rectArea(room)).toFixed(3)) };
+      })
+      : [{ ...defaultCeiling, assembly: ceilingType === "vaulted" ? "C2" : "C1" }];
+    return {
+      ...room,
+      ceilingType,
+      ceilingGeometryApproved: false,
+      ceilingLowHeight: ceilingType === "vaulted" ? room.ceilingLowHeight ?? room.ceilingHeight : undefined,
+      ceilingPeakHeight: ceilingType === "vaulted" ? room.ceilingPeakHeight ?? Math.max(room.ceilingHeight, room.ceilingHeight + 1) : undefined,
+      ceilingRidgeDirection: ceilingType === "vaulted" ? room.ceilingRidgeDirection ?? "E-W" : undefined,
+      ceilingRidgeOffset: ceilingType === "vaulted" ? room.ceilingRidgeOffset ?? 0 : undefined,
+      components: [
+        ...roomComponents(room).filter((component) => component.surface !== "ceiling"),
+        ...normalizedCeiling,
+      ],
+    };
+  }
+
+  function staleCeilingPromptForRoom(nextFloor: TakeoffFloor, roomId: string): StaleCeilingWallPrompt {
+    const room = nextFloor.rooms.find((candidate) => candidate.id === roomId);
+    if (!room) return null;
+    const staleComponents = staleGeneratedCeilingWallComponents(nextFloor, room);
+    if (staleComponents.length === 0) return null;
+    return {
+      roomId: room.id,
+      roomName: room.name,
+      components: staleComponents.map((component) => ({
+        id: component.id,
+        label: component.label || component.geometryLabel || component.assembly,
+        area: component.area || 0,
+        source: component.source,
+      })),
+    };
+  }
+
   function approveRoomCeilingGeometry(
     roomId: string,
     wallAssemblies: Record<string, string> = {},
@@ -2682,6 +2979,8 @@ export function TakeoffApp() {
           area: Number((selection.area ?? existing?.area ?? rectArea(room)).toFixed(3)),
           direction: selection.direction ?? existing?.direction,
           label: selection.label || option?.description || existing?.label,
+          source: selection.source ?? existing?.source,
+          geometryLabel: selection.geometryLabel ?? existing?.geometryLabel,
         };
         return {
           ...room,
@@ -2719,6 +3018,9 @@ export function TakeoffApp() {
   }
 
   function setRoomSurfaceNoLoad(roomId: string, surface: "floor" | "ceiling") {
+    const nextFloor = surface === "ceiling"
+      ? { ...floor, rooms: floor.rooms.map((room) => room.id === roomId ? roomWithCeilingType(room, "none") : room) }
+      : null;
     setFloor((current) => ({
       ...current,
       rooms: current.rooms.map((room) => (
@@ -2727,45 +3029,72 @@ export function TakeoffApp() {
               ...room,
               floorType: surface === "floor" ? "none" : room.floorType,
               ceilingType: surface === "ceiling" ? "none" : room.ceilingType,
+              ceilingGeometryApproved: surface === "ceiling" ? false : room.ceilingGeometryApproved,
+              ceilingLowHeight: surface === "ceiling" ? undefined : room.ceilingLowHeight,
+              ceilingPeakHeight: surface === "ceiling" ? undefined : room.ceilingPeakHeight,
+              ceilingRidgeDirection: surface === "ceiling" ? undefined : room.ceilingRidgeDirection,
+              ceilingRidgeOffset: surface === "ceiling" ? undefined : room.ceilingRidgeOffset,
               components: roomComponents(room).filter((entry) => entry.surface !== surface),
             }
           : room
       )),
     }));
+    if (nextFloor) {
+      const prompt = staleCeilingPromptForRoom(nextFloor, roomId);
+      if (prompt) {
+        setStaleCeilingWallPrompt(prompt);
+        setSelectedRoomId(roomId);
+      }
+    }
     setMessage(`${componentSurfaceLabel(surface)} load marked as none for this room.`);
   }
 
   function updateRoomCeilingType(roomId: string, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>) {
-    if (ceilingType === "none") {
-      setRoomSurfaceNoLoad(roomId, "ceiling");
-      return;
-    }
+    const nextFloor = {
+      ...floor,
+      rooms: floor.rooms.map((room) => room.id === roomId ? roomWithCeilingType(room, ceilingType) : room),
+    };
     setFloor((current) => ({
       ...current,
       rooms: current.rooms.map((room) => {
         if (room.id !== roomId) return room;
-        const ceilingComponents = roomSurfaceComponents(room, "ceiling");
-        const defaultCeiling = defaultComponent("ceiling", rectArea(room));
-        const normalizedCeiling = ceilingComponents.length > 0
-          ? ceilingComponents.map((component, index) => index === 0
-            ? { ...component, assembly: ceilingType === "vaulted" ? "C2" : component.assembly || "C1" }
-            : component)
-          : [{ ...defaultCeiling, assembly: ceilingType === "vaulted" ? "C2" : "C1" }];
-        return {
-          ...room,
-          ceilingType,
-          ceilingGeometryApproved: false,
-          ceilingLowHeight: ceilingType === "vaulted" ? room.ceilingLowHeight ?? room.ceilingHeight : undefined,
-          ceilingPeakHeight: ceilingType === "vaulted" ? room.ceilingPeakHeight ?? Math.max(room.ceilingHeight, room.ceilingHeight + 1) : undefined,
-          ceilingRidgeDirection: ceilingType === "vaulted" ? room.ceilingRidgeDirection ?? "E-W" : undefined,
-          ceilingRidgeOffset: ceilingType === "vaulted" ? room.ceilingRidgeOffset ?? 0 : undefined,
-          components: [
-            ...roomComponents(room).filter((component) => component.surface !== "ceiling"),
-            ...normalizedCeiling,
-          ],
-        };
+        return roomWithCeilingType(room, ceilingType);
       }),
     }));
+    const prompt = staleCeilingPromptForRoom(nextFloor, roomId);
+    if (prompt) {
+      setStaleCeilingWallPrompt(prompt);
+      setSelectedRoomId(roomId);
+      setMessage(`${prompt.roomName} has generated ceiling-wall components that no longer match the ${ceilingType} ceiling.`);
+    }
+  }
+
+  function removePromptedStaleCeilingWalls() {
+    const prompt = staleCeilingWallPrompt;
+    if (!prompt) return;
+    const staleIds = new Set(prompt.components.map((component) => component.id));
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => (
+        room.id === prompt.roomId
+          ? { ...room, components: roomComponents(room).filter((component) => !staleIds.has(component.id)) }
+          : room
+      )),
+    }));
+    setStaleCeilingWallPrompt(null);
+    setMessage(`${prompt.components.length} generated ceiling-wall component${prompt.components.length === 1 ? "" : "s"} removed from ${prompt.roomName}.`);
+  }
+
+  function reviewPromptedStaleCeilingWalls() {
+    const prompt = staleCeilingWallPrompt;
+    if (!prompt) return;
+    setSelectedRoomId(prompt.roomId);
+    setRightPanelOpen(true);
+    setPlanReviewMode("elevation");
+    setRoomTileMetric("wall");
+    setStaleCeilingWallPrompt(null);
+    scrollToWallComponents(prompt.roomId);
+    setMessage(`Review the highlighted generated wall components for ${prompt.roomName}.`);
   }
 
   function removeRoomComponent(roomId: string, componentId: string) {
@@ -2780,7 +3109,13 @@ export function TakeoffApp() {
     setSelectedOpening((current) => (current?.roomId === roomId && current.componentId === componentId ? null : current));
   }
 
-  function applySuggestedWallArea(roomId: string, suggestion: { direction: TakeoffRoomComponent["direction"]; area: number }, assembly: string) {
+  function applySuggestedWallArea(
+    roomId: string,
+    suggestion: { direction: TakeoffRoomComponent["direction"]; area: number },
+    assembly: string,
+    adjacency: TakeoffWallAdjacency = "outside",
+  ) {
+    const label = wallAdjacencyLabel(adjacency);
     setFloor((current) => ({
       ...current,
       rooms: current.rooms.map((room) => {
@@ -2791,7 +3126,7 @@ export function TakeoffApp() {
           return {
             ...room,
             components: components.map((component) => component.id === existing.id
-              ? { ...component, assembly, area: Math.round(suggestion.area), label: `${suggestion.direction} exterior wall` }
+              ? { ...component, assembly, adjacency, area: Math.round(suggestion.area), label: `${suggestion.direction} ${label.toLowerCase()}` }
               : component),
           };
         }
@@ -2805,7 +3140,8 @@ export function TakeoffApp() {
               assembly,
               direction: suggestion.direction,
               area: Math.round(suggestion.area),
-              label: `${suggestion.direction} exterior wall`,
+              label: `${suggestion.direction} ${label.toLowerCase()}`,
+              adjacency,
             },
           ],
         };
@@ -2854,6 +3190,7 @@ export function TakeoffApp() {
       const nextSurface = patch.surface ?? current.surface;
       const surfaceChanged = patch.surface && patch.surface !== current.surface;
       const option = surfaceChanged ? scheduleOptionsBySurface[nextSurface][0] : null;
+      const targetAdjacent = pendingOpeningTarget?.adjacentKinds ?? [];
       return {
         ...current,
         ...patch,
@@ -2861,6 +3198,9 @@ export function TakeoffApp() {
         width: patch.width ?? (surfaceChanged ? 3 : current.width),
         height: patch.height ?? (surfaceChanged ? (nextSurface === "glass" ? 5 : 6.67) : current.height),
         label: patch.label ?? (surfaceChanged ? (nextSurface === "glass" ? "Window" : "Door") : current.label),
+        solarDirection: nextSurface === "glass"
+          ? patch.solarDirection ?? (surfaceChanged && targetAdjacent.includes("covered_porch") ? "Shaded" : current.solarDirection)
+          : undefined,
       };
     });
   }
@@ -2905,8 +3245,19 @@ export function TakeoffApp() {
       },
       adjacentKinds: target.adjacentKinds,
     });
+    if (openingPlacement.surface === "glass" && target.adjacentKinds.includes("covered_porch")) {
+      setOpeningPlacement((current) => current
+        ? {
+            ...current,
+            solarDirection: "Shaded",
+            label: current.label && current.label !== "Window" ? current.label : "Shaded window",
+          }
+        : current);
+    }
     setSelectedRoomId(target.room.id);
-    setMessage(`Detected ${target.room.name} ${target.segment.direction} wall. Confirm the opening details.`);
+    setMessage(target.adjacentKinds.includes("covered_porch")
+      ? `Detected ${target.room.name} ${target.segment.direction} wall at covered porch. Glass will default to shaded.`
+      : `Detected ${target.room.name} ${target.segment.direction} wall. Confirm the opening details.`);
     return true;
   }
 
@@ -2929,8 +3280,12 @@ export function TakeoffApp() {
       width: openingPlacement.width,
       height: openingPlacement.height,
       direction: pendingOpeningTarget.direction,
+      solarDirection: openingPlacement.surface === "glass"
+        ? openingPlacement.solarDirection ?? (pendingOpeningTarget.adjacentKinds.includes("covered_porch") ? "Shaded" : undefined)
+        : undefined,
       label: openingPlacement.label || (openingPlacement.surface === "glass" ? "Window" : "Door"),
       placement: pendingOpeningTarget.placement,
+      source: "opening-placement",
     };
     setFloor((current) => ({
       ...current,
@@ -2957,12 +3312,16 @@ export function TakeoffApp() {
     setEditingOpeningTarget({ roomId: room.id, componentId: component.id });
     setSelectedOpening({ roomId: room.id, componentId: component.id });
     setSelectedRoomId(room.id);
+    const adjacentKinds = adjacentKindsForPlacedOpening(floor, room, component);
     setOpeningPlacement({
       surface: component.surface,
       assembly: component.assembly,
       width,
       height,
       label: component.label || (component.surface === "glass" ? "Window" : "Door"),
+      solarDirection: component.surface === "glass"
+        ? component.solarDirection ?? (adjacentKinds.includes("covered_porch") ? "Shaded" : undefined)
+        : undefined,
     });
   }
 
@@ -2975,11 +3334,9 @@ export function TakeoffApp() {
     }
     const editingRoom = floor.rooms.find((room) => room.id === editingOpeningTarget.roomId);
     const editingComponent = editingRoom ? roomComponents(editingRoom).find((component) => component.id === editingOpeningTarget.componentId) : null;
+    const adjacentKinds = editingRoom && editingComponent ? adjacentKindsForPlacedOpening(floor, editingRoom, editingComponent) : [];
     if (openingPlacement.surface === "glass" && editingRoom && editingComponent?.placement) {
-      const garageAdjacent = roomExteriorSegments(floor, editingRoom)
-        .filter((segment) => segment.direction === editingComponent.direction)
-        .some((segment) => distance(closestPointOnSegment(editingComponent.placement!, segment.a, segment.b), editingComponent.placement!) <= Math.max(1.5, floor.scale.feetPerGrid * 1.5) && adjacentKindsForSegment(floor, segment).includes("garage"));
-      if (garageAdjacent) {
+      if (adjacentKinds.includes("garage")) {
         setMessage("Glass cannot be assigned to a garage-adjacent wall. Keep this opening as a door or move it to a different exterior wall.");
         return false;
       }
@@ -3000,6 +3357,10 @@ export function TakeoffApp() {
                       width: openingPlacement.width,
                       height: openingPlacement.height,
                       label: openingPlacement.label || (openingPlacement.surface === "glass" ? "Window" : "Door"),
+                      solarDirection: openingPlacement.surface === "glass"
+                        ? openingPlacement.solarDirection ?? (adjacentKinds.includes("covered_porch") ? "Shaded" : undefined)
+                        : undefined,
+                      source: component.source ?? "opening-placement",
                     }
                   : component
               )),
@@ -3039,7 +3400,17 @@ export function TakeoffApp() {
         return {
           ...room,
           components: roomComponents(room).map((existing) => (
-            existing.id === target.componentId ? { ...existing, placement } : existing
+            existing.id === target.componentId
+              ? {
+                  ...existing,
+                  placement,
+                  solarDirection: existing.surface === "glass"
+                    ? adjacentKindsForPlacedOpening(current, room, { ...existing, placement }).includes("covered_porch")
+                      ? "Shaded"
+                      : existing.solarDirection
+                    : existing.solarDirection,
+                }
+              : existing
           )),
         };
       }),
@@ -4035,12 +4406,19 @@ export function TakeoffApp() {
         return;
       }
     }
+    const blockingIssue = validation.find((issue) => issue.severity === "error");
+    if (blockingIssue) {
+      setMessage(blockingIssue.message);
+      focusValidationIssue(blockingIssue);
+      return;
+    }
     setCalcLoading(true);
     setMessage("");
     try {
       const basePayload = buildVrcPayload({ ...takeoffProject, location: resolvedLocation });
       const frontIndex = COMPASS_ORDER.indexOf(takeoffProject.frontDoorFaces as (typeof COMPASS_ORDER)[number]);
-      let best: { facing: string; cooling: number; heating: number; tons: number } | null = null;
+      let best: OrientationLoadResult | null = null;
+      const orientations: OrientationLoadResult[] = [];
       // Worst-case orientation: rotate every surface direction through all 8 facings, keep the max.
       for (let steps = 0; steps < COMPASS_ORDER.length; steps += 1) {
         const rotated = JSON.parse(JSON.stringify(basePayload));
@@ -4056,17 +4434,18 @@ export function TakeoffApp() {
         if (!response.ok) throw new Error(data.detail ?? "Calculation failed.");
         const cooling = data.whole_house_sensible_cooling ?? 0;
         const heating = data.whole_house_heating ?? 0;
-        const score = cooling + heating;
-        if (!best || score > best.cooling + best.heating) {
-          best = {
-            facing: COMPASS_ORDER[(frontIndex + steps + COMPASS_ORDER.length) % COMPASS_ORDER.length] ?? "?",
-            cooling,
-            heating,
-            tons: data.units?.[0]?.recommended_tons ?? data.system_tons ?? 0,
-          };
+        const orientationResult = {
+          facing: COMPASS_ORDER[(frontIndex + steps + COMPASS_ORDER.length) % COMPASS_ORDER.length] ?? "?",
+          cooling,
+          heating,
+          tons: data.units?.[0]?.recommended_tons ?? data.system_tons ?? 0,
+        };
+        orientations.push(orientationResult);
+        if (!best || cooling > best.cooling || (cooling === best.cooling && heating > best.heating)) {
+          best = orientationResult;
         }
       }
-      setCalcResult(best);
+      setCalcResult(best ? { ...best, orientations, baseFacing: takeoffProject.frontDoorFaces } : null);
       setMessage("Calculated worst-case orientation.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Calculation failed.");
@@ -4291,10 +4670,22 @@ export function TakeoffApp() {
 
       {calcResult && (
         <div className="takeoff-calc-result">
-          <strong>Worst-case load</strong> (house faces {calcResult.facing}):
-          {" "}Cooling <strong>{calcResult.cooling.toLocaleString()}</strong> BTU/hr ·
-          {" "}Heating <strong>{calcResult.heating.toLocaleString()}</strong> BTU/hr ·
-          {" "}<strong>{calcResult.tons}</strong> tons
+          <div>
+            <strong>Worst-case cooling load</strong> (house faces {calcResult.facing}):
+            {" "}Cooling <strong>{calcResult.cooling.toLocaleString()}</strong> BTU/hr ·
+            {" "}Heating <strong>{calcResult.heating.toLocaleString()}</strong> BTU/hr ·
+            {" "}<strong>{calcResult.tons}</strong> tons
+          </div>
+          <details>
+            <summary>Orientation sweep from current payload facing {calcResult.baseFacing}</summary>
+            <div className="takeoff-orientation-sweep">
+              {calcResult.orientations.map((entry) => (
+                <span key={entry.facing} className={entry.facing === calcResult.facing ? "takeoff-orientation-sweep-best" : ""}>
+                  {entry.facing}: {entry.cooling.toLocaleString()} cool / {entry.heating.toLocaleString()} heat
+                </span>
+              ))}
+            </div>
+          </details>
         </div>
       )}
 
@@ -5113,16 +5504,24 @@ export function TakeoffApp() {
                             </select>
                           </div>
                           {suggestions.length ? suggestions.map((suggestion) => {
+                            const adjacentKinds = adjacentKindsByDirection(floor, selectedRoom).get(suggestion.direction) ?? [];
+                            const recommendation = recommendedWallTreatment(adjacentKinds, suggestedWallAssembly);
                             const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
-                              component.direction === suggestion.direction && Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
+                              component.direction === suggestion.direction &&
+                              component.adjacency === recommendation.adjacency &&
+                              component.assembly === recommendation.assembly &&
+                              Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
                             );
                             return (
                               <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
                                 <span>
-                                  Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} wall
-                                  <small>{Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft</small>
+                                  Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
+                                  <small>
+                                    {Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft
+                                    {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")} · ${recommendation.assembly}` : ""}
+                                  </small>
                                 </span>
-                                <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, suggestedWallAssembly)}>
+                                <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, recommendation.assembly, recommendation.adjacency)}>
                                   {approved ? "Approved" : "Apply"}
                                 </button>
                               </div>
@@ -5453,6 +5852,7 @@ export function TakeoffApp() {
                     const areaCheck = areaSurface ? roomAreaReconciliation(selectedRoom, areaSurface) : null;
                     const options = scheduleOptionsBySurface[surface];
                     const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
+                    const staleCeilingWallIds = new Set(staleGeneratedCeilingWallComponents(floor, selectedRoom).map((component) => component.id));
                     return (
                       <div key={surface} id={surface === "wall" ? `room-wall-components-${selectedRoom.id}` : undefined} className="takeoff-component-editor">
                         <div className="takeoff-component-head">
@@ -5502,8 +5902,9 @@ export function TakeoffApp() {
                                 ...exteriorDirections,
                                 ...(isCompassDirection(component.direction) ? [component.direction] : []),
                               ]));
+                              const isStaleCeilingWall = staleCeilingWallIds.has(component.id);
                               return (
-                                <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""}`}>
+                                <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""}`}>
                                   <select
                                     value={component.assembly}
                                     onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
@@ -5519,6 +5920,41 @@ export function TakeoffApp() {
                                     >
                                       <option value="">Direction</option>
                                       {directionChoices.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
+                                    </select>
+                                  )}
+                                  {surface === "wall" && (
+                                    <select
+                                      aria-label="wall adjacent space"
+                                      value={component.adjacency ?? "outside"}
+                                      onChange={(event) => {
+                                        const adjacency = event.target.value as TakeoffWallAdjacency;
+                                        updateRoomComponent(selectedRoom.id, component.id, {
+                                          adjacency,
+                                          assembly: adjacency === "outside" ? component.assembly : defaultWallAssemblyForAdjacency(adjacency),
+                                          label: component.label && !/exterior wall/i.test(component.label) ? component.label : wallAdjacencyLabel(adjacency),
+                                        });
+                                      }}
+                                    >
+                                      <option value="outside">Exterior</option>
+                                      <option value="garage">Garage</option>
+                                      <option value="attic">Attic</option>
+                                      <option value="crawlspace">Crawlspace</option>
+                                      <option value="conditioned">Conditioned</option>
+                                      <option value="unknown">Unknown</option>
+                                    </select>
+                                  )}
+                                  {surface === "glass" && (
+                                    <select
+                                      aria-label="glass solar exposure"
+                                      value={component.solarDirection ?? ""}
+                                      onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, {
+                                        solarDirection: event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined,
+                                        label: event.target.value === "Shaded" && (!component.label || component.label === "Window") ? "Shaded window" : component.label,
+                                      })}
+                                    >
+                                      <option value="">Wall direction</option>
+                                      <option value="Shaded">Shaded</option>
+                                      <option value="Skylight">Skylight</option>
                                     </select>
                                   )}
                                   <input
@@ -5538,6 +5974,8 @@ export function TakeoffApp() {
                                   <button onClick={() => removeRoomComponent(selectedRoom.id, component.id)}>Remove</button>
                                   <p className="takeoff-component-meta">
                                     <strong>{selectedDefinition?.code ?? component.assembly}</strong>
+                                    {isStaleCeilingWall ? " · Stale ceiling-generated wall" : ""}
+                                    {component.surface === "glass" && component.solarDirection ? ` · Solar ${component.solarDirection}` : ""}
                                     {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
                                     {" · "}{componentThermalSummary(selectedDefinition)}
                                   </p>
@@ -5777,16 +6215,24 @@ export function TakeoffApp() {
                           </select>
                         </div>
                         {suggestions.length ? suggestions.map((suggestion) => {
+                          const adjacentKinds = adjacentKindsByDirection(floor, selectedRoom).get(suggestion.direction) ?? [];
+                          const recommendation = recommendedWallTreatment(adjacentKinds, suggestedWallAssembly);
                           const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
-                            component.direction === suggestion.direction && Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
+                            component.direction === suggestion.direction &&
+                            component.adjacency === recommendation.adjacency &&
+                            component.assembly === recommendation.assembly &&
+                            Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
                           );
                           return (
                             <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
                               <span>
-                                Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} wall
-                                <small>{Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft</small>
+                                Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
+                                <small>
+                                  {Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft
+                                  {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")} · ${recommendation.assembly}` : ""}
+                                </small>
                               </span>
-                              <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, suggestedWallAssembly)}>
+                              <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, recommendation.assembly, recommendation.adjacency)}>
                                 {approved ? "Approved" : "Apply"}
                               </button>
                             </div>
@@ -5912,6 +6358,7 @@ export function TakeoffApp() {
                   const areaCheck = areaSurface ? roomAreaReconciliation(selectedRoom, areaSurface) : null;
                   const options = scheduleOptionsBySurface[surface];
                   const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
+                  const staleCeilingWallIds = new Set(staleGeneratedCeilingWallComponents(floor, selectedRoom).map((component) => component.id));
                   return (
                     <div key={surface} className="takeoff-component-editor">
                       <div className="takeoff-component-head">
@@ -5961,8 +6408,9 @@ export function TakeoffApp() {
                               ...exteriorDirections,
                               ...(isCompassDirection(component.direction) ? [component.direction] : []),
                             ]));
+                            const isStaleCeilingWall = staleCeilingWallIds.has(component.id);
                             return (
-                              <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""}`}>
+                              <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""}`}>
                                 <select
                                   value={component.assembly}
                                   onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
@@ -5978,6 +6426,41 @@ export function TakeoffApp() {
                                   >
                                     <option value="">Direction</option>
                                     {directionChoices.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
+                                  </select>
+                                )}
+                                {surface === "wall" && (
+                                  <select
+                                    aria-label="wall adjacent space"
+                                    value={component.adjacency ?? "outside"}
+                                    onChange={(event) => {
+                                      const adjacency = event.target.value as TakeoffWallAdjacency;
+                                      updateRoomComponent(selectedRoom.id, component.id, {
+                                        adjacency,
+                                        assembly: adjacency === "outside" ? component.assembly : defaultWallAssemblyForAdjacency(adjacency),
+                                        label: component.label && !/exterior wall/i.test(component.label) ? component.label : wallAdjacencyLabel(adjacency),
+                                      });
+                                    }}
+                                  >
+                                    <option value="outside">Exterior</option>
+                                    <option value="garage">Garage</option>
+                                    <option value="attic">Attic</option>
+                                    <option value="crawlspace">Crawlspace</option>
+                                    <option value="conditioned">Conditioned</option>
+                                    <option value="unknown">Unknown</option>
+                                  </select>
+                                )}
+                                {surface === "glass" && (
+                                  <select
+                                    aria-label="glass solar exposure"
+                                    value={component.solarDirection ?? ""}
+                                    onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, {
+                                      solarDirection: event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined,
+                                      label: event.target.value === "Shaded" && (!component.label || component.label === "Window") ? "Shaded window" : component.label,
+                                    })}
+                                  >
+                                    <option value="">Wall direction</option>
+                                    <option value="Shaded">Shaded</option>
+                                    <option value="Skylight">Skylight</option>
                                   </select>
                                 )}
                                 <input
@@ -5997,6 +6480,8 @@ export function TakeoffApp() {
                                 <button onClick={() => removeRoomComponent(selectedRoom.id, component.id)}>Remove</button>
                                 <p className="takeoff-component-meta">
                                   <strong>{selectedDefinition?.code ?? component.assembly}</strong>
+                                  {isStaleCeilingWall ? " · Stale ceiling-generated wall" : ""}
+                                  {component.surface === "glass" && component.solarDirection ? ` · Solar ${component.solarDirection}` : ""}
                                   {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
                                   {" · "}{componentThermalSummary(selectedDefinition)}
                                 </p>
@@ -6048,6 +6533,33 @@ export function TakeoffApp() {
           )}
         </aside>
       </section>
+      {staleCeilingWallPrompt && (
+        <div className="modal-backdrop open-dialog-backdrop" onClick={() => setStaleCeilingWallPrompt(null)}>
+          <div className="modal takeoff-stale-ceiling-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Generated wall sections still attached</h2>
+              <button className="modal-close" onClick={() => setStaleCeilingWallPrompt(null)}>x</button>
+            </div>
+            <p className="takeoff-muted">
+              {staleCeilingWallPrompt.roomName} has ceiling-generated wall components that no longer match the current ceiling shape.
+            </p>
+            <div className="takeoff-stale-ceiling-list">
+              {staleCeilingWallPrompt.components.map((component) => (
+                <span key={component.id}>
+                  <strong>{component.label}</strong>
+                  {component.source ? ` · ${component.source}` : ""}
+                  {" · "}{Math.round(component.area)} sf
+                </span>
+              ))}
+            </div>
+            <div className="takeoff-form-actions">
+              <button className="toolbar-primary" onClick={removePromptedStaleCeilingWalls}>Remove Generated Walls</button>
+              <button onClick={reviewPromptedStaleCeilingWalls}>Review</button>
+              <button onClick={() => setStaleCeilingWallPrompt(null)}>Keep For Now</button>
+            </div>
+          </div>
+        </div>
+      )}
       {(pendingOpeningTarget || editingOpeningTarget) && openingPlacement && (() => {
         const editingRoom = editingOpeningTarget ? floor.rooms.find((room) => room.id === editingOpeningTarget.roomId) : null;
         const editingComponent = editingRoom && editingOpeningTarget
@@ -6055,7 +6567,7 @@ export function TakeoffApp() {
           : null;
         const targetRoomName = pendingOpeningTarget?.roomName ?? editingRoom?.name ?? "room";
         const targetDirection = pendingOpeningTarget?.direction ?? editingComponent?.direction ?? "wall";
-        const targetAdjacent = pendingOpeningTarget?.adjacentKinds ?? [];
+        const targetAdjacent = pendingOpeningTarget?.adjacentKinds ?? (editingRoom && editingComponent ? adjacentKindsForPlacedOpening(floor, editingRoom, editingComponent) : []);
         const selectedDefinition = scheduleOptionsBySurface[openingPlacement.surface].find((option) => option.code === openingPlacement.assembly);
         return (
           <div className="modal-backdrop open-dialog-backdrop" onClick={closeOpeningDialog}>
@@ -6090,10 +6602,24 @@ export function TakeoffApp() {
                     ))}
                   </select>
                 </label>
+                {openingPlacement.surface === "glass" && (
+                  <label>
+                    Solar
+                    <select
+                      value={openingPlacement.solarDirection ?? ""}
+                      onChange={(event) => updateOpeningPlacement({ solarDirection: event.target.value ? event.target.value as NonNullable<NonNullable<OpeningPlacement>["solarDirection"]> : undefined })}
+                    >
+                      <option value="">Use wall direction</option>
+                      <option value="Shaded">Shaded</option>
+                      <option value="Skylight">Skylight</option>
+                    </select>
+                  </label>
+                )}
                 <p className="takeoff-component-meta takeoff-opening-component-meta">
                   <strong>{selectedDefinition?.code ?? openingPlacement.assembly}</strong>
                   {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
                   {" · "}{componentThermalSummary(selectedDefinition)}
+                  {openingPlacement.surface === "glass" && openingPlacement.solarDirection ? ` · exports as ${openingPlacement.solarDirection}` : ""}
                 </p>
                 <label>
                   Width ft

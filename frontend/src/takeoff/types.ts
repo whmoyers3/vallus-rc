@@ -23,9 +23,10 @@ export type TakeoffRoomComponent = {
   source?: TakeoffRoomComponentSource;
   adjacency?: TakeoffWallAdjacency;
   geometryLabel?: string;
+  solarDirection?: "Shaded" | "Skylight";
 };
 
-export type TakeoffAdjacentSpaceKind = "garage" | "attic" | "crawl" | "exterior";
+export type TakeoffAdjacentSpaceKind = "garage" | "attic" | "crawl" | "covered_porch" | "exterior";
 
 export type TakeoffAdjacentSpace = {
   id: string;
