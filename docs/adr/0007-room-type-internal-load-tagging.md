@@ -4,11 +4,13 @@
 
 ## Context
 
-A takeoff-authored project must supply internal gains the engine does not auto-derive.
-Lighting and infiltration are auto-generated (`auto_lighting_w_per_sf`, `auto_infiltration`),
-but **people and appliances are explicit per-room line items** (`internal_people` ×
-`PEOPLE_SENSIBLE_BTUH = 256`; `internal_watts` for appliances). The takeoff currently emits
-none, so every room is missing its occupant and appliance gain.
+A takeoff-authored project must supply enough information for the engine to create
+internal gains. Lighting and infiltration are auto-generated (`auto_lighting_w_per_sf`,
+`auto_infiltration`). People and appliances are generated from room semantic tags when a
+level opts in with `auto_internal_gains`; legacy/imported projects may still provide
+explicit `internal_people` / `internal_watts` line items. Before this ADR, the takeoff
+emitted neither explicit internal-gain items nor semantic room tags, so every
+takeoff-authored room was missing its occupant and appliance gain.
 
 Investigation of the engine clarified two things often conflated:
 
@@ -28,16 +30,19 @@ per-room occupancy (e.g. guests in two media rooms).
 semantic type (bedroom / kitchen / entertainment / laundry / plain) set in the floor-plan
 view. The default appliance watts and seed occupant count for each type live in a
 room-type internal-load catalog in `constants.py` (e.g. kitchen 680 W, entertainment 250 W
-+ 1 person, laundry 200 W, bedroom 1 person), resolved from the type. The takeoff does not
-hardcode the numbers. Mirrors the structured-boundary pattern (ADR 0005): tag the type,
-resolve the value from a catalog, allow override.
++ 1 person, laundry 200 W, bedroom 1 person), resolved from the type. The takeoff emits
+the room tag and turns on level-level `auto_internal_gains`; the engine creates the
+people/appliance load results from the catalog. The takeoff does not hardcode the numbers.
+Mirrors the structured-boundary pattern (ADR 0005): tag the type, resolve the value from a
+catalog, allow override.
 
 **2. Per-room override.** The type sets defaults; per-room appliance-watt and occupant
 overrides are always available (double-oven kitchen, large AV wall, guests).
 
 **3. Occupant count is per-room and unconstrained.** It drives only `internal_people`
 sensible gain. No house-level total is enforced. The per-person 256 BTU/hr stays in the
-engine; the takeoff emits a count, never a BTU value.
+engine; when overrides are needed, the takeoff emits a count/watts override, never a BTU
+value.
 
 **4. Bedroom count is project-level and ventilation-only.** Derived from the count of
 bedroom-tagged rooms (no separate field). Its sole load role is future ASHRAE 62.2
@@ -50,7 +55,9 @@ warnings in the existing validation panel (only `location` hard-blocks save).
 
 ## Consequences
 
-- Takeoff gains a room-type toggle and emits `internal_people` / `internal_watts` line items.
+- Takeoff gains a room-type toggle and emits `room_type` plus optional
+  `people_override` / `appliance_watts_override`; the engine emits the generated internal
+  load results when `auto_internal_gains` is enabled.
 - Bedroom count is free from tagging and feeds only the (future) 62.2 ventilation calc.
 - Langford round trip needs correct per-room occupants/appliances; bedroom count and
   ventilation are not in play for it.

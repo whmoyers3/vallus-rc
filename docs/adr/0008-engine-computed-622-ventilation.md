@@ -61,6 +61,21 @@ that deviated). Mirrors the imported > computed precedence already in `CONTEXT.m
 - The formula stops being duplicated once lifted to a shared location.
 - Bedrooms (from bedroom tags, ADR 0007) feeds this and nothing else in the engine.
 
+## Update (2026-06-24) — shared frontend rule and takeoff toggle
+
+The bedroom rule is now shared in `frontend/src/loadRules.ts` as
+`ventilationCfmForBedrooms(bedrooms)`, and both the calculator and takeoff call it. The
+takeoff stores `mechanicalVentilation` / `ventilationCfm`, derives the default CFM from
+bedroom-tagged rooms, and emits `outside_air_cfm` plus metadata when the toggle is enabled.
+
+One engine detail is intentionally left unchanged in this implementation pass: existing
+calculator and Salas-import payloads represent this as `infiltration.mode = "standard_ach"`
+with `outside_air_cfm`, which the current engine treats as an ACH-scaled air load. The
+engine also has a separate `mechanical_ventilation` mode that creates explicit ventilation
+line results. Moving the app/import path onto that mode would change load behavior and
+needs its own battery-backed ADR/update rather than being folded into the formula-sharing
+work.
+
 ## Out of scope
 
 - **Outdoor-air latent load.** `ventilation_load` remains sensible-only; latent stays

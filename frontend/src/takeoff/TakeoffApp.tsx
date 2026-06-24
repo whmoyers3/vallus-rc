@@ -4,6 +4,7 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import polygonClipping, { type MultiPolygon, type Polygon, type Ring } from "polygon-clipping";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { ventilationCfmForBedrooms } from "../loadRules";
 import type {
   TakeoffAdjacentSpace,
   TakeoffAdjacentSpaceKind,
@@ -149,6 +150,11 @@ function makeInitialFloor(): TakeoffFloor {
     id: "floor-1",
     name: "First Floor",
     authoringMode: "grid_manual",
+    coordinateSpace: "world_feet",
+    elevation: 0,
+    floorToFloorHeight: 10,
+    alignment: undefined,
+    referencePoints: [],
     designGrid: { width: 60, depth: 45 },
     scale: { feetPerGrid: 1, gridSnapInches: 6 },
     defaultCeilingHeight: 9,
@@ -164,6 +170,8 @@ function makeInitialFloor(): TakeoffFloor {
 function makeTakeoffProject(
   name: string,
   location: string,
+  mechanicalVentilation: boolean,
+  ventilationCfm: number,
   frontDoorFaces: TakeoffProject["frontDoorFaces"],
   floor: TakeoffFloor,
   componentSchedule: TakeoffComponentDefinition[],
@@ -172,6 +180,8 @@ function makeTakeoffProject(
     schemaVersion: "takeoff.v1",
     name,
     location,
+    mechanicalVentilation,
+    ventilationCfm,
     frontDoorFaces,
     componentSchedule,
     floors: [floor],
@@ -602,8 +612,20 @@ function lineLength(line: Pick<TakeoffScaleLine, "start" | "end">) {
   return Math.hypot(line.end.x - line.start.x, line.end.y - line.start.y);
 }
 
+function scaleLineSourcePoints(line: TakeoffScaleLine) {
+  return {
+    start: line.sourceStart ?? line.start,
+    end: line.sourceEnd ?? line.end,
+  };
+}
+
 function scalePoint(point: TakeoffPoint, factor: number): TakeoffPoint {
   return { x: Number((point.x * factor).toFixed(3)), y: Number((point.y * factor).toFixed(3)) };
+}
+
+function unscalePoint(point: TakeoffPoint, factor: number): TakeoffPoint {
+  if (!factor) return point;
+  return { x: Number((point.x / factor).toFixed(3)), y: Number((point.y / factor).toFixed(3)) };
 }
 
 function scaleRoom(room: TakeoffRectRoom, factor: number): TakeoffRectRoom {
@@ -646,7 +668,7 @@ function scaleRect<T extends { x: number; y: number; width: number; depth: numbe
 function calibrationFactor(lines: TakeoffScaleLine[]) {
   const factors = lines
     .map((line) => {
-      const measured = lineLength(line);
+      const measured = lineLength(scaleLineSourcePoints(line));
       return measured > 0 && line.knownFeet > 0 ? line.knownFeet / measured : 0;
     })
     .filter((factor) => factor > 0);
@@ -1219,6 +1241,8 @@ function buildVrcPayload(project: TakeoffProject) {
     zone_id: "zone-default",
   }));
   const bedroomCount = floor.rooms.filter((room) => room.roomType === "bedroom").length;
+  const resolvedBedroomCount = Math.max(bedroomCount, 1);
+  const resolvedVentilationCfm = project.ventilationCfm || ventilationCfmForBedrooms(resolvedBedroomCount);
   const lineItems = floor.rooms.flatMap((room) => {
     return payloadComponentsForRoom(room).map((component) => ({
       name: `${room.name} ${component.label || component.assembly}`,
@@ -1245,12 +1269,15 @@ function buildVrcPayload(project: TakeoffProject) {
         cooling_safety_factor: 1.1,
         heating_safety_factor: 1.15,
       },
-      infiltration: { mode: "standard_ach" },
+      infiltration: project.mechanicalVentilation
+        ? { mode: "standard_ach", outside_air_cfm: resolvedVentilationCfm }
+        : { mode: "standard_ach" },
       metadata: {
         ach50: 5,
-        bedrooms: Math.max(bedroomCount, 1),
+        bedrooms: resolvedBedroomCount,
         seer: 14,
         front_door_faces: project.frontDoorFaces,
+        ...(project.mechanicalVentilation ? { mechanical_ventilation: true, outside_air_cfm: resolvedVentilationCfm } : {}),
         units: [{ id: "unit-whole-house", name: "Whole House", selected_tons: 1, selected_kw: 5 }],
         zones: [{ id: "zone-default", name: floor.name, unit_id: "unit-whole-house" }],
         takeoff_schema_version: project.schemaVersion,
@@ -1306,6 +1333,11 @@ function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFlo
     id: rawFloor.id || fallback.id,
     name: rawFloor.name || fallback.name,
     authoringMode: rawFloor.authoringMode || fallback.authoringMode,
+    coordinateSpace: rawFloor.coordinateSpace || "world_feet",
+    elevation: rawFloor.elevation ?? fallback.elevation,
+    floorToFloorHeight: rawFloor.floorToFloorHeight ?? fallback.floorToFloorHeight,
+    alignment: rawFloor.alignment,
+    referencePoints: rawFloor.referencePoints ?? [],
     designGrid: { ...fallback.designGrid, ...(rawFloor.designGrid ?? {}) },
     scale: { ...fallback.scale, ...(rawFloor.scale ?? {}) },
     defaultCeilingHeight: rawFloor.defaultCeilingHeight ?? fallback.defaultCeilingHeight,
@@ -1331,6 +1363,8 @@ function normalizeTakeoffProject(rawProject: Partial<TakeoffProject>): TakeoffPr
   return makeTakeoffProject(
     rawProject.name || "Takeoff V1 Draft",
     rawProject.location ?? "",
+    Boolean(rawProject.mechanicalVentilation),
+    Number(rawProject.ventilationCfm ?? 0),
     frontDoorFaces,
     normalizeFloor(rawProject.floors?.[0]),
     rawProject.componentSchedule?.length ? rawProject.componentSchedule : defaultComponentSchedule,
@@ -2040,6 +2074,8 @@ function roomTypeLabel(roomType?: TakeoffRoomType) {
 export function TakeoffApp() {
   const [projectName, setProjectName] = useState("Takeoff V1 Draft");
   const [location, setLocation] = useState("");
+  const [mechanicalVentilation, setMechanicalVentilation] = useState(false);
+  const [ventilationCfm, setVentilationCfm] = useState(0);
   const [frontDoorFaces, setFrontDoorFaces] = useState<(typeof directionOptions)[number]>("S");
   const [calcLoading, setCalcLoading] = useState(false);
   const [calcResult, setCalcResult] = useState<{ facing: string; cooling: number; heating: number; tons: number } | null>(null);
@@ -2048,7 +2084,7 @@ export function TakeoffApp() {
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
-  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", "S", makeInitialFloor(), defaultComponentSchedule)));
+  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", false, 0, "S", makeInitialFloor(), defaultComponentSchedule)));
   const [saveLoading, setSaveLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
   const [openDialogLoading, setOpenDialogLoading] = useState(false);
@@ -2108,9 +2144,11 @@ export function TakeoffApp() {
   }, [referenceUrl]);
 
   const takeoffProject = useMemo<TakeoffProject>(
-    () => makeTakeoffProject(projectName, location, frontDoorFaces, floor, componentSchedule),
-    [componentSchedule, floor, frontDoorFaces, location, projectName],
+    () => makeTakeoffProject(projectName, location, mechanicalVentilation, ventilationCfm, frontDoorFaces, floor, componentSchedule),
+    [componentSchedule, floor, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
   );
+  const taggedBedroomCount = Math.max(floor.rooms.filter((room) => room.roomType === "bedroom").length, 1);
+  const suggestedVentilationCfm = ventilationCfmForBedrooms(taggedBedroomCount);
   const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
   const serializedTakeoff = useMemo(() => takeoffSnapshot(persistableTakeoff), [persistableTakeoff]);
   const isDirty = takeoffId === null || serializedTakeoff !== savedSnapshot;
@@ -2932,6 +2970,8 @@ export function TakeoffApp() {
       orientation: calibrationOrientation,
       start: calibrationStart,
       end,
+      sourceStart: unscalePoint(calibrationStart, floor.calibration.appliedFactor || 1),
+      sourceEnd: unscalePoint(end, floor.calibration.appliedFactor || 1),
       knownFeet: Number(measured.toFixed(1)),
     };
 
@@ -2974,45 +3014,54 @@ export function TakeoffApp() {
       return;
     }
 
-    setFloor((current) => ({
-      ...current,
-      designGrid: {
-        width: Number((current.designGrid.width * factor).toFixed(3)),
-        depth: Number((current.designGrid.depth * factor).toFixed(3)),
-      },
-      conditionedPerimeter: {
-        width: Number((current.conditionedPerimeter.width * factor).toFixed(3)),
-        depth: Number((current.conditionedPerimeter.depth * factor).toFixed(3)),
-      },
-      exteriorPolygon: current.exteriorPolygon.map((point) => scalePoint(point, factor)),
-      rooms: current.rooms.map((room) => scaleRoom(room, factor)),
-      adjacentSpaces: current.adjacentSpaces?.map((space) => scaleAdjacentSpace(space, factor)) ?? [],
-      reference: current.reference
-        ? {
-            ...current.reference,
-            crop: current.reference.crop ? scaleRect(current.reference.crop, factor) : current.reference.crop,
-          }
-        : current.reference,
-      attributedSlices: current.attributedSlices?.map((slice) => ({
-        ...slice,
-        cells: slice.cells.map((cell) => scaleRect(cell, factor)),
-      })),
-      calibration: {
-        ...current.calibration,
-        lines: current.calibration.lines.map((line) => scaleLine(line, factor)),
-        confirmed: true,
-        appliedFactor: Number((current.calibration.appliedFactor * factor).toFixed(5)),
-        areaConfirmed: false,
-      },
-    }));
+    setFloor((current) => {
+      const previousFactor = current.calibration.appliedFactor || 1;
+      const relativeFactor = factor / previousFactor;
+      return {
+        ...current,
+        coordinateSpace: "world_feet",
+        designGrid: {
+          width: Number((current.designGrid.width * relativeFactor).toFixed(3)),
+          depth: Number((current.designGrid.depth * relativeFactor).toFixed(3)),
+        },
+        conditionedPerimeter: {
+          width: Number((current.conditionedPerimeter.width * relativeFactor).toFixed(3)),
+          depth: Number((current.conditionedPerimeter.depth * relativeFactor).toFixed(3)),
+        },
+        exteriorPolygon: current.exteriorPolygon.map((point) => scalePoint(point, relativeFactor)),
+        rooms: current.rooms.map((room) => scaleRoom(room, relativeFactor)),
+        adjacentSpaces: current.adjacentSpaces?.map((space) => scaleAdjacentSpace(space, relativeFactor)) ?? [],
+        reference: current.reference
+          ? {
+              ...current.reference,
+              crop: current.reference.crop ? scaleRect(current.reference.crop, relativeFactor) : current.reference.crop,
+            }
+          : current.reference,
+        attributedSlices: current.attributedSlices?.map((slice) => ({
+          ...slice,
+          cells: slice.cells.map((cell) => scaleRect(cell, relativeFactor)),
+        })),
+        calibration: {
+          ...current.calibration,
+          lines: current.calibration.lines.map((line) => ({
+            ...scaleLine(line, relativeFactor),
+            sourceStart: line.sourceStart ?? line.start,
+            sourceEnd: line.sourceEnd ?? line.end,
+          })),
+          confirmed: true,
+          appliedFactor: Number(factor.toFixed(5)),
+          areaConfirmed: false,
+        },
+      };
+    });
     setWorkflowStep("trace");
     setTraceTool("exterior");
     setCalibrationStart(null);
-    setMessage(`Scale applied. Average correction factor: ${factor.toFixed(3)}.`);
+    setMessage(`Scale recorded in world feet. Average correction factor: ${factor.toFixed(3)}.`);
   }
 
   function skipCalibration() {
-    setFloor((current) => ({ ...current, calibration: { ...current.calibration, confirmed: true } }));
+    setFloor((current) => ({ ...current, coordinateSpace: "world_feet", calibration: { ...current.calibration, confirmed: true } }));
     setWorkflowStep("trace");
     setTraceTool("exterior");
     setMessage("Calibration skipped. Trace carefully and confirm the computed floor area before room work.");
@@ -3616,6 +3665,8 @@ export function TakeoffApp() {
       }
       setProjectName(loadedProject.name);
       setLocation(loadedProject.location ?? "");
+      setMechanicalVentilation(Boolean(loadedProject.mechanicalVentilation));
+      setVentilationCfm(Number(loadedProject.ventilationCfm ?? 0));
       setFrontDoorFaces(loadedProject.frontDoorFaces);
       setComponentSchedule(loadedProject.componentSchedule?.length ? loadedProject.componentSchedule : defaultComponentSchedule);
       setFloor(loadedProject.floors[0]);
@@ -3662,6 +3713,7 @@ export function TakeoffApp() {
       setFloor((current) => ({
         ...current,
         authoringMode: kind === "pdf" ? "pdf_trace" : "image_trace",
+        coordinateSpace: "world_feet",
         reference: {
           filename: file.name,
           kind,
@@ -3807,6 +3859,33 @@ export function TakeoffApp() {
                 {directionOptions.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
               </select>
             </label>
+            <label className="check-field">Mechanical ventilation
+              <input
+                type="checkbox"
+                checked={mechanicalVentilation}
+                onChange={(event) => {
+                  const on = event.target.checked;
+                  setMechanicalVentilation(on);
+                }}
+              />
+            </label>
+            {mechanicalVentilation && (
+              <>
+                <label>
+                  Ventilation CFM
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={ventilationCfm || suggestedVentilationCfm}
+                    onChange={(event) => setVentilationCfm(Number(event.target.value))}
+                  />
+                </label>
+                <p className="takeoff-muted">
+                  Bedroom tags: {taggedBedroomCount} · suggested {suggestedVentilationCfm} CFM.
+                </p>
+              </>
+            )}
           </section>
 
           <section className="takeoff-panel">
@@ -3861,7 +3940,7 @@ export function TakeoffApp() {
               {calibrationStart && <p className="takeoff-note">First point is set. Click the other end of the known dimension.</p>}
               <div className="takeoff-scale-list">
                 {floor.calibration.lines.map((line) => {
-                  const measured = lineLength(line);
+                  const measured = lineLength(scaleLineSourcePoints(line));
                   const factor = measured > 0 && line.knownFeet > 0 ? line.knownFeet / measured : 0;
                   return (
                     <div key={line.id} className="takeoff-scale-row">
@@ -3873,7 +3952,7 @@ export function TakeoffApp() {
                         Known ft
                         <input type="number" min="0" step="0.1" value={line.knownFeet} onChange={(event) => updateScaleLine(line.id, { knownFeet: Number(event.target.value) })} />
                       </label>
-                      <span>{measured.toFixed(1)} grid ft · {factor ? factor.toFixed(3) : "-"}x</span>
+                      <span>{measured.toFixed(1)} source ft · {factor ? factor.toFixed(3) : "-"}x</span>
                       <button onClick={() => removeScaleLine(line.id)}>Remove</button>
                     </div>
                   );
@@ -3937,6 +4016,26 @@ export function TakeoffApp() {
                 }))}
               />
             </label>
+            <label>
+              Floor elevation ft
+              <input
+                type="number"
+                step="0.5"
+                value={floor.elevation ?? 0}
+                onChange={(event) => updateFloor({ elevation: Number(event.target.value), coordinateSpace: "world_feet" })}
+              />
+            </label>
+            <label>
+              Floor-to-floor height ft
+              <input
+                type="number"
+                min="0"
+                step="0.5"
+                value={floor.floorToFloorHeight ?? 10}
+                onChange={(event) => updateFloor({ floorToFloorHeight: Number(event.target.value), coordinateSpace: "world_feet" })}
+              />
+            </label>
+            <p className="takeoff-muted">Coordinates are stored as world feet; PDF/image crop and calibration are authoring inputs.</p>
           </section>
 
           <section className="takeoff-panel">

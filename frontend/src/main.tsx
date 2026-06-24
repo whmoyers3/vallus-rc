@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TakeoffApp } from "./takeoff/TakeoffApp";
 import PlanSchematic from "./PlanSchematic";
+import { ventilationCfmForBedrooms } from "./loadRules";
 
 type AssemblyRow = { code: string; u_value?: number | null; shgc?: number | null; label: string };
 type TypeCategory = "Wall" | "Glass" | "Ceiling" | "Floor" | "Door";
@@ -2236,7 +2237,7 @@ function App() {
                   setProject((current) => ({
                     ...current,
                     mechanical_ventilation: on,
-                    ventilation_cfm: on && !current.ventilation_cfm ? 15 * ((current.bedrooms || 0) + 1) : current.ventilation_cfm,
+                    ventilation_cfm: on && !current.ventilation_cfm ? ventilationCfmForBedrooms(current.bedrooms || 0) : current.ventilation_cfm,
                   }));
                   setLoads(null);
                   setWorstCase(null);

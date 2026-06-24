@@ -75,6 +75,8 @@ export type TakeoffScaleLine = {
   orientation: "horizontal" | "vertical" | "any";
   start: TakeoffPoint;
   end: TakeoffPoint;
+  sourceStart?: TakeoffPoint;
+  sourceEnd?: TakeoffPoint;
   knownFeet: number;
 };
 
@@ -82,6 +84,25 @@ export type TakeoffFloor = {
   id: string;
   name: string;
   authoringMode: TakeoffAuthoringMode;
+  coordinateSpace?: "world_feet";
+  elevation?: number;
+  floorToFloorHeight?: number;
+  alignment?: {
+    referenceFloorId?: string;
+    transform?: {
+      translateX: number;
+      translateY: number;
+      rotationDeg: number;
+      scale: number;
+    };
+    residualFt?: number;
+  };
+  referencePoints?: Array<{
+    id: string;
+    label?: string;
+    local: TakeoffPoint;
+    world?: TakeoffPoint;
+  }>;
   designGrid: {
     width: number;
     depth: number;
@@ -133,6 +154,8 @@ export type TakeoffProject = {
   schemaVersion: "takeoff.v1";
   name: string;
   location?: string;
+  mechanicalVentilation?: boolean;
+  ventilationCfm?: number;
   frontDoorFaces: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
   componentSchedule?: TakeoffComponentDefinition[];
   floors: TakeoffFloor[];
