@@ -823,6 +823,16 @@ function polygonBounds(points: TakeoffPoint[]) {
   return { x: minX, y: minY, width: maxX - minX, depth: maxY - minY };
 }
 
+function rectsBounds(rects: PlanRect[]) {
+  const usableRects = rects.filter((rect) => rect.width > 0 && rect.depth > 0);
+  if (usableRects.length === 0) return null;
+  const minX = Math.min(...usableRects.map((rect) => rect.x));
+  const minY = Math.min(...usableRects.map((rect) => rect.y));
+  const maxX = Math.max(...usableRects.map((rect) => rect.x + rect.width));
+  const maxY = Math.max(...usableRects.map((rect) => rect.y + rect.depth));
+  return { x: minX, y: minY, width: maxX - minX, depth: maxY - minY };
+}
+
 function pointOnSegment(point: TakeoffPoint, a: TakeoffPoint, b: TakeoffPoint) {
   const cross = (point.y - a.y) * (b.x - a.x) - (point.x - a.x) * (b.y - a.y);
   if (Math.abs(cross) > 0.001) return false;
@@ -3902,6 +3912,15 @@ export function TakeoffApp() {
     setMessage("Zoomed to 800%.");
   }
 
+  function planFitBounds() {
+    if (floor.exteriorPolygon.length >= 3) return polygonBounds(floor.exteriorPolygon);
+    const roomBounds = rectsBounds(floor.rooms.map((room) => polygonBounds(roomCorners(room))));
+    if (roomBounds) return roomBounds;
+    if (floor.reference) return referenceDisplay;
+    if (floor.conditionedPerimeter.width > 0 && floor.conditionedPerimeter.depth > 0) return footprintBounds(floor);
+    return { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
+  }
+
   function fitGrid() {
     setZoom(1);
     requestAnimationFrame(() => {
@@ -3912,16 +3931,19 @@ export function TakeoffApp() {
   }
 
   function fitPlan() {
-    const planWidth = Math.max(bounds.width, 1);
-    const planDepth = Math.max(bounds.depth, 1);
+    const targetBounds = planFitBounds();
+    const planWidth = Math.max(targetBounds.width, 1);
+    const planDepth = Math.max(targetBounds.depth, 1);
     const fitZoom = Math.min((canvasWidth - 56) / (planWidth * baseScale), (canvasHeight - 56) / (planDepth * baseScale));
-    const nextZoom = clampPlanZoom(Math.min(1, fitZoom));
-    setZoom(Number(nextZoom.toFixed(2)));
+    const nextZoom = clampPlanZoom(fitZoom);
+    setZoom(nextZoom);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!canvasScrollRef.current) return;
-        canvasScrollRef.current.scrollLeft = Math.max(0, offsetX + bounds.x * baseScale * nextZoom - 24);
-        canvasScrollRef.current.scrollTop = Math.max(0, offsetY + bounds.y * baseScale * nextZoom - 24);
+        const targetCenterX = offsetX + (targetBounds.x + targetBounds.width / 2) * baseScale * nextZoom;
+        const targetCenterY = offsetY + (targetBounds.y + targetBounds.depth / 2) * baseScale * nextZoom;
+        canvasScrollRef.current.scrollLeft = Math.max(0, targetCenterX - canvasScrollRef.current.clientWidth / 2);
+        canvasScrollRef.current.scrollTop = Math.max(0, targetCenterY - canvasScrollRef.current.clientHeight / 2);
       });
     });
   }
