@@ -3921,6 +3921,14 @@ export function TakeoffApp() {
     return { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
   }
 
+  function planViewportSize() {
+    const scroll = canvasScrollRef.current;
+    return {
+      width: Math.max(canvasWidth, scroll?.clientWidth ?? canvasWidth),
+      height: Math.max(canvasHeight, scroll?.clientHeight ?? canvasHeight, Math.round(window.innerHeight * 0.62)),
+    };
+  }
+
   function fitGrid() {
     setZoom(1);
     requestAnimationFrame(() => {
@@ -3934,7 +3942,8 @@ export function TakeoffApp() {
     const targetBounds = planFitBounds();
     const planWidth = Math.max(targetBounds.width, 1);
     const planDepth = Math.max(targetBounds.depth, 1);
-    const fitZoom = Math.min((canvasWidth - 56) / (planWidth * baseScale), (canvasHeight - 56) / (planDepth * baseScale));
+    const viewport = planViewportSize();
+    const fitZoom = Math.min((viewport.width - 56) / (planWidth * baseScale), (viewport.height - 56) / (planDepth * baseScale));
     const nextZoom = clampPlanZoom(fitZoom);
     setZoom(nextZoom);
     requestAnimationFrame(() => {
