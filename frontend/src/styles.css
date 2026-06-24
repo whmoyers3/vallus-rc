@@ -1112,6 +1112,20 @@ button.toolbar-primary:hover {
   font-size: 12px;
 }
 
+.takeoff-room-tile em {
+  align-self: start;
+  background: #e8f3ec;
+  border: 1px solid #bed9c9;
+  border-radius: 999px;
+  color: #23533c;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  justify-self: start;
+  line-height: 1.2;
+  padding: 2px 7px;
+}
+
 .takeoff-room-tile--selected {
   background: #eef5fb;
   border-color: #7fb0d5;

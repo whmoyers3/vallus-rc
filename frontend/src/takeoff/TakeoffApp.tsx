@@ -110,6 +110,13 @@ const roomTileMetrics: Array<{ id: RoomTileMetric; label: string }> = [
   { id: "wall", label: "Wall" },
   { id: "glass", label: "Glass" },
 ];
+const roomTypeOptions: Array<{ id: TakeoffRoomType; label: string; shortLabel: string }> = [
+  { id: "plain", label: "Plain (no internal load)", shortLabel: "Plain" },
+  { id: "bedroom", label: "Bedroom (1 person)", shortLabel: "Bedroom" },
+  { id: "kitchen", label: "Kitchen (680 W)", shortLabel: "Kitchen" },
+  { id: "entertainment", label: "Entertainment (250 W + 1 person)", shortLabel: "Entertainment" },
+  { id: "laundry", label: "Laundry (200 W)", shortLabel: "Laundry" },
+];
 const planReviewModes: Array<{ id: PlanReviewMode; label: string }> = [
   { id: "plan", label: "Plan" },
   { id: "floor", label: "Floor" },
@@ -2024,6 +2031,10 @@ function nextScheduleSlotCode(category: TakeoffComponentCategory, schedule: Take
 
 function scheduleIdFor(component: Pick<TakeoffComponentDefinition, "code" | "uValue" | "shgc" | "description">) {
   return `${component.code}-${component.uValue ?? "x"}-${component.shgc ?? "x"}-${component.description}`.replace(/\s+/g, "-");
+}
+
+function roomTypeLabel(roomType?: TakeoffRoomType) {
+  return roomTypeOptions.find((option) => option.id === (roomType ?? "plain"))?.shortLabel ?? "Plain";
 }
 
 export function TakeoffApp() {
@@ -4477,6 +4488,9 @@ export function TakeoffApp() {
                       >
                         <strong>{room.name}</strong>
                         <span>{metric.value} {metric.label}</span>
+                        {room.roomType && room.roomType !== "plain" && (
+                          <em>{roomTypeLabel(room.roomType)}</em>
+                        )}
                       </button>
                     );
                   })}
@@ -4580,6 +4594,17 @@ export function TakeoffApp() {
                     <label>
                       Name
                       <input value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
+                    </label>
+                    <label>
+                      Room type
+                      <select
+                        value={selectedRoom.roomType ?? "plain"}
+                        onChange={(event) => updateRoom(selectedRoom.id, { roomType: event.target.value as TakeoffRoomType })}
+                      >
+                        {roomTypeOptions.map((option) => (
+                          <option key={option.id} value={option.id}>{option.label}</option>
+                        ))}
+                      </select>
                     </label>
                     <label>
                       Ceiling height ft
@@ -5149,11 +5174,9 @@ export function TakeoffApp() {
                     value={selectedRoom.roomType ?? "plain"}
                     onChange={(event) => updateRoom(selectedRoom.id, { roomType: event.target.value as TakeoffRoomType })}
                   >
-                    <option value="plain">Plain (no internal load)</option>
-                    <option value="bedroom">Bedroom (1 person)</option>
-                    <option value="kitchen">Kitchen (680 W)</option>
-                    <option value="entertainment">Entertainment (250 W + 1 person)</option>
-                    <option value="laundry">Laundry (200 W)</option>
+                    {roomTypeOptions.map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
                   </select>
                 </label>
                 <label>
