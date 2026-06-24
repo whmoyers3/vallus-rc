@@ -29,6 +29,10 @@ const { difference, intersection, union } = polygonClipping;
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
 const takeoffReferenceMaxBytes = 7 * 1024 * 1024;
+const minPlanZoom = 0.5;
+const maxPlanZoom = 8;
+const planZoomStep = 0.25;
+const zoomHoldDelayMs = 2000;
 const componentCategories: TakeoffComponentCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
 const defaultComponentSchedule: TakeoffComponentDefinition[] = [
   { id: "default-W1", code: "W1", category: "Wall", uValue: 0.077, description: "Above Grade 2x4 R-13 batt", source: "default" },
@@ -2372,6 +2376,8 @@ export function TakeoffApp() {
   const [takeoffJsonOpen, setTakeoffJsonOpen] = useState(false);
   const [payloadPreviewOpen, setPayloadPreviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const zoomInHoldTimerRef = useRef<number | null>(null);
+  const zoomInHoldTriggeredRef = useRef(false);
   const [planReviewMode, setPlanReviewMode] = useState<PlanReviewMode>("plan");
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
   const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("trace");
@@ -2408,6 +2414,12 @@ export function TakeoffApp() {
       if (referenceUrl) revokeReferenceUrl(referenceUrl);
     };
   }, [referenceUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (zoomInHoldTimerRef.current !== null) window.clearTimeout(zoomInHoldTimerRef.current);
+    };
+  }, []);
 
   const takeoffProject = useMemo<TakeoffProject>(
     () => makeTakeoffProject(projectName, location, mechanicalVentilation, ventilationCfm, frontDoorFaces, floor, componentSchedule),
@@ -3886,6 +3898,50 @@ export function TakeoffApp() {
     setMessage(floor.perimeterLocked ? "Exterior perimeter unlocked." : "Exterior perimeter locked.");
   }
 
+  function clampPlanZoom(value: number) {
+    return Number(clamp(value, minPlanZoom, maxPlanZoom).toFixed(2));
+  }
+
+  function stepPlanZoom(delta: number) {
+    setZoom((current) => clampPlanZoom(current + delta));
+  }
+
+  function clearZoomInHoldTimer() {
+    if (zoomInHoldTimerRef.current === null) return;
+    window.clearTimeout(zoomInHoldTimerRef.current);
+    zoomInHoldTimerRef.current = null;
+  }
+
+  function resetZoomInHoldFlagSoon() {
+    window.setTimeout(() => {
+      zoomInHoldTriggeredRef.current = false;
+    }, 0);
+  }
+
+  function startZoomInHold() {
+    clearZoomInHoldTimer();
+    zoomInHoldTriggeredRef.current = false;
+    zoomInHoldTimerRef.current = window.setTimeout(() => {
+      zoomInHoldTriggeredRef.current = true;
+      zoomInHoldTimerRef.current = null;
+      setZoom(maxPlanZoom);
+      setMessage("Zoomed to 800%.");
+    }, zoomHoldDelayMs);
+  }
+
+  function stopZoomInHold() {
+    clearZoomInHoldTimer();
+    if (zoomInHoldTriggeredRef.current) resetZoomInHoldFlagSoon();
+  }
+
+  function handleZoomInClick() {
+    if (zoomInHoldTriggeredRef.current) {
+      zoomInHoldTriggeredRef.current = false;
+      return;
+    }
+    stepPlanZoom(planZoomStep);
+  }
+
   function fitGrid() {
     setZoom(1);
     requestAnimationFrame(() => {
@@ -3898,7 +3954,7 @@ export function TakeoffApp() {
   function fitPlan() {
     const planWidth = Math.max(bounds.width, 1);
     const planDepth = Math.max(bounds.depth, 1);
-    const nextZoom = Math.min(8, Math.max(0.5, Math.min((canvasWidth - 56) / (planWidth * baseScale), (canvasHeight - 56) / (planDepth * baseScale))));
+    const nextZoom = clampPlanZoom(Math.min((canvasWidth - 56) / (planWidth * baseScale), (canvasHeight - 56) / (planDepth * baseScale)));
     setZoom(Number(nextZoom.toFixed(2)));
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -4530,9 +4586,19 @@ export function TakeoffApp() {
                   <button onClick={fitPlan}>Fit Plan</button>
                 </div>
                 <div className="takeoff-zoom-group" aria-label="Zoom level">
-                  <button onClick={() => setZoom((current) => Math.max(0.5, Number((current - 0.25).toFixed(2))))}>-</button>
+                  <button onClick={() => stepPlanZoom(-planZoomStep)}>-</button>
                   <span>{Math.round(zoom * 100)}%</span>
-                  <button onClick={() => setZoom((current) => Math.min(8, Number((current + 0.25).toFixed(2))))}>+</button>
+                  <button
+                    aria-label="Zoom in. Hold for two seconds to jump to 800 percent."
+                    title="Hold 2 seconds for 800%"
+                    onClick={handleZoomInClick}
+                    onPointerDown={startZoomInHold}
+                    onPointerUp={stopZoomInHold}
+                    onPointerCancel={stopZoomInHold}
+                    onPointerLeave={stopZoomInHold}
+                  >
+                    +
+                  </button>
                 </div>
                 <div className="takeoff-review-mode-group" aria-label="Plan review mode">
                   {planReviewModes.map((mode) => (
