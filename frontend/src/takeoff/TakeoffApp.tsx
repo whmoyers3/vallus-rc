@@ -82,6 +82,15 @@ type UnassignedCell = { x: number; y: number; width: number; depth: number; poly
 type ModelViewPreset = "iso" | "front" | "rear" | "left" | "right";
 type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "interiorWalls";
 type ModelSurfaceKind = "floor" | "ceiling" | "load-wall" | "interior-wall" | "knee-wall" | "window" | "door";
+type ModelMeshPart = {
+  mesh: THREE.Mesh;
+  kind: ModelSurfaceKind;
+  label: string;
+  surface?: TakeoffRoomComponent["surface"];
+  direction?: TakeoffRoomComponent["direction"];
+  area?: number;
+  assembly?: string;
+};
 type ModelSurfaceSelection = {
   roomId: string;
   roomName: string;
@@ -1579,14 +1588,25 @@ function createPanelMesh(vertices: THREE.Vector3[], material: THREE.Material) {
   return new THREE.Mesh(geometry, material);
 }
 
-function raisedWallMeshesForPoints(points: TakeoffPoint[], center: TakeoffPoint, baseHeight: number, topHeight: number, material: THREE.Material) {
+function raisedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, baseHeight: number, topHeight: number, material: THREE.Material): ModelMeshPart[] {
   if (topHeight <= baseHeight + 0.01) return [];
-  return pointsToEdges(points).map((edge) => createPanelMesh([
-    modelPoint(edge.a, center, baseHeight),
-    modelPoint(edge.b, center, baseHeight),
-    modelPoint(edge.b, center, topHeight),
-    modelPoint(edge.a, center, topHeight),
-  ], material));
+  return pointsToEdges(roomCorners(room)).map((edge) => {
+    const direction = edgeDirectionFromRoom(edge, room);
+    const length = distance(edge.a, edge.b);
+    return {
+      mesh: createPanelMesh([
+        modelPoint(edge.a, center, baseHeight),
+        modelPoint(edge.b, center, baseHeight),
+        modelPoint(edge.b, center, topHeight),
+        modelPoint(edge.a, center, topHeight),
+      ], material),
+      kind: "knee-wall",
+      label: `${direction}-side raised wall band`,
+      surface: "wall",
+      direction,
+      area: Number((length * Math.max(0, topHeight - baseHeight)).toFixed(3)),
+    };
+  });
 }
 
 function vaultedRoofHeightAtPoint(point: TakeoffPoint, bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>) {
@@ -1618,6 +1638,44 @@ function createSlopedShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, bou
   positions.needsUpdate = true;
   geometry.computeVertexNormals();
   return new THREE.Mesh(geometry, material);
+}
+
+function splitVaultFootprintAtRidge(points: TakeoffPoint[], bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>) {
+  if (ceilingInfo.ceilingType !== "vaulted") return [points];
+  const padding = Math.max(bounds.width, bounds.depth, 1) + 4;
+  const ridgeCoord = ceilingInfo.ridgeDirection === "E-W"
+    ? bounds.y + bounds.depth * ceilingInfo.ridgeRatio
+    : bounds.x + bounds.width * ceilingInfo.ridgeRatio;
+  const splitRects = ceilingInfo.ridgeDirection === "E-W"
+    ? [
+        { x: bounds.x - padding, y: bounds.y - padding, width: bounds.width + padding * 2, depth: ridgeCoord - bounds.y + padding },
+        { x: bounds.x - padding, y: ridgeCoord, width: bounds.width + padding * 2, depth: bounds.y + bounds.depth - ridgeCoord + padding },
+      ]
+    : [
+        { x: bounds.x - padding, y: bounds.y - padding, width: ridgeCoord - bounds.x + padding, depth: bounds.depth + padding * 2 },
+        { x: ridgeCoord, y: bounds.y - padding, width: bounds.x + bounds.width - ridgeCoord + padding, depth: bounds.depth + padding * 2 },
+      ];
+  const roomPolygon = pointsToClipPolygon(points);
+  return splitRects.flatMap((rect) =>
+    simplePolygonsFromMultiPolygon(intersection([roomPolygon], [pointsToClipPolygon(rectToPoints(rect))]))
+      .map(({ polygon }) => clipPolygonToPoints(polygon))
+      .filter((polygonPoints) => polygonPoints.length >= 3)
+  );
+}
+
+function slopedCeilingMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, material: THREE.Material): ModelMeshPart[] {
+  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
+  const points = roomCorners(room);
+  const bounds = polygonBounds(points);
+  const ceilingArea = Number(ceilingInfo.slopedCeilingArea.toFixed(3));
+  return splitVaultFootprintAtRidge(points, bounds, ceilingInfo).map((panelPoints) => ({
+    mesh: createSlopedShapeMesh(panelPoints, center, bounds, ceilingInfo, material),
+    kind: "ceiling",
+    label: "Vaulted ceiling plane",
+    surface: "ceiling",
+    area: ceilingArea,
+    assembly: roomSurfaceComponents(room, "ceiling")[0]?.assembly,
+  }));
 }
 
 function splitEdgeAtVaultRidge(edge: { a: TakeoffPoint; b: TakeoffPoint }, bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>) {
@@ -1737,13 +1795,12 @@ function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCei
   ];
 }
 
-function vaultedCeilingMeshesForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, ceilingMaterial: THREE.Material, kneeWallMaterial: THREE.Material) {
+function vaultedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, kneeWallMaterial: THREE.Material): ModelMeshPart[] {
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
   const points = roomCorners(room);
   const bounds = polygonBounds(points);
-  const meshes: THREE.Mesh[] = [];
-  meshes.push(...raisedWallMeshesForPoints(points, center, defaultCeilingHeight, ceilingInfo.lowHeight, kneeWallMaterial));
-  meshes.push(createSlopedShapeMesh(points, center, bounds, ceilingInfo, ceilingMaterial));
+  const parts: ModelMeshPart[] = [];
+  parts.push(...raisedWallMeshPartsForRoom(room, center, defaultCeilingHeight, ceilingInfo.lowHeight, kneeWallMaterial));
 
   for (const edge of pointsToEdges(points)) {
     const splitPoints = splitEdgeAtVaultRidge(edge, bounds, ceilingInfo);
@@ -1753,16 +1810,25 @@ function vaultedCeilingMeshesForRoom(room: TakeoffRectRoom, center: TakeoffPoint
       const aHeight = vaultedRoofHeightAtPoint(a, bounds, ceilingInfo);
       const bHeight = vaultedRoofHeightAtPoint(b, bounds, ceilingInfo);
       if (Math.max(aHeight, bHeight) <= ceilingInfo.lowHeight + 0.01) continue;
-      meshes.push(createPanelMesh([
-        modelPoint(a, center, ceilingInfo.lowHeight),
-        modelPoint(b, center, ceilingInfo.lowHeight),
-        modelPoint(b, center, bHeight),
-        modelPoint(a, center, aHeight),
-      ], kneeWallMaterial));
+      const direction = edgeDirectionFromRoom({ a, b }, room);
+      const averageHeight = Math.max(0, ((aHeight + bHeight) / 2) - ceilingInfo.lowHeight);
+      parts.push({
+        mesh: createPanelMesh([
+          modelPoint(a, center, ceilingInfo.lowHeight),
+          modelPoint(b, center, ceilingInfo.lowHeight),
+          modelPoint(b, center, bHeight),
+          modelPoint(a, center, aHeight),
+        ], kneeWallMaterial),
+        kind: "knee-wall",
+        label: `${direction}-side vault gable / knee-wall panel`,
+        surface: "wall",
+        direction,
+        area: Number((distance(a, b) * averageHeight).toFixed(3)),
+      });
     }
   }
 
-  return meshes;
+  return parts;
 }
 
 function modelSurfaceFromObject(object: THREE.Object3D) {
@@ -1954,6 +2020,29 @@ function TakeoffModelPreview({
           } satisfies ModelSurfaceSelection;
           scene.add(wallMesh);
         }
+        const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
+        const generatedWallParts = ceilingInfo.ceilingType === "vaulted"
+          ? vaultedWallMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, kneeWallMaterial)
+          : raisedWallMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, room.ceilingHeight, kneeWallMaterial);
+        for (const part of generatedWallParts) {
+          const component = roomSurfaceComponents(room, "wall").find((candidate) =>
+            componentIsGeneratedCeilingWall(candidate) &&
+            (!part.direction || candidate.direction === part.direction)
+          );
+          part.mesh.userData.roomId = room.id;
+          part.mesh.userData.modelSurface = {
+            roomId: room.id,
+            roomName: room.name,
+            kind: part.kind,
+            label: part.label,
+            surface: "wall",
+            direction: part.direction,
+            area: part.area,
+            assembly: component?.assembly ?? part.assembly,
+            componentId: component?.id,
+          } satisfies ModelSurfaceSelection;
+          scene.add(part.mesh);
+        }
       }
 
       if (visibleLayers.interiorWalls) {
@@ -1977,18 +2066,18 @@ function TakeoffModelPreview({
       if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
         const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
         if (ceilingInfo.ceilingType === "vaulted") {
-          for (const mesh of vaultedCeilingMeshesForRoom(room, center, floor.defaultCeilingHeight ?? 9, roomCeilingMaterial, kneeWallMaterial)) {
-            mesh.userData.roomId = room.id;
-            mesh.userData.modelSurface = {
+          for (const part of slopedCeilingMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, roomCeilingMaterial)) {
+            part.mesh.userData.roomId = room.id;
+            part.mesh.userData.modelSurface = {
               roomId: room.id,
               roomName: room.name,
-              kind: "ceiling",
-              label: "Vaulted ceiling surface",
-              surface: "ceiling",
-              area: Number(ceilingInfo.slopedCeilingArea.toFixed(3)),
-              assembly: roomSurfaceComponents(room, "ceiling")[0]?.assembly,
+              kind: part.kind,
+              label: part.label,
+              surface: part.surface,
+              area: part.area,
+              assembly: part.assembly,
             } satisfies ModelSurfaceSelection;
-            scene.add(mesh);
+            scene.add(part.mesh);
           }
         } else {
           const ceilingMesh = createHorizontalShapeMesh(points, center, room.ceilingHeight, roomCeilingMaterial);
@@ -2003,19 +2092,6 @@ function TakeoffModelPreview({
             assembly: roomSurfaceComponents(room, "ceiling")[0]?.assembly,
           } satisfies ModelSurfaceSelection;
           scene.add(ceilingMesh);
-          for (const mesh of raisedWallMeshesForPoints(points, center, floor.defaultCeilingHeight ?? 9, room.ceilingHeight, kneeWallMaterial)) {
-            mesh.userData.roomId = room.id;
-            mesh.userData.modelSurface = {
-              roomId: room.id,
-              roomName: room.name,
-              kind: "knee-wall",
-              label: "Raised height / knee-wall panel",
-              surface: "wall",
-              area: Number(Math.max(0, roomPerimeter(room) * (room.ceilingHeight - (floor.defaultCeilingHeight ?? 9))).toFixed(3)),
-              assembly: roomSurfaceComponents(room, "wall")[0]?.assembly,
-            } satisfies ModelSurfaceSelection;
-            scene.add(mesh);
-          }
         }
       }
 
