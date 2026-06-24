@@ -132,12 +132,12 @@ const roomTypeOptions: Array<{ id: TakeoffRoomType; label: string; shortLabel: s
   { id: "entertainment", label: "Entertainment (250 W + 1 person)", shortLabel: "Entertainment" },
   { id: "laundry", label: "Laundry (200 W)", shortLabel: "Laundry" },
 ];
-const planReviewModes: Array<{ id: PlanReviewMode; label: string }> = [
-  { id: "plan", label: "Plan" },
-  { id: "floor", label: "Floor" },
-  { id: "ceiling", label: "Ceiling" },
-  { id: "walls", label: "Walls" },
-  { id: "elevation", label: "3D QA" },
+const planReviewModes: Array<{ id: PlanReviewMode; label: string; tooltip: string }> = [
+  { id: "plan", label: "Plan", tooltip: "Show the editable plan-tracing view." },
+  { id: "floor", label: "Floor", tooltip: "Review floor load areas by room." },
+  { id: "ceiling", label: "Ceiling", tooltip: "Review ceiling surfaces and height changes." },
+  { id: "walls", label: "Walls", tooltip: "Review wall exposure and opening assignments." },
+  { id: "elevation", label: "3D QA", tooltip: "Open the 3D quality-assurance view." },
 ];
 type SavedTakeoffRow = {
   id: number;
@@ -4543,20 +4543,22 @@ export function TakeoffApp() {
               </div>
               <div className="takeoff-stage-tools" aria-label="Plan zoom controls">
                 <div className="takeoff-stage-tool-group">
-                  <button onClick={fitGrid}>Fit Grid</button>
-                  <button onClick={fitPlan}>Fit Plan</button>
-                  <button onClick={maxZoomPlan}>Max Zoom</button>
+                  <button data-tooltip="Fit the full drawable grid workspace." aria-label="Fit the full drawable grid workspace" onClick={fitGrid}>Fit Grid</button>
+                  <button data-tooltip="Fit the traced exterior plan, or the plan reference before tracing." aria-label="Fit the traced exterior plan or plan reference" onClick={fitPlan}>Fit Plan</button>
+                  <button data-tooltip="Jump directly to 800% zoom." aria-label="Jump directly to 800 percent zoom" onClick={maxZoomPlan}>Max Zoom</button>
                 </div>
                 <div className="takeoff-zoom-group" aria-label="Zoom level">
-                  <button onClick={() => stepPlanZoom(-planZoomStep)}>-</button>
+                  <button data-tooltip="Zoom out one step." aria-label="Zoom out one step" onClick={() => stepPlanZoom(-planZoomStep)}>-</button>
                   <span>{Math.round(zoom * 100)}%</span>
-                  <button onClick={() => stepPlanZoom(planZoomStep)}>+</button>
+                  <button data-tooltip="Zoom in one step." aria-label="Zoom in one step" onClick={() => stepPlanZoom(planZoomStep)}>+</button>
                 </div>
                 <div className="takeoff-review-mode-group" aria-label="Plan review mode">
                   {planReviewModes.map((mode) => (
                     <button
                       key={mode.id}
                       className={planReviewMode === mode.id ? "toolbar-primary" : ""}
+                      data-tooltip={mode.tooltip}
+                      aria-label={mode.tooltip}
                       onClick={() => setPlanReviewMode(mode.id)}
                     >
                       {mode.label}

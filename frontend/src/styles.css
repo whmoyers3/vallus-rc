@@ -853,6 +853,52 @@ button.toolbar-primary:hover {
   font-size: 12px;
   min-width: 32px;
   padding: 5px 8px;
+  position: relative;
+}
+
+.takeoff-stage-tools button[data-tooltip]::before,
+.takeoff-stage-tools button[data-tooltip]::after {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 120ms ease, transform 120ms ease;
+  z-index: 30;
+}
+
+.takeoff-stage-tools button[data-tooltip]::before {
+  border: 6px solid transparent;
+  border-bottom-color: #243342;
+  content: "";
+  left: 50%;
+  top: calc(100% + 1px);
+  transform: translate(-50%, -3px);
+}
+
+.takeoff-stage-tools button[data-tooltip]::after {
+  background: #243342;
+  border-radius: 5px;
+  box-shadow: 0 6px 18px rgba(31, 41, 51, 0.18);
+  color: #ffffff;
+  content: attr(data-tooltip);
+  font-size: 11px;
+  font-weight: 600;
+  left: 50%;
+  line-height: 1.3;
+  max-width: 220px;
+  min-width: 140px;
+  padding: 7px 9px;
+  text-align: left;
+  top: calc(100% + 12px);
+  transform: translate(-50%, -3px);
+  white-space: normal;
+}
+
+.takeoff-stage-tools button[data-tooltip]:hover::before,
+.takeoff-stage-tools button[data-tooltip]:hover::after,
+.takeoff-stage-tools button[data-tooltip]:focus-visible::before,
+.takeoff-stage-tools button[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 .takeoff-stage-tools span {
