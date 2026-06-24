@@ -710,6 +710,14 @@ button.toolbar-primary:hover {
   min-width: 0;
 }
 
+.takeoff-tools-sidebar {
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding-right: 2px;
+  position: sticky;
+  top: 12px;
+}
+
 .takeoff-sidebar--collapsed {
   min-height: 360px;
 }
@@ -767,6 +775,33 @@ button.toolbar-primary:hover {
 .takeoff-stage-head h2 {
   font-size: 13px;
   margin: 0;
+}
+
+.takeoff-right-details {
+  padding: 0;
+}
+
+.takeoff-right-details summary {
+  color: #263545;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  list-style-position: inside;
+  padding: 10px 12px;
+}
+
+.takeoff-right-details[open] {
+  padding: 0 12px 12px;
+}
+
+.takeoff-right-details[open] summary {
+  border-bottom: 1px solid #e8edf1;
+  margin: 0 -12px 10px;
+}
+
+.takeoff-export-panel .takeoff-form-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
 }
 
 .takeoff-stage-head {
@@ -1415,6 +1450,68 @@ button.toolbar-primary:hover {
   color: #815a15;
 }
 
+.takeoff-active-validation {
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(31, 41, 51, 0.1);
+  margin: 0 0 12px;
+  padding: 10px;
+  position: sticky;
+  top: 10px;
+  z-index: 12;
+}
+
+.takeoff-active-validation--error {
+  background: #fff5f5;
+  color: #a13939;
+}
+
+.takeoff-active-validation--warning {
+  background: #fff8e8;
+  color: #815a15;
+}
+
+.takeoff-active-validation > div:first-child {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.takeoff-active-validation strong {
+  color: inherit;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.takeoff-active-validation span {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.takeoff-active-validation p {
+  color: #263545;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 7px 0;
+}
+
+.takeoff-active-validation-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.takeoff-active-validation-actions button {
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 7px;
+}
+
 .takeoff-room-list {
   display: flex;
   flex-direction: column;
@@ -1985,6 +2082,12 @@ button.toolbar-primary:hover {
   }
   .takeoff-layout > .takeoff-sidebar:last-child {
     grid-column: 1 / -1;
+  }
+  .takeoff-tools-sidebar {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+    position: static;
   }
 }
 

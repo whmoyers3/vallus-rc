@@ -123,6 +123,7 @@ type ActiveValidationTarget = {
   roomId?: string;
   severity: TakeoffValidationIssue["severity"];
   section: ValidationSection;
+  message: string;
 };
 type UnassignedRegion = {
   id: string;
@@ -2561,6 +2562,22 @@ function formatBytes(bytes?: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function fileSafeName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "takeoff";
+}
+
+function downloadJsonFile(filename: string, data: unknown) {
+  const blob = new Blob([`${JSON.stringify(data, null, 2)}\n`], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function categoryFromCode(code: string): TakeoffComponentCategory {
   const first = code.trim().toUpperCase()[0];
   if (first === "G") return "Glass";
@@ -2619,6 +2636,26 @@ function componentValidationSection(surface: TakeoffRoomComponent["surface"]): V
   return "ceiling-components";
 }
 
+function validationSectionLabel(section: ValidationSection) {
+  const labels: Record<ValidationSection, string> = {
+    merge: "Merge / attribution tools",
+    "wall-suggestions": "Suggested Exterior Walls",
+    "wall-components": "Wall Components",
+    "glass-components": "Glass Components",
+    "door-components": "Door Components",
+    "floor-components": "Floor Components",
+    "ceiling-components": "Ceiling Components",
+    "ceiling-geometry": "Ceiling Geometry",
+    "room-profile": "Room Profile",
+  };
+  return labels[section];
+}
+
+function validationSectionElementId(roomId: string, section: ValidationSection) {
+  if (section === "wall-components") return `room-wall-components-${roomId}`;
+  return `validation-target-${roomId}-${section}`;
+}
+
 export function TakeoffApp() {
   const [projectName, setProjectName] = useState("Takeoff V1 Draft");
   const [location, setLocation] = useState("");
@@ -2656,8 +2693,6 @@ export function TakeoffApp() {
   });
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [takeoffJsonOpen, setTakeoffJsonOpen] = useState(false);
-  const [payloadPreviewOpen, setPayloadPreviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [planReviewMode, setPlanReviewMode] = useState<PlanReviewMode>("plan");
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
@@ -2718,6 +2753,7 @@ export function TakeoffApp() {
       ? `takeoff-validation-section takeoff-validation-section--${activeRoomValidationTarget.severity}`
       : ""
   );
+  const validationTargetId = (section: ValidationSection) => selectedRoom ? validationSectionElementId(selectedRoom.id, section) : undefined;
   const floorScheduleOptions = componentSchedule.filter((component) => component.category === "Floor");
   const ceilingScheduleOptions = componentSchedule.filter((component) => component.category === "Ceiling");
   const scheduleOptionsBySurface = {
@@ -2847,6 +2883,22 @@ export function TakeoffApp() {
     window.requestAnimationFrame(() => {
       document.getElementById(`room-wall-components-${roomId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
+  }
+
+  function scrollToValidationSection(roomId: string, section: ValidationSection) {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(validationSectionElementId(roomId, section))?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+  }
+
+  function exportTakeoffJson() {
+    downloadJsonFile(`${fileSafeName(projectName)}-takeoff.json`, persistableTakeoff);
+  }
+
+  function exportPayloadJson() {
+    downloadJsonFile(`${fileSafeName(projectName)}-calculator-payload.json`, payload);
   }
 
   function roomWithCeilingType(room: TakeoffRectRoom, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>): TakeoffRectRoom {
@@ -4153,11 +4205,13 @@ export function TakeoffApp() {
   }
 
   function focusValidationIssue(issue: TakeoffValidationIssue, key = validationIssueKey(issue)) {
+    const section = validationSectionForIssue(issue);
     setActiveValidationTarget({
       key,
       roomId: issue.target?.roomId,
       severity: issue.severity,
-      section: validationSectionForIssue(issue),
+      section,
+      message: issue.message,
     });
     if (!issue.target) return;
     if (issue.target.type === "room" && issue.target.roomId) {
@@ -4165,6 +4219,7 @@ export function TakeoffApp() {
       setRightPanelOpen(true);
       const room = floor.rooms.find((candidate) => candidate.id === issue.target?.roomId);
       setMessage(room ? `${room.name} selected from validation.` : "Room selected from validation.");
+      scrollToValidationSection(issue.target.roomId, section);
       return;
     }
     if (issue.target.type === "unassigned") {
@@ -5520,8 +5575,21 @@ export function TakeoffApp() {
               </div>
               {selectedRoom ? (
                 <>
+                  {activeRoomValidationTarget && (
+                    <div className={`takeoff-active-validation takeoff-active-validation--${activeRoomValidationTarget.severity}`}>
+                      <div>
+                        <strong>{activeRoomValidationTarget.severity === "error" ? "Fix required" : "Review suggestion"}</strong>
+                        <span>{validationSectionLabel(activeRoomValidationTarget.section)}</span>
+                      </div>
+                      <p>{activeRoomValidationTarget.message}</p>
+                      <div className="takeoff-active-validation-actions">
+                        <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
+                        <button onClick={() => setActiveValidationTarget(null)}>Dismiss</button>
+                      </div>
+                    </div>
+                  )}
                   {floor.rooms.length > 1 && (
-                    <div className={`takeoff-room-merge-tools ${validationSectionClass("merge")}`}>
+                    <div id={validationTargetId("merge")} className={`takeoff-room-merge-tools ${validationSectionClass("merge")}`}>
                       <span>Merge selected room into</span>
                       <select
                         value={mergeTargetRoomId && mergeTargetRoomId !== selectedRoom.id ? mergeTargetRoomId : floor.rooms.find((room) => room.id !== selectedRoom.id)?.id ?? ""}
@@ -5548,7 +5616,7 @@ export function TakeoffApp() {
                     );
                     return (
                       <>
-                        <div className={`takeoff-wall-suggestions ${validationSectionClass("wall-suggestions")}`}>
+                        <div id={validationTargetId("wall-suggestions")} className={`takeoff-wall-suggestions ${validationSectionClass("wall-suggestions")}`}>
                           <div className="takeoff-component-head">
                             <h3>Suggested Exterior Walls</h3>
                             <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
@@ -5654,7 +5722,7 @@ export function TakeoffApp() {
                       />
                     </label>
                   </div>
-                  <div className={`takeoff-ceiling-shape ${validationSectionClass("ceiling-geometry")}`}>
+                  <div id={validationTargetId("ceiling-geometry")} className={`takeoff-ceiling-shape ${validationSectionClass("ceiling-geometry")}`}>
                     <label>
                       Ceiling shape
                       <select
@@ -5908,7 +5976,11 @@ export function TakeoffApp() {
                     const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
                     const staleCeilingWallIds = new Set(staleGeneratedCeilingWallComponents(floor, selectedRoom).map((component) => component.id));
                     return (
-                      <div key={surface} id={surface === "wall" ? `room-wall-components-${selectedRoom.id}` : undefined} className={`takeoff-component-editor ${validationSectionClass(componentValidationSection(surface))}`}>
+                      <div
+                        key={surface}
+                        id={validationTargetId(componentValidationSection(surface)) ?? (surface === "wall" ? `room-wall-components-${selectedRoom.id}` : undefined)}
+                        className={`takeoff-component-editor ${validationSectionClass(componentValidationSection(surface))}`}
+                      >
                         <div className="takeoff-component-head">
                           <h3>{componentSurfaceLabel(surface)} Components</h3>
                           <button onClick={() => addRoomComponent(selectedRoom.id, surface)}>Add</button>
@@ -6057,11 +6129,19 @@ export function TakeoffApp() {
             <button className="takeoff-rail-toggle" onClick={() => setRightPanelOpen(true)} aria-label="Show tools panel">Tools</button>
           ) : (
           <>
-          <section className="takeoff-panel">
+          <section className="takeoff-panel takeoff-export-panel">
             <div className="takeoff-panel-head">
-              <h2>Drawing Tools</h2>
+              <h2>Export</h2>
               <button className="takeoff-icon-button" onClick={() => setRightPanelOpen(false)} aria-label="Hide tools panel">Hide</button>
             </div>
+            <div className="takeoff-form-actions">
+              <button onClick={exportTakeoffJson}>Takeoff JSON</button>
+              <button onClick={exportPayloadJson}>Payload JSON</button>
+            </div>
+          </section>
+
+          <details className="takeoff-panel takeoff-right-details">
+            <summary>Drawing Tools</summary>
             <div className="takeoff-form-actions">
               <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
               <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
@@ -6095,12 +6175,10 @@ export function TakeoffApp() {
               <button onClick={moveDraftRoomToOpenSpot}>Find Open Spot</button>
             </div>
             {message && <p className="takeoff-message">{message}</p>}
-          </section>
+          </details>
 
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Adjacent Spaces</h2>
-            </div>
+          <details className="takeoff-panel takeoff-right-details">
+            <summary>Adjacent Spaces</summary>
             <div className="takeoff-form-actions">
               <select value={adjacentSpaceKind} onChange={(event) => setAdjacentSpaceKind(event.target.value as TakeoffAdjacentSpaceKind)}>
                 {adjacentSpaceKinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}
@@ -6134,12 +6212,10 @@ export function TakeoffApp() {
                 ))}
               </div>
             )}
-          </section>
+          </details>
 
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Openings</h2>
-            </div>
+          <details className="takeoff-panel takeoff-right-details">
+            <summary>Openings</summary>
             <div className="takeoff-form-actions">
               <button className={openingModeActive ? "toolbar-primary" : ""} onClick={() => (openingModeActive ? stopOpeningPlacement() : startOpeningPlacement())}>
                 {openingModeActive ? "Stop Placing" : "Place Opening"}
@@ -6152,7 +6228,7 @@ export function TakeoffApp() {
             ) : (
               <p className="takeoff-muted">Openings are assigned from the plan grid and must land on exterior/load-bearing room edges.</p>
             )}
-          </section>
+          </details>
 
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
@@ -6561,33 +6637,6 @@ export function TakeoffApp() {
             )}
           </section>
 
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Takeoff JSON</h2>
-              <button className="takeoff-icon-button" onClick={() => setTakeoffJsonOpen((current) => !current)}>
-                {takeoffJsonOpen ? "Hide" : "Show"}
-              </button>
-            </div>
-            {takeoffJsonOpen ? (
-              <pre className="takeoff-code">{JSON.stringify(takeoffProject, null, 2)}</pre>
-            ) : (
-              <p className="takeoff-muted">Hidden by default. Show when inspecting the editable takeoff file.</p>
-            )}
-          </section>
-
-          <section className="takeoff-panel">
-            <div className="takeoff-panel-head">
-              <h2>Payload Preview</h2>
-              <button className="takeoff-icon-button" onClick={() => setPayloadPreviewOpen((current) => !current)}>
-                {payloadPreviewOpen ? "Hide" : "Show"}
-              </button>
-            </div>
-            {payloadPreviewOpen ? (
-              <pre className="takeoff-code">{JSON.stringify(payload, null, 2)}</pre>
-            ) : (
-              <p className="takeoff-muted">Hidden by default. Show when checking the calculator import payload.</p>
-            )}
-          </section>
           </>
           )}
         </aside>
