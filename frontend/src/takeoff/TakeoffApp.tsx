@@ -117,6 +117,13 @@ type StaleCeilingWallPrompt = {
 } | null;
 type OrientationLoadResult = { facing: string; cooling: number; heating: number; tons: number };
 type TakeoffCalcResult = OrientationLoadResult & { orientations: OrientationLoadResult[]; baseFacing: string };
+type ValidationSection = "merge" | "wall-suggestions" | "wall-components" | "glass-components" | "door-components" | "floor-components" | "ceiling-components" | "ceiling-geometry" | "room-profile";
+type ActiveValidationTarget = {
+  key: string;
+  roomId?: string;
+  severity: TakeoffValidationIssue["severity"];
+  section: ValidationSection;
+};
 type UnassignedRegion = {
   id: string;
   label: string;
@@ -2587,6 +2594,31 @@ function roomTypeLabel(roomType?: TakeoffRoomType) {
   return roomTypeOptions.find((option) => option.id === (roomType ?? "plain"))?.shortLabel ?? "Plain";
 }
 
+function validationIssueKey(issue: TakeoffValidationIssue, index?: number) {
+  return `${issue.severity}:${issue.target?.type ?? "global"}:${issue.target?.roomId ?? issue.target?.regionId ?? ""}:${issue.message}:${index ?? ""}`;
+}
+
+function validationSectionForIssue(issue: TakeoffValidationIssue): ValidationSection {
+  const message = issue.message.toLowerCase();
+  if (message.includes("suggested exterior wall")) return "wall-suggestions";
+  if (message.includes("glass") || message.includes("window") || message.includes("opening")) return "glass-components";
+  if (message.includes("door")) return "door-components";
+  if (message.includes("wall component") || message.includes("wall components") || message.includes("garage-adjacent") || message.includes("adjacent space")) return "wall-components";
+  if (message.includes("floor component") || message.includes("floor components") || message.includes("floor area")) return "floor-components";
+  if (message.includes("ceiling geometry") || message.includes("ceiling shape") || message.includes("generated ceiling-wall") || message.includes("raised wall") || message.includes("gable")) return "ceiling-geometry";
+  if (message.includes("ceiling component") || message.includes("ceiling components") || message.includes("ceiling area")) return "ceiling-components";
+  if (message.includes("merge") || message.includes("unassigned")) return "merge";
+  return "room-profile";
+}
+
+function componentValidationSection(surface: TakeoffRoomComponent["surface"]): ValidationSection {
+  if (surface === "wall") return "wall-components";
+  if (surface === "glass") return "glass-components";
+  if (surface === "door") return "door-components";
+  if (surface === "floor") return "floor-components";
+  return "ceiling-components";
+}
+
 export function TakeoffApp() {
   const [projectName, setProjectName] = useState("Takeoff V1 Draft");
   const [location, setLocation] = useState("");
@@ -2599,6 +2631,7 @@ export function TakeoffApp() {
   const [floor, setFloor] = useState<TakeoffFloor>(() => makeInitialFloor());
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
+  const [activeValidationTarget, setActiveValidationTarget] = useState<ActiveValidationTarget | null>(null);
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", false, 0, "S", makeInitialFloor(), defaultComponentSchedule)));
   const [saveLoading, setSaveLoading] = useState(false);
@@ -2677,6 +2710,14 @@ export function TakeoffApp() {
   const unassignedArea = computedFootprintArea - assignedArea;
   const payload = useMemo(() => buildVrcPayload(takeoffProject), [takeoffProject]);
   const selectedRoom = floor.rooms.find((room) => room.id === selectedRoomId) ?? null;
+  const activeRoomValidationTarget = activeValidationTarget && selectedRoom && activeValidationTarget.roomId === selectedRoom.id
+    ? activeValidationTarget
+    : null;
+  const validationSectionClass = (section: ValidationSection) => (
+    activeRoomValidationTarget?.section === section
+      ? `takeoff-validation-section takeoff-validation-section--${activeRoomValidationTarget.severity}`
+      : ""
+  );
   const floorScheduleOptions = componentSchedule.filter((component) => component.category === "Floor");
   const ceilingScheduleOptions = componentSchedule.filter((component) => component.category === "Ceiling");
   const scheduleOptionsBySurface = {
@@ -2766,6 +2807,12 @@ export function TakeoffApp() {
   const unassignedCellArea = activeUnassignedCells.reduce((sum, cell) => sum + unassignedCellMeasuredArea(cell), 0);
   const validation = useMemo(() => buildValidation(floor, unassignedRegions), [floor, unassignedRegions]);
   const polygonDraftActive = roomPolygonMode && roomPolygonDraft.length > 0;
+
+  useEffect(() => {
+    if (!activeValidationTarget) return;
+    const stillPresent = validation.some((issue, index) => validationIssueKey(issue, index) === activeValidationTarget.key);
+    if (!stillPresent) setActiveValidationTarget(null);
+  }, [activeValidationTarget, validation]);
 
   const canvasWidth = 720;
   const canvasHeight = 420;
@@ -4105,7 +4152,13 @@ export function TakeoffApp() {
     setMessage(`${selectedRoom.name} merged into ${targetRoom.name}.`);
   }
 
-  function focusValidationIssue(issue: TakeoffValidationIssue) {
+  function focusValidationIssue(issue: TakeoffValidationIssue, key = validationIssueKey(issue)) {
+    setActiveValidationTarget({
+      key,
+      roomId: issue.target?.roomId,
+      severity: issue.severity,
+      section: validationSectionForIssue(issue),
+    });
     if (!issue.target) return;
     if (issue.target.type === "room" && issue.target.roomId) {
       setSelectedRoomId(issue.target.roomId);
@@ -4406,10 +4459,11 @@ export function TakeoffApp() {
         return;
       }
     }
-    const blockingIssue = validation.find((issue) => issue.severity === "error");
+    const blockingIssueIndex = validation.findIndex((issue) => issue.severity === "error");
+    const blockingIssue = blockingIssueIndex >= 0 ? validation[blockingIssueIndex] : null;
     if (blockingIssue) {
       setMessage(blockingIssue.message);
-      focusValidationIssue(blockingIssue);
+      focusValidationIssue(blockingIssue, validationIssueKey(blockingIssue, blockingIssueIndex));
       return;
     }
     setCalcLoading(true);
@@ -5467,7 +5521,7 @@ export function TakeoffApp() {
               {selectedRoom ? (
                 <>
                   {floor.rooms.length > 1 && (
-                    <div className="takeoff-room-merge-tools">
+                    <div className={`takeoff-room-merge-tools ${validationSectionClass("merge")}`}>
                       <span>Merge selected room into</span>
                       <select
                         value={mergeTargetRoomId && mergeTargetRoomId !== selectedRoom.id ? mergeTargetRoomId : floor.rooms.find((room) => room.id !== selectedRoom.id)?.id ?? ""}
@@ -5494,7 +5548,7 @@ export function TakeoffApp() {
                     );
                     return (
                       <>
-                        <div className="takeoff-wall-suggestions">
+                        <div className={`takeoff-wall-suggestions ${validationSectionClass("wall-suggestions")}`}>
                           <div className="takeoff-component-head">
                             <h3>Suggested Exterior Walls</h3>
                             <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
@@ -5600,7 +5654,7 @@ export function TakeoffApp() {
                       />
                     </label>
                   </div>
-                  <div className="takeoff-ceiling-shape">
+                  <div className={`takeoff-ceiling-shape ${validationSectionClass("ceiling-geometry")}`}>
                     <label>
                       Ceiling shape
                       <select
@@ -5704,7 +5758,7 @@ export function TakeoffApp() {
                       updateRoomCeilingGeometry(selectedRoom.id, { ceilingRidgeOffset: Number((ratio * 2 - 1).toFixed(3)) });
                     };
                     return (
-                      <div className={`takeoff-ceiling-qa ${ceilingInfo.needsReview ? "takeoff-ceiling-qa--warning" : ""}`}>
+                      <div className={`takeoff-ceiling-qa ${ceilingInfo.needsReview ? "takeoff-ceiling-qa--warning" : ""} ${validationSectionClass("ceiling-geometry")}`}>
                         <div className="takeoff-component-head">
                           <h3>Ceiling Geometry QA</h3>
                           <button className={selectedRoom.ceilingGeometryApproved ? "toolbar-primary" : ""} onClick={() => approveRoomCeilingGeometry(selectedRoom.id, ceilingWallAssemblies, ceilingWallAdjacencies)}>
@@ -5854,7 +5908,7 @@ export function TakeoffApp() {
                     const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
                     const staleCeilingWallIds = new Set(staleGeneratedCeilingWallComponents(floor, selectedRoom).map((component) => component.id));
                     return (
-                      <div key={surface} id={surface === "wall" ? `room-wall-components-${selectedRoom.id}` : undefined} className="takeoff-component-editor">
+                      <div key={surface} id={surface === "wall" ? `room-wall-components-${selectedRoom.id}` : undefined} className={`takeoff-component-editor ${validationSectionClass(componentValidationSection(surface))}`}>
                         <div className="takeoff-component-head">
                           <h3>{componentSurfaceLabel(surface)} Components</h3>
                           <button onClick={() => addRoomComponent(selectedRoom.id, surface)}>Add</button>
@@ -6109,14 +6163,19 @@ export function TakeoffApp() {
             ) : (
               <div className="takeoff-issue-list">
                 {validation.map((issue, index) => (
-                  <button
-                    key={index}
-                    className={`takeoff-issue takeoff-issue--${issue.severity} ${issue.target ? "takeoff-issue--clickable" : ""}`}
-                    onClick={() => focusValidationIssue(issue)}
-                    disabled={!issue.target}
-                  >
-                    {issue.message}
-                  </button>
+                  (() => {
+                    const issueKey = validationIssueKey(issue, index);
+                    return (
+                      <button
+                        key={issueKey}
+                        className={`takeoff-issue takeoff-issue--${issue.severity} ${issue.target ? "takeoff-issue--clickable" : ""} ${activeValidationTarget?.key === issueKey ? "takeoff-issue--active" : ""}`}
+                        onClick={() => focusValidationIssue(issue, issueKey)}
+                        disabled={!issue.target}
+                      >
+                        {issue.message}
+                      </button>
+                    );
+                  })()
                 ))}
               </div>
             )}
@@ -6205,7 +6264,7 @@ export function TakeoffApp() {
                   );
                   return (
                     <>
-                      <div className="takeoff-wall-suggestions">
+                      <div className={`takeoff-wall-suggestions ${validationSectionClass("wall-suggestions")}`}>
                         <div className="takeoff-component-head">
                           <h3>Suggested Exterior Walls</h3>
                           <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
@@ -6309,7 +6368,7 @@ export function TakeoffApp() {
                     onChange={(event) => updateRoom(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
                   />
                 </label>
-                <div className="takeoff-ceiling-shape">
+                <div className={`takeoff-ceiling-shape ${validationSectionClass("ceiling-geometry")}`}>
                   <label>
                     Ceiling shape
                     <select
@@ -6360,7 +6419,7 @@ export function TakeoffApp() {
                   const exteriorDirections = roomExteriorDirections(floor, selectedRoom);
                   const staleCeilingWallIds = new Set(staleGeneratedCeilingWallComponents(floor, selectedRoom).map((component) => component.id));
                   return (
-                    <div key={surface} className="takeoff-component-editor">
+                    <div key={surface} className={`takeoff-component-editor ${validationSectionClass(componentValidationSection(surface))}`}>
                       <div className="takeoff-component-head">
                         <h3>{componentSurfaceLabel(surface)} Components</h3>
                         <button onClick={() => addRoomComponent(selectedRoom.id, surface)}>Add</button>

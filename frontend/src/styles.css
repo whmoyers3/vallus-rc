@@ -1394,6 +1394,27 @@ button.toolbar-primary:hover {
   box-shadow: inset 0 0 0 1px currentColor;
 }
 
+.takeoff-issue--active {
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+
+.takeoff-validation-section {
+  border-radius: 8px;
+  box-shadow: inset 4px 0 0 currentColor, 0 0 0 1px currentColor;
+}
+
+.takeoff-validation-section--error {
+  background: #fff5f5 !important;
+  border-color: #f6b6b6 !important;
+  color: #a13939;
+}
+
+.takeoff-validation-section--warning {
+  background: #fff8e8 !important;
+  border-color: #f2d19c !important;
+  color: #815a15;
+}
+
 .takeoff-room-list {
   display: flex;
   flex-direction: column;
