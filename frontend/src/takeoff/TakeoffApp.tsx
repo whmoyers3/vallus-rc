@@ -3058,13 +3058,18 @@ export function TakeoffApp() {
   function renderRoomLoadSketch(room: TakeoffRectRoom, mode: "load" | "ceiling" = "load") {
     const points = roomCorners(room);
     if (points.length < 3) return null;
-    const viewWidth = mode === "ceiling" ? 360 : 300;
-    const viewHeight = mode === "ceiling" ? 235 : 205;
-    const lift = { x: 18, y: -20 };
-    const { project, unproject } = sketchProjection(points, viewWidth, viewHeight, 28);
-    const liftedProject = (point: TakeoffPoint) => {
+    const viewWidth = mode === "ceiling" ? 380 : 320;
+    const viewHeight = mode === "ceiling" ? 250 : 220;
+    const floorShift = { x: -16, y: 26 };
+    const ceilingShift = { x: 18, y: -26 };
+    const { project, unproject } = sketchProjection(points, viewWidth, viewHeight, 46);
+    const floorProject = (point: TakeoffPoint) => {
       const base = project(point);
-      return { x: base.x + lift.x, y: base.y + lift.y };
+      return { x: base.x + floorShift.x, y: base.y + floorShift.y };
+    };
+    const ceilingProject = (point: TakeoffPoint) => {
+      const base = project(point);
+      return { x: base.x + ceilingShift.x, y: base.y + ceilingShift.y };
     };
     const roomEdges = pointsToEdges(points);
     const wallComponents = roomSurfaceComponents(room, "wall");
@@ -3091,7 +3096,7 @@ export function TakeoffApp() {
       if (surface === "ceiling") return ceilingComponents[0] ? componentSketchLabel(ceilingComponents[0]) : "Ceiling";
       if (surface === "wall") {
         const wall = direction ? wallByDirection.get(direction) : undefined;
-        return wall ? componentSketchLabel(wall) : "Reference wall";
+        return wall ? componentSketchLabel(wall) : null;
       }
       return surface === "glass" ? "Glass" : "Door";
     };
@@ -3099,20 +3104,32 @@ export function TakeoffApp() {
       if (!component.direction) return null;
       const edge = roomEdges.find((candidate) => edgeDirectionFromRoom(candidate, room) === component.direction);
       if (!edge) return null;
-      const a = liftedProject(edge.a);
-      const b = liftedProject(edge.b);
+      const floorA = floorProject(edge.a);
+      const ceilingA = ceilingProject(edge.a);
+      const floorB = floorProject(edge.b);
+      const ceilingB = ceilingProject(edge.b);
+      const a = { x: (floorA.x + ceilingA.x) / 2, y: (floorA.y + ceilingA.y) / 2 };
+      const b = { x: (floorB.x + ceilingB.x) / 2, y: (floorB.y + ceilingB.y) / 2 };
       const t = total <= 1 ? 0.5 : (index + 1) / (total + 1);
       const x = a.x + (b.x - a.x) * t;
       const y = a.y + (b.y - a.y) * t;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const length = Math.max(Math.hypot(dx, dy), 1);
+      const ux = dx / length;
+      const uy = dy / length;
+      const markerLength = component.surface === "glass" ? 22 : 16;
+      const markerStart = { x: x - ux * markerLength / 2, y: y - uy * markerLength / 2 };
+      const markerEnd = { x: x + ux * markerLength / 2, y: y + uy * markerLength / 2 };
       const active = isActive(component.surface, component.direction);
       return (
         <g
           key={`${component.surface}-${component.id}`}
-          className={`takeoff-room-sketch-opening ${active ? "takeoff-room-sketch-opening--active" : ""}`}
+          className={`takeoff-room-sketch-opening takeoff-room-sketch-opening--${component.surface} ${active ? "takeoff-room-sketch-opening--active" : ""}`}
           onClick={() => focusRoomSketchPanel(room.id, component.surface, component.direction)}
         >
-          <circle cx={x} cy={y} r={component.surface === "glass" ? 5 : 6} />
-          <text x={x + 7} y={y - 4}>{component.assembly}</text>
+          <line x1={markerStart.x} y1={markerStart.y} x2={markerEnd.x} y2={markerEnd.y} />
+          <text x={x + uy * 7} y={y - ux * 7}>{component.assembly}</text>
         </g>
       );
     };
@@ -3125,7 +3142,7 @@ export function TakeoffApp() {
       const rect = svg.getBoundingClientRect();
       const viewX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * viewWidth;
       const viewY = ((event.clientY - rect.top) / Math.max(rect.height, 1)) * viewHeight;
-      const planPoint = unproject({ x: viewX - lift.x, y: viewY - lift.y });
+      const planPoint = unproject({ x: viewX - ceilingShift.x, y: viewY - ceilingShift.y });
       const ratio = ceilingInfo.ridgeDirection === "E-W"
         ? clamp((planPoint.y - bounds.y) / Math.max(bounds.depth, 1), 0, 1)
         : clamp((planPoint.x - bounds.x) / Math.max(bounds.width, 1), 0, 1);
@@ -3140,16 +3157,17 @@ export function TakeoffApp() {
         <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={`${room.name} load component sketch`}>
           <polygon
             className={`takeoff-room-sketch-floor ${isActive("floor") ? "takeoff-room-sketch-panel--active" : ""}`}
-            points={sketchPointList(points, project)}
+            points={sketchPointList(points, floorProject)}
             onClick={() => focusRoomSketchPanel(room.id, "floor")}
           />
           {roomEdges.map((edge) => {
             const direction = edgeDirectionFromRoom(edge, room);
             const wallComponent = wallByDirection.get(direction);
-            const quad = [project(edge.a), project(edge.b), liftedProject(edge.b), liftedProject(edge.a)];
+            const quad = [floorProject(edge.a), floorProject(edge.b), ceilingProject(edge.b), ceilingProject(edge.a)];
             const midpoint = sketchLabelPoint(quad, (point) => point);
             const active = isActive("wall", direction);
             const isLoadWall = Boolean(wallComponent);
+            const label = labelForSurface("wall", direction);
             return (
               <g
                 key={`${direction}-${edge.a.x}-${edge.a.y}`}
@@ -3157,19 +3175,19 @@ export function TakeoffApp() {
                 onClick={() => focusRoomSketchPanel(room.id, "wall", direction)}
               >
                 <polygon points={quad.map((point) => `${point.x},${point.y}`).join(" ")} />
-                <text x={midpoint.x} y={midpoint.y}>{labelForSurface("wall", direction)}</text>
+                {label ? <text x={midpoint.x} y={midpoint.y}>{label}</text> : null}
               </g>
             );
           })}
           {ceilingPanels.map((panel, index) => {
-            const labelPoint = sketchLabelPoint(panel, liftedProject);
+            const labelPoint = sketchLabelPoint(panel, ceilingProject);
             return (
               <g
                 key={`ceiling-panel-${index}`}
                 className={`takeoff-room-sketch-ceiling ${mode === "ceiling" ? "takeoff-room-sketch-ceiling--focus" : ""} ${isActive(mode === "ceiling" ? "ceiling-geometry" : "ceiling") ? "takeoff-room-sketch-panel--active" : ""}`}
                 onClick={() => focusRoomSketchPanel(room.id, mode === "ceiling" ? "ceiling-geometry" : "ceiling")}
               >
-                <polygon points={sketchPointList(panel, liftedProject)} />
+                <polygon points={sketchPointList(panel, ceilingProject)} />
                 <text x={labelPoint.x} y={labelPoint.y}>{mode === "ceiling" && ceilingInfo.ceilingType === "vaulted" ? `Vault ${index + 1}` : labelForSurface("ceiling")}</text>
               </g>
             );
@@ -3186,8 +3204,8 @@ export function TakeoffApp() {
           {mode === "ceiling" && ceilingInfo.ceilingType === "vaulted" && (() => {
             const ridge = roomRidgePoints(room, { x: 0, y: 0 }, floor.defaultCeilingHeight ?? 9);
             if (!ridge) return null;
-            const ridgeA = liftedProject({ x: ridge[0].x, y: ridge[0].z });
-            const ridgeB = liftedProject({ x: ridge[1].x, y: ridge[1].z });
+            const ridgeA = ceilingProject({ x: ridge[0].x, y: ridge[0].z });
+            const ridgeB = ceilingProject({ x: ridge[1].x, y: ridge[1].z });
             return (
               <line
                 className="takeoff-room-sketch-ridge"
@@ -6103,45 +6121,46 @@ export function TakeoffApp() {
                     });
                     const allSuggestionsApproved = suggestionRows.length > 0 && suggestionRows.every((row) => row.approved);
                     const suggestionHighlightClass = validationSectionClass("wall-suggestions");
+                    const shouldRenderSuggestionBlock = suggestionRows.length > 0 || Boolean(suggestionHighlightClass);
                     return (
                       <>
-                        <div id={validationTargetId("wall-suggestions")} className={`takeoff-wall-suggestions ${allSuggestionsApproved ? "takeoff-wall-suggestions--resolved" : ""} ${suggestionHighlightClass}`}>
-                          <div className="takeoff-component-head">
-                            <h3>Suggested Exterior Walls</h3>
+                        {shouldRenderSuggestionBlock && (
+                          <div id={validationTargetId("wall-suggestions")} className={`takeoff-wall-suggestions ${allSuggestionsApproved ? "takeoff-wall-suggestions--resolved" : ""} ${suggestionHighlightClass}`}>
+                            <div className="takeoff-component-head">
+                              <h3>Suggested Exterior Walls</h3>
+                              {allSuggestionsApproved && !suggestionHighlightClass ? (
+                                <span className="takeoff-component-total">Applied</span>
+                              ) : (
+                                <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
+                                  {scheduleOptionsBySurface.wall.map((option) => (
+                                    <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                                  ))}
+                                </select>
+                              )}
+                            </div>
                             {allSuggestionsApproved && !suggestionHighlightClass ? (
-                              <span className="takeoff-component-total">Applied</span>
-                            ) : (
-                              <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
-                                {scheduleOptionsBySurface.wall.map((option) => (
-                                  <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                                ))}
-                              </select>
+                              <p className="takeoff-muted">
+                                {suggestionRows.length} suggested wall area{suggestionRows.length === 1 ? "" : "s"} applied. Flagged wall components remain below for review.
+                              </p>
+                            ) : suggestionRows.map(({ suggestion, adjacentKinds, recommendation, approved }) => (
+                                <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
+                                  <span>
+                                    Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
+                                    <small>
+                                      {Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft
+                                      {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")} · ${recommendation.assembly}` : ""}
+                                    </small>
+                                  </span>
+                                  <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, recommendation.assembly, recommendation.adjacency)}>
+                                    {approved ? "Approved" : "Apply"}
+                                  </button>
+                                </div>
+                            ))}
+                            {(!allSuggestionsApproved || suggestionHighlightClass) && (
+                              <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
                             )}
                           </div>
-                          {allSuggestionsApproved && !suggestionHighlightClass ? (
-                            <p className="takeoff-muted">
-                              {suggestionRows.length} suggested wall area{suggestionRows.length === 1 ? "" : "s"} applied. Flagged wall components remain below for review.
-                            </p>
-                          ) : suggestionRows.length ? suggestionRows.map(({ suggestion, adjacentKinds, recommendation, approved }) => (
-                              <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
-                                <span>
-                                  Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
-                                  <small>
-                                    {Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft
-                                    {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")} · ${recommendation.assembly}` : ""}
-                                  </small>
-                                </span>
-                                <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, recommendation.assembly, recommendation.adjacency)}>
-                                  {approved ? "Approved" : "Apply"}
-                                </button>
-                              </div>
-                          )) : (
-                            <p className="takeoff-muted">No exterior/load-bearing wall exposure detected for this room.</p>
                           )}
-                          {(!allSuggestionsApproved || suggestionHighlightClass) && (
-                            <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
-                          )}
-                        </div>
 
                         <div className="takeoff-wall-reconciliation">
                           <div className="takeoff-component-head">
@@ -6756,45 +6775,46 @@ export function TakeoffApp() {
                   });
                   const allSuggestionsApproved = suggestionRows.length > 0 && suggestionRows.every((row) => row.approved);
                   const suggestionHighlightClass = validationSectionClass("wall-suggestions");
+                  const shouldRenderSuggestionBlock = suggestionRows.length > 0 || Boolean(suggestionHighlightClass);
                   return (
                     <>
-                      <div className={`takeoff-wall-suggestions ${allSuggestionsApproved ? "takeoff-wall-suggestions--resolved" : ""} ${suggestionHighlightClass}`}>
-                        <div className="takeoff-component-head">
-                          <h3>Suggested Exterior Walls</h3>
+                      {shouldRenderSuggestionBlock && (
+                        <div className={`takeoff-wall-suggestions ${allSuggestionsApproved ? "takeoff-wall-suggestions--resolved" : ""} ${suggestionHighlightClass}`}>
+                          <div className="takeoff-component-head">
+                            <h3>Suggested Exterior Walls</h3>
+                            {allSuggestionsApproved && !suggestionHighlightClass ? (
+                              <span className="takeoff-component-total">Applied</span>
+                            ) : (
+                              <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
+                                {scheduleOptionsBySurface.wall.map((option) => (
+                                  <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
                           {allSuggestionsApproved && !suggestionHighlightClass ? (
-                            <span className="takeoff-component-total">Applied</span>
-                          ) : (
-                            <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
-                              {scheduleOptionsBySurface.wall.map((option) => (
-                                <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                              ))}
-                            </select>
+                            <p className="takeoff-muted">
+                              {suggestionRows.length} suggested wall area{suggestionRows.length === 1 ? "" : "s"} applied. Flagged wall components remain below for review.
+                            </p>
+                          ) : suggestionRows.map(({ suggestion, adjacentKinds, recommendation, approved }) => (
+                              <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
+                                <span>
+                                  Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
+                                  <small>
+                                    {Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft
+                                    {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")} · ${recommendation.assembly}` : ""}
+                                  </small>
+                                </span>
+                                <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, recommendation.assembly, recommendation.adjacency)}>
+                                  {approved ? "Approved" : "Apply"}
+                                </button>
+                              </div>
+                          ))}
+                          {(!allSuggestionsApproved || suggestionHighlightClass) && (
+                            <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
                           )}
                         </div>
-                        {allSuggestionsApproved && !suggestionHighlightClass ? (
-                          <p className="takeoff-muted">
-                            {suggestionRows.length} suggested wall area{suggestionRows.length === 1 ? "" : "s"} applied. Flagged wall components remain below for review.
-                          </p>
-                        ) : suggestionRows.length ? suggestionRows.map(({ suggestion, adjacentKinds, recommendation, approved }) => (
-                            <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
-                              <span>
-                                Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
-                                <small>
-                                  {Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft
-                                  {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")} · ${recommendation.assembly}` : ""}
-                                </small>
-                              </span>
-                              <button className={approved ? "toolbar-primary" : ""} onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, recommendation.assembly, recommendation.adjacency)}>
-                                {approved ? "Approved" : "Apply"}
-                              </button>
-                            </div>
-                        )) : (
-                          <p className="takeoff-muted">No exterior/load-bearing wall exposure detected for this room.</p>
                         )}
-                        {(!allSuggestionsApproved || suggestionHighlightClass) && (
-                          <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
-                        )}
-                      </div>
 
                       <div className="takeoff-wall-reconciliation">
                         <div className="takeoff-component-head">
