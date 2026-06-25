@@ -1385,6 +1385,158 @@ button.toolbar-primary:hover {
   overflow: visible;
 }
 
+.takeoff-room-profile-panel--workbench {
+  display: grid;
+  gap: 12px;
+}
+
+.takeoff-workbench-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.takeoff-room-title-input {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #1f2933;
+  font: inherit;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.1;
+  max-width: 360px;
+  min-width: 180px;
+  padding: 2px 4px;
+}
+
+.takeoff-room-title-input:focus {
+  background: #fff;
+  border-color: #8db7d8;
+  outline: 2px solid rgba(31, 111, 178, 0.16);
+}
+
+.takeoff-workbench-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.takeoff-popout {
+  position: relative;
+}
+
+.takeoff-popout-menu {
+  background: #fff;
+  border: 1px solid #cfd9e2;
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(26, 37, 48, 0.18);
+  display: grid;
+  gap: 8px;
+  min-width: 260px;
+  padding: 10px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+}
+
+.takeoff-popout-menu label {
+  color: #465667;
+  display: grid;
+  font-size: 12px;
+  gap: 5px;
+  margin: 0;
+}
+
+.takeoff-popout-menu select {
+  font: inherit;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.takeoff-workbench-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.takeoff-workbench-metrics span {
+  background: #f5f8fa;
+  border: 1px solid #dce5ec;
+  border-radius: 7px;
+  color: #637384;
+  display: grid;
+  font-size: 12px;
+  gap: 2px;
+  padding: 8px;
+}
+
+.takeoff-workbench-metrics strong {
+  color: #1f2933;
+  font-size: 14px;
+}
+
+.takeoff-workbench-section {
+  border: 1px solid #dbe5ed;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.takeoff-workbench-toggle {
+  align-items: center;
+  background: #f7fafc;
+  border: 0;
+  color: #263545;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(120px, 0.4fr) minmax(0, 1fr) auto;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.takeoff-workbench-toggle:hover {
+  background: #eef5fb;
+  color: #263545;
+}
+
+.takeoff-workbench-toggle span {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.takeoff-workbench-toggle strong {
+  color: #607183;
+  font-size: 12px;
+}
+
+.takeoff-workbench-toggle em {
+  background: #fff;
+  border: 1px solid #cfd9e2;
+  border-radius: 999px;
+  color: #526170;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  padding: 2px 8px;
+}
+
+.takeoff-workbench-section-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.takeoff-scroll-anchor {
+  display: block;
+  height: 0;
+  overflow: hidden;
+}
+
 .takeoff-room-profile-grid {
   display: grid;
   gap: 10px;
@@ -2038,6 +2190,36 @@ button.toolbar-primary:hover {
   color: #697786;
 }
 
+.takeoff-wall-suggestions--workbench {
+  background: #fff8e8;
+  border-color: #eecb8d;
+  color: #805714;
+  margin: 0;
+}
+
+.takeoff-wall-suggestions--workbench .takeoff-component-head {
+  align-items: flex-start;
+}
+
+.takeoff-wall-suggestion-row--workbench {
+  align-items: end;
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid rgba(238, 203, 141, 0.8);
+  border-radius: 7px;
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, 0.65fr) minmax(260px, 1fr) auto;
+  padding: 8px;
+}
+
+.takeoff-wall-suggestion-row--workbench + .takeoff-wall-suggestion-row--workbench {
+  margin-top: 8px;
+}
+
+.takeoff-wall-suggestion-row--workbench select {
+  font: inherit;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
 .takeoff-room-type-suggestion {
   align-items: center;
   background: #f4f8fb;
@@ -2162,6 +2344,42 @@ button.toolbar-primary:hover {
   grid-template-columns: minmax(0, 1fr) minmax(86px, auto);
 }
 
+.takeoff-component-editor--workbench {
+  border: 1px solid #dbe5ed;
+  border-radius: 8px;
+  margin-top: 0;
+  padding: 10px;
+}
+
+.takeoff-component-list--workbench {
+  gap: 7px;
+}
+
+.takeoff-component-row--workbench {
+  align-items: center;
+  border: 1px solid #e1e7ec;
+  border-radius: 6px;
+  grid-template-columns: 82px minmax(160px, 1.25fr) minmax(88px, 0.45fr) minmax(115px, 0.65fr) minmax(120px, 0.7fr) 86px auto;
+  padding: 7px 8px;
+}
+
+.takeoff-component-row--workbench.takeoff-component-row--directional {
+  grid-template-columns: 82px minmax(160px, 1.15fr) 64px minmax(112px, 0.65fr) minmax(120px, 0.7fr) 86px auto;
+}
+
+.takeoff-component-row--workbench > select:first-of-type,
+.takeoff-component-row--workbench.takeoff-component-row--directional > select:first-of-type,
+.takeoff-component-row--workbench:not(.takeoff-component-row--directional) > input[aria-label$="label"],
+.takeoff-component-row--workbench.takeoff-component-row--directional > input[aria-label$="label"] {
+  grid-column: auto;
+}
+
+.takeoff-component-kind {
+  color: #526170;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .takeoff-component-row--stale {
   background: #fff7ed;
   border: 1px solid #f3bc8b;
@@ -2216,6 +2434,25 @@ button.toolbar-primary:hover {
   grid-column: 1 / -1;
   line-height: 1.35;
   margin: 0;
+}
+
+.takeoff-add-component-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+.takeoff-add-component-inline {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.takeoff-add-component-inline select {
+  font: inherit;
+  min-width: 190px;
+  padding: 6px 8px;
 }
 
 .takeoff-component-meta strong {
@@ -2448,8 +2685,26 @@ button.toolbar-primary:hover {
   .takeoff-room-profile-grid,
   .takeoff-room-type-suggestion,
   .takeoff-ceiling-shape-grid,
-  .takeoff-ceiling-qa-grid {
+  .takeoff-ceiling-qa-grid,
+  .takeoff-workbench-head,
+  .takeoff-workbench-metrics,
+  .takeoff-workbench-toggle,
+  .takeoff-wall-suggestion-row--workbench,
+  .takeoff-component-row--workbench,
+  .takeoff-component-row--workbench.takeoff-component-row--directional {
     grid-template-columns: 1fr;
+  }
+  .takeoff-workbench-head {
+    display: grid;
+  }
+  .takeoff-workbench-actions {
+    justify-content: flex-start;
+  }
+  .takeoff-component-row--workbench > select:first-of-type,
+  .takeoff-component-row--workbench.takeoff-component-row--directional > select:first-of-type,
+  .takeoff-component-row--workbench:not(.takeoff-component-row--directional) > input[aria-label$="label"],
+  .takeoff-component-row--workbench.takeoff-component-row--directional > input[aria-label$="label"] {
+    grid-column: 1 / -1;
   }
 }
 
