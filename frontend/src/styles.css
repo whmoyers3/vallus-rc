@@ -1412,6 +1412,10 @@ button.toolbar-primary:hover {
   gap: 8px;
 }
 
+.takeoff-openings-actions {
+  justify-content: space-between;
+}
+
 .takeoff-scale-list {
   display: flex;
   flex-direction: column;

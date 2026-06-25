@@ -4401,6 +4401,10 @@ export function TakeoffApp() {
     };
   }
 
+  function adjacentSpacePointForEvent(point: TakeoffPoint, precise: boolean) {
+    return precise ? point : snapAdjacentSpacePoint(point);
+  }
+
   function findMovablePoint(point: TakeoffPoint) {
     const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
     let bestTarget: MovablePointTarget | null = null;
@@ -4967,7 +4971,7 @@ export function TakeoffApp() {
   function handleCanvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
     const point = pointFromCanvasEvent(event);
     if (!point) return;
-    if (event.shiftKey) {
+    if (event.shiftKey && !adjacentDrawMode) {
       const target = findMovablePoint(point);
       if (target) {
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -4993,9 +4997,9 @@ export function TakeoffApp() {
       return;
     }
     if (workflowStep === "trace" && adjacentDrawMode) {
-      const snappedPoint = snapAdjacentSpacePoint(point);
+      const adjacentPoint = adjacentSpacePointForEvent(point, event.shiftKey);
       event.currentTarget.setPointerCapture(event.pointerId);
-      setDragState({ kind: "adjacent", start: snappedPoint, current: snappedPoint });
+      setDragState({ kind: "adjacent", start: adjacentPoint, current: adjacentPoint });
       return;
     }
     if (workflowStep === "trace" && roomDrawMode) {
@@ -5032,12 +5036,16 @@ export function TakeoffApp() {
     if (dragState.kind === "move-opening") {
       moveOpening(dragState.openingTarget, point);
     }
-    setDragState((current) => (current ? { ...current, current: current.kind === "adjacent" ? snapAdjacentSpacePoint(point) : point } : current));
+    setDragState((current) => (current ? { ...current, current: current.kind === "adjacent" ? adjacentSpacePointForEvent(point, event.shiftKey) : point } : current));
   }
 
   function handleCanvasPointerUp(event: React.PointerEvent<SVGSVGElement>) {
     if (!dragState) return;
-    const rect = rectFromPoints(dragState.start, dragState.current);
+    const releasePoint = pointFromCanvasEvent(event);
+    const dragCurrent = dragState.kind === "adjacent" && releasePoint
+      ? adjacentSpacePointForEvent(releasePoint, event.shiftKey)
+      : dragState.current;
+    const rect = rectFromPoints(dragState.start, dragCurrent);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -5049,7 +5057,7 @@ export function TakeoffApp() {
       return;
     }
     if (kind === "move-opening") {
-      const moved = lineLength({ start: dragState.start, end: dragState.current }) > 0.15;
+      const moved = lineLength({ start: dragState.start, end: dragCurrent }) > 0.15;
       openingDragMovedRef.current = moved;
       setMessage(moved ? "Opening moved along its assigned wall." : "Opening selected.");
       return;
@@ -5567,7 +5575,6 @@ export function TakeoffApp() {
           </p>
         </div>
         <div className="takeoff-toolbar-actions">
-          <button onClick={openComponentSchedule}>Component Schedule</button>
           <button onClick={openTakeoffList}>Open</button>
           <button className="toolbar-primary" onClick={saveTakeoff} disabled={saveLoading}>
             {saveLoading ? "Saving..." : takeoffId ? "Save" : "Save Draft"}
@@ -6970,7 +6977,7 @@ export function TakeoffApp() {
               </button>
             </div>
             {adjacentDrawMode ? (
-              <p className="takeoff-note">Drag a rectangle along the outside of conditioned space. Start or release within 5 ft of an exterior corner to snap; drag beyond that to intentionally wrap around the corner.</p>
+              <p className="takeoff-note">Drag a rectangle along the outside of conditioned space. Corners snap within 5 ft; hold Shift for precise placement, then release Shift during the drag to resume snapping.</p>
             ) : (
               <p className="takeoff-muted">Adjacent spaces tag exterior wall treatment without adding conditioned room area.</p>
             )}
@@ -6988,10 +6995,11 @@ export function TakeoffApp() {
 
           <details className="takeoff-panel takeoff-right-details">
             <summary>Openings</summary>
-            <div className="takeoff-form-actions">
+            <div className="takeoff-form-actions takeoff-openings-actions">
               <button className={openingModeActive ? "toolbar-primary" : ""} onClick={() => (openingModeActive ? stopOpeningPlacement() : startOpeningPlacement())}>
                 {openingModeActive ? "Stop Placing" : "Place Opening"}
               </button>
+              <button onClick={openComponentSchedule}>Component Schedule</button>
             </div>
             {openingModeActive ? (
               <p className="takeoff-note">
