@@ -4442,12 +4442,7 @@ export function TakeoffApp() {
   }
 
   function makeRoomFromPolygon(points: TakeoffPoint[]) {
-    const simplifiedPoints = simplifyPolygonPoints(points, {
-      duplicateTolerance: 0.02,
-      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
-      shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
-    });
-    const bounds = polygonBounds(simplifiedPoints);
+    const bounds = polygonBounds(points);
     const room = {
       id: nextId("room"),
       name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
@@ -4456,7 +4451,7 @@ export function TakeoffApp() {
       width: bounds.width,
       depth: bounds.depth,
       ceilingHeight: draftRoom.ceilingHeight,
-      polygon: simplifiedPoints,
+      polygon: points,
     } satisfies TakeoffRectRoom;
     return { ...room, components: defaultRoomComponents(rectArea(room)) };
   }
@@ -4530,11 +4525,7 @@ export function TakeoffApp() {
       setMessage("Subtraction would remove the entire room.");
       return;
     }
-    const polygon = simplifyPolygonPoints(clipPolygonToPoints(largest), {
-      duplicateTolerance: 0.02,
-      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
-      shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
-    });
+    const polygon = clipPolygonToPoints(largest);
     const bounds = polygonBounds(polygon);
     setFloor((current) => ({
       ...current,
@@ -4635,11 +4626,7 @@ export function TakeoffApp() {
     if (mergedPieces.length !== 1) return null;
     const largest = largestClipPolygon(merged);
     if (!largest) return null;
-    const polygon = simplifyPolygonPoints(clipPolygonToPoints(largest), {
-      duplicateTolerance: 0.02,
-      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
-      shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
-    });
+    const polygon = clipPolygonToPoints(largest);
     const bounds = polygonBounds(polygon);
     const nextArea = polygonArea(polygon);
     return {
