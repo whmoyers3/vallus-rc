@@ -2699,24 +2699,6 @@ function componentValidationSection(surface: TakeoffRoomComponent["surface"]): V
   return "ceiling-components";
 }
 
-function sketchProjection(points: TakeoffPoint[], width: number, height: number, padding = 16) {
-  const bounds = polygonBounds(points);
-  const usableWidth = Math.max(1, width - padding * 2);
-  const usableHeight = Math.max(1, height - padding * 2);
-  const factor = Math.min(usableWidth / Math.max(bounds.width, 1), usableHeight / Math.max(bounds.depth, 1));
-  const offsetX = padding + (usableWidth - bounds.width * factor) / 2;
-  const offsetY = padding + (usableHeight - bounds.depth * factor) / 2;
-  const project = (point: TakeoffPoint) => ({
-    x: offsetX + (point.x - bounds.x) * factor,
-    y: offsetY + (point.y - bounds.y) * factor,
-  });
-  const unproject = (point: TakeoffPoint) => ({
-    x: (point.x - offsetX) / factor + bounds.x,
-    y: (point.y - offsetY) / factor + bounds.y,
-  });
-  return { bounds, factor, project, unproject };
-}
-
 function sketchPointList(points: TakeoffPoint[], project: (point: TakeoffPoint) => TakeoffPoint) {
   return points.map((point) => {
     const projected = project(point);
@@ -3060,16 +3042,52 @@ export function TakeoffApp() {
     if (points.length < 3) return null;
     const viewWidth = mode === "ceiling" ? 380 : 320;
     const viewHeight = mode === "ceiling" ? 250 : 220;
-    const floorShift = { x: -16, y: 26 };
-    const ceilingShift = { x: 18, y: -26 };
-    const { project, unproject } = sketchProjection(points, viewWidth, viewHeight, 46);
+    const sketchPadding = mode === "ceiling" ? 40 : 34;
+    const verticalRise = mode === "ceiling" ? 90 : 76;
+    const isoXFromDepth = 0.45;
+    const isoYFromDepth = 0.22;
+    const isoYFromWidth = -0.08;
+    const center = {
+      x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+      y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+    };
+    const rawProject = (point: TakeoffPoint) => {
+      const x = point.x - center.x;
+      const y = point.y - center.y;
+      return {
+        x: x + y * isoXFromDepth,
+        y: y * isoYFromDepth + x * isoYFromWidth,
+      };
+    };
+    const rawPoints = points.map(rawProject);
+    const rawBounds = polygonBounds(rawPoints);
+    const usableWidth = Math.max(1, viewWidth - sketchPadding * 2);
+    const usableHeight = Math.max(1, viewHeight - sketchPadding * 2 - verticalRise);
+    const sketchScale = Math.min(usableWidth / Math.max(rawBounds.width, 1), usableHeight / Math.max(rawBounds.depth, 1));
+    const offsetX = (viewWidth - rawBounds.width * sketchScale) / 2 - rawBounds.x * sketchScale;
+    const offsetY = (viewHeight - rawBounds.depth * sketchScale) / 2 - rawBounds.y * sketchScale;
+    const screenProject = (point: TakeoffPoint, z: number) => {
+      const raw = rawProject(point);
+      return {
+        x: offsetX + raw.x * sketchScale,
+        y: offsetY + raw.y * sketchScale - z,
+      };
+    };
     const floorProject = (point: TakeoffPoint) => {
-      const base = project(point);
-      return { x: base.x + floorShift.x, y: base.y + floorShift.y };
+      return screenProject(point, -verticalRise / 2);
     };
     const ceilingProject = (point: TakeoffPoint) => {
-      const base = project(point);
-      return { x: base.x + ceilingShift.x, y: base.y + ceilingShift.y };
+      return screenProject(point, verticalRise / 2);
+    };
+    const unprojectCeiling = (point: TakeoffPoint) => {
+      const raw = {
+        x: (point.x - offsetX) / sketchScale,
+        y: (point.y + verticalRise / 2 - offsetY) / sketchScale,
+      };
+      const determinant = isoYFromDepth - isoXFromDepth * isoYFromWidth;
+      const localX = (raw.x * isoYFromDepth - isoXFromDepth * raw.y) / determinant;
+      const localY = (raw.y - isoYFromWidth * raw.x) / determinant;
+      return { x: localX + center.x, y: localY + center.y };
     };
     const roomEdges = pointsToEdges(points);
     const wallComponents = roomSurfaceComponents(room, "wall");
@@ -3142,7 +3160,7 @@ export function TakeoffApp() {
       const rect = svg.getBoundingClientRect();
       const viewX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * viewWidth;
       const viewY = ((event.clientY - rect.top) / Math.max(rect.height, 1)) * viewHeight;
-      const planPoint = unproject({ x: viewX - ceilingShift.x, y: viewY - ceilingShift.y });
+      const planPoint = unprojectCeiling({ x: viewX, y: viewY });
       const ratio = ceilingInfo.ridgeDirection === "E-W"
         ? clamp((planPoint.y - bounds.y) / Math.max(bounds.depth, 1), 0, 1)
         : clamp((planPoint.x - bounds.x) / Math.max(bounds.width, 1), 0, 1);
@@ -3160,24 +3178,24 @@ export function TakeoffApp() {
             points={sketchPointList(points, floorProject)}
             onClick={() => focusRoomSketchPanel(room.id, "floor")}
           />
-          {roomEdges.map((edge) => {
+          {roomEdges.flatMap((edge) => {
             const direction = edgeDirectionFromRoom(edge, room);
             const wallComponent = wallByDirection.get(direction);
+            if (!wallComponent) return [];
             const quad = [floorProject(edge.a), floorProject(edge.b), ceilingProject(edge.b), ceilingProject(edge.a)];
             const midpoint = sketchLabelPoint(quad, (point) => point);
             const active = isActive("wall", direction);
-            const isLoadWall = Boolean(wallComponent);
             const label = labelForSurface("wall", direction);
-            return (
+            return [(
               <g
                 key={`${direction}-${edge.a.x}-${edge.a.y}`}
-                className={`takeoff-room-sketch-wall ${isLoadWall ? "takeoff-room-sketch-wall--load" : "takeoff-room-sketch-wall--reference"} ${active ? "takeoff-room-sketch-panel--active" : ""}`}
+                className={`takeoff-room-sketch-wall takeoff-room-sketch-wall--load ${active ? "takeoff-room-sketch-panel--active" : ""}`}
                 onClick={() => focusRoomSketchPanel(room.id, "wall", direction)}
               >
                 <polygon points={quad.map((point) => `${point.x},${point.y}`).join(" ")} />
                 {label ? <text x={midpoint.x} y={midpoint.y}>{label}</text> : null}
               </g>
-            );
+            )];
           })}
           {ceilingPanels.map((panel, index) => {
             const labelPoint = sketchLabelPoint(panel, ceilingProject);
