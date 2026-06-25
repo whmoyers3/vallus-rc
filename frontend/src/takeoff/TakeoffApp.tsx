@@ -2706,6 +2706,31 @@ function roomTypeLabel(roomType?: TakeoffRoomType) {
   return roomTypeOptions.find((option) => option.id === (roomType ?? "plain"))?.shortLabel ?? "Plain";
 }
 
+function normalizedRoomNameForInference(name: string) {
+  return name.toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function inferredRoomTypeFromName(name: string): { type: TakeoffRoomType; reason: string; key: string } | null {
+  const normalized = normalizedRoomNameForInference(name);
+  if (!normalized) return null;
+  const has = (pattern: RegExp) => pattern.test(normalized);
+  const hasEntertainmentLabel = has(/\bfamily room\b/) || has(/\bgathering\b/) || has(/\bgreat room\b/) || has(/\bentertainment area\b/);
+  const hasBedroomLanguage = has(/\bbed(room)?\b/) || has(/\bowners? suite\b/) || has(/\bmaster\b/);
+  if (hasEntertainmentLabel) {
+    return { type: "entertainment", reason: "The room name reads like a family/gathering/entertainment space.", key: `${normalized}:entertainment` };
+  }
+  if (has(/\bkitchen\b/)) {
+    return { type: "kitchen", reason: "The room name includes kitchen, which carries appliance/internal gains.", key: `${normalized}:kitchen` };
+  }
+  if (has(/\blaundry\b/)) {
+    return { type: "laundry", reason: "The room name includes laundry, which carries appliance/internal gains.", key: `${normalized}:laundry` };
+  }
+  if (hasBedroomLanguage) {
+    return { type: "bedroom", reason: "The room name reads like a bedroom/owner suite and may affect people and ventilation counts.", key: `${normalized}:bedroom` };
+  }
+  return null;
+}
+
 function validationIssueKey(issue: TakeoffValidationIssue, index?: number) {
   return `${issue.severity}:${issue.target?.type ?? "global"}:${issue.target?.roomId ?? issue.target?.regionId ?? ""}:${issue.message}:${index ?? ""}`;
 }
@@ -3046,6 +3071,14 @@ export function TakeoffApp() {
     }));
   }
 
+  function acceptRoomTypeSuggestion(roomId: string, suggestion: NonNullable<ReturnType<typeof inferredRoomTypeFromName>>) {
+    updateRoom(roomId, { roomType: suggestion.type, roomTypeSuggestionDismissedKey: suggestion.key });
+  }
+
+  function rejectRoomTypeSuggestion(roomId: string, suggestion: NonNullable<ReturnType<typeof inferredRoomTypeFromName>>) {
+    updateRoom(roomId, { roomType: "plain", roomTypeSuggestionDismissedKey: suggestion.key });
+  }
+
   function updateRoomCeilingGeometry(roomId: string, patch: Partial<TakeoffRectRoom>) {
     updateRoom(roomId, { ...patch, ceilingGeometryApproved: false });
   }
@@ -3152,11 +3185,38 @@ export function TakeoffApp() {
     for (const component of wallComponents) {
       if (component.direction && !wallByDirection.has(component.direction)) wallByDirection.set(component.direction, component);
     }
+    const detectedAdjacentByDirection = adjacentKindsByDirection(floor, room);
+    const directionDistance = (first: TakeoffRoomComponent["direction"], second: TakeoffRoomComponent["direction"]) => {
+      if (!first || !second) return Number.POSITIVE_INFINITY;
+      const firstIndex = directionOptions.indexOf(first);
+      const secondIndex = directionOptions.indexOf(second);
+      if (firstIndex < 0 || secondIndex < 0) return Number.POSITIVE_INFINITY;
+      const diff = Math.abs(firstIndex - secondIndex);
+      return Math.min(diff, directionOptions.length - diff);
+    };
+    const wallComponentForSketchEdge = (direction: NonNullable<TakeoffRoomComponent["direction"]>) => {
+      const exact = wallByDirection.get(direction);
+      if (exact) return exact;
+      const detectedAdjacent = detectedAdjacentByDirection.get(direction) ?? [];
+      const garageCandidate = wallComponents.find((component) =>
+        component.adjacency === "garage" &&
+        detectedAdjacent.includes("garage") &&
+        directionDistance(component.direction, direction) <= 1
+      );
+      if (garageCandidate) return garageCandidate;
+      return wallComponents.find((component) =>
+        component.direction &&
+        directionDistance(component.direction, direction) <= 1 &&
+        directionDistance(component.direction, direction) === Math.min(...wallComponents
+          .filter((candidate) => candidate.direction)
+          .map((candidate) => directionDistance(candidate.direction, direction)))
+      );
+    };
     const labelForSurface = (surface: TakeoffRoomComponent["surface"], direction?: TakeoffRoomComponent["direction"]) => {
       if (surface === "floor") return floorComponent ? componentSketchLabel(floorComponent) : "Floor";
       if (surface === "ceiling") return ceilingComponents[0] ? componentSketchLabel(ceilingComponents[0]) : "Ceiling";
       if (surface === "wall") {
-        const wall = direction ? wallByDirection.get(direction) : undefined;
+        const wall = direction ? wallComponentForSketchEdge(direction) : undefined;
         return wall ? componentSketchLabel(wall) : null;
       }
       return surface === "glass" ? "Glass" : "Door";
@@ -3223,7 +3283,7 @@ export function TakeoffApp() {
           />
           {roomEdges.flatMap((edge) => {
             const direction = edgeDirectionFromRoom(edge, room);
-            const wallComponent = wallByDirection.get(direction);
+            const wallComponent = wallComponentForSketchEdge(direction);
             if (!wallComponent) return [];
             const quad = [floorProject(edge.a), floorProject(edge.b), ceilingProject(edge.b), ceilingProject(edge.a)];
             const midpoint = sketchLabelPoint(quad, (point) => point);
@@ -3232,7 +3292,7 @@ export function TakeoffApp() {
             return [(
               <g
                 key={`${direction}-${edge.a.x}-${edge.a.y}`}
-                className={`takeoff-room-sketch-wall takeoff-room-sketch-wall--load ${active ? "takeoff-room-sketch-panel--active" : ""}`}
+                className={`takeoff-room-sketch-wall takeoff-room-sketch-wall--load ${wallComponent.adjacency === "garage" ? "takeoff-room-sketch-wall--garage" : ""} ${active ? "takeoff-room-sketch-panel--active" : ""}`}
                 onClick={() => focusRoomSketchPanel(room.id, "wall", direction)}
               >
                 <polygon points={quad.map((point) => `${point.x},${point.y}`).join(" ")} />
@@ -3291,6 +3351,26 @@ export function TakeoffApp() {
             ? "Ceiling panels are emphasized; room walls, floor, doors, and glass are muted for context."
             : "Muted edges are reference geometry. Colored panels are assigned load components."}
         </p>
+      </div>
+    );
+  }
+
+  function renderRoomTypeSuggestion(room: TakeoffRectRoom) {
+    const suggestion = inferredRoomTypeFromName(room.name);
+    if (!suggestion) return null;
+    if ((room.roomType ?? "plain") === suggestion.type) return null;
+    if (room.roomTypeSuggestionDismissedKey === suggestion.key) return null;
+    const suggestedLabel = roomTypeOptions.find((option) => option.id === suggestion.type)?.shortLabel ?? roomTypeLabel(suggestion.type);
+    return (
+      <div className="takeoff-room-type-suggestion">
+        <div>
+          <strong>Room type suggestion</strong>
+          <p>{suggestion.reason} Consider tagging this room as <strong>{suggestedLabel}</strong> for internal gains.</p>
+        </div>
+        <div className="takeoff-room-type-suggestion-actions">
+          <button className="toolbar-primary" onClick={() => acceptRoomTypeSuggestion(room.id, suggestion)}>Use {suggestedLabel}</button>
+          <button onClick={() => rejectRoomTypeSuggestion(room.id, suggestion)}>Keep Plain</button>
+        </div>
       </div>
     );
   }
@@ -6328,6 +6408,7 @@ export function TakeoffApp() {
                       />
                     </label>
                   </div>
+                  {renderRoomTypeSuggestion(selectedRoom)}
                   <div id={validationTargetId("ceiling-geometry")} className={`takeoff-ceiling-shape ${validationSectionClass("ceiling-geometry")}`}>
                     <label>
                       Ceiling shape
@@ -6983,6 +7064,7 @@ export function TakeoffApp() {
                     onChange={(event) => updateRoom(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
                   />
                 </label>
+                {renderRoomTypeSuggestion(selectedRoom)}
                 <div className={`takeoff-ceiling-shape ${validationSectionClass("ceiling-geometry")}`}>
                   <label>
                     Ceiling shape

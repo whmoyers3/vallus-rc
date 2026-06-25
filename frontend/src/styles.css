@@ -1808,6 +1808,11 @@ button.toolbar-primary:hover {
   stroke: #4e7f63;
 }
 
+.takeoff-room-sketch-wall--garage polygon {
+  fill: rgba(138, 101, 50, 0.2);
+  stroke: #8a6532;
+}
+
 .takeoff-room-sketch-ceiling polygon {
   fill: rgba(179, 91, 47, 0.16);
   stroke: #b35b2f;
@@ -2003,6 +2008,36 @@ button.toolbar-primary:hover {
 
 .takeoff-wall-suggestion-row small {
   color: #697786;
+}
+
+.takeoff-room-type-suggestion {
+  align-items: center;
+  background: #f4f8fb;
+  border: 1px solid #cfdde7;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 10px 0;
+  padding: 10px;
+}
+
+.takeoff-room-type-suggestion strong {
+  color: #263545;
+}
+
+.takeoff-room-type-suggestion p {
+  color: #5f6f80;
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 4px 0 0;
+}
+
+.takeoff-room-type-suggestion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .takeoff-wall-reconciliation {
@@ -2383,6 +2418,7 @@ button.toolbar-primary:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .takeoff-room-profile-grid,
+  .takeoff-room-type-suggestion,
   .takeoff-ceiling-shape-grid,
   .takeoff-ceiling-qa-grid {
     grid-template-columns: 1fr;

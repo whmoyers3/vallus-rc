@@ -69,6 +69,7 @@ export type TakeoffRectRoom = {
   ceilingLoadArea?: number;
   floorLoadArea?: number;
   roomType?: TakeoffRoomType;
+  roomTypeSuggestionDismissedKey?: string;
   peopleOverride?: number;
   applianceWattsOverride?: number;
   components?: TakeoffRoomComponent[];
