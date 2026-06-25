@@ -1318,19 +1318,53 @@ function segmentCorridorPolygon(segment: { a: TakeoffPoint; b: TakeoffPoint }, t
   ]);
 }
 
-function adjacentSpaceTouchesSegment(
+function segmentLength(segment: { a: TakeoffPoint; b: TakeoffPoint }) {
+  return Math.hypot(segment.b.x - segment.a.x, segment.b.y - segment.a.y);
+}
+
+function meaningfulAdjacentContactLength(segment: { a: TakeoffPoint; b: TakeoffPoint }, tolerance: number) {
+  const length = segmentLength(segment);
+  return Math.min(Math.max(1.25, tolerance * 2), Math.max(0.35, length * 0.35));
+}
+
+function projectedSpanOnSegment(points: TakeoffPoint[], segment: { a: TakeoffPoint; b: TakeoffPoint }) {
+  const dx = segment.b.x - segment.a.x;
+  const dy = segment.b.y - segment.a.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0.001 || points.length === 0) return 0;
+  const ux = dx / length;
+  const uy = dy / length;
+  const projections = points.map((point) => (point.x - segment.a.x) * ux + (point.y - segment.a.y) * uy);
+  const min = Math.max(0, Math.min(...projections));
+  const max = Math.min(length, Math.max(...projections));
+  return Math.max(0, max - min);
+}
+
+function adjacentSpaceContactLength(
   space: TakeoffAdjacentSpace,
   segment: { a: TakeoffPoint; b: TakeoffPoint },
   tolerance: number,
 ) {
   const adjacentEdges = pointsToEdges(adjacentSpaceCorners(space));
-  if (adjacentEdges.some((edge) => sharedSegmentLength(segment, edge, tolerance) > 0.25)) return true;
+  const sharedEdgeLength = adjacentEdges.reduce((sum, edge) => sum + sharedSegmentLength(segment, edge, tolerance), 0);
 
   const corridor = segmentCorridorPolygon(segment, tolerance);
-  if (!corridor) return false;
-  const overlapArea = intersection([corridor], [pointsToClipPolygon(adjacentSpaceCorners(space))])
-    .reduce((sum, polygon) => sum + clipPolygonArea(polygon), 0);
-  return overlapArea > Math.max(0.2, tolerance * 0.5);
+  if (!corridor) return sharedEdgeLength;
+  const corridorOverlaps = intersection([corridor], [pointsToClipPolygon(adjacentSpaceCorners(space))]);
+  const corridorSpan = corridorOverlaps.reduce((sum, polygon) => {
+    const outer = polygon[0] ?? [];
+    return sum + projectedSpanOnSegment(clipRingToPoints(outer), segment);
+  }, 0);
+
+  return Math.min(segmentLength(segment), Math.max(sharedEdgeLength, corridorSpan));
+}
+
+function adjacentSpaceTouchesSegment(
+  space: TakeoffAdjacentSpace,
+  segment: { a: TakeoffPoint; b: TakeoffPoint },
+  tolerance: number,
+) {
+  return adjacentSpaceContactLength(space, segment, tolerance) >= meaningfulAdjacentContactLength(segment, tolerance);
 }
 
 function normalizeAdjacentSpaceRect(floor: TakeoffFloor, rect: PlanRect) {
@@ -1359,13 +1393,30 @@ function normalizeAdjacentSpaceRect(floor: TakeoffFloor, rect: PlanRect) {
 }
 
 function adjacentKindsByDirection(floor: TakeoffFloor, room: TakeoffRectRoom) {
-  const byDirection = new Map<(typeof directionOptions)[number], TakeoffAdjacentSpaceKind[]>();
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const totalLengthByDirection = new Map<(typeof directionOptions)[number], number>();
+  const contactByDirection = new Map<(typeof directionOptions)[number], Map<TakeoffAdjacentSpaceKind, number>>();
   for (const segment of roomExteriorSegments(floor, room)) {
-    const kinds = adjacentKindsForSegment(floor, segment);
-    if (kinds.length === 0) continue;
-    const existing = new Set(byDirection.get(segment.direction) ?? []);
-    kinds.forEach((kind) => existing.add(kind));
-    byDirection.set(segment.direction, Array.from(existing));
+    totalLengthByDirection.set(segment.direction, (totalLengthByDirection.get(segment.direction) ?? 0) + segment.length);
+    for (const space of floor.adjacentSpaces ?? []) {
+      const contactLength = adjacentSpaceContactLength(space, segment, tolerance);
+      if (contactLength < meaningfulAdjacentContactLength(segment, tolerance)) continue;
+      const byKind = contactByDirection.get(segment.direction) ?? new Map<TakeoffAdjacentSpaceKind, number>();
+      byKind.set(space.kind, (byKind.get(space.kind) ?? 0) + Math.min(contactLength, segment.length));
+      contactByDirection.set(segment.direction, byKind);
+    }
+  }
+  const byDirection = new Map<(typeof directionOptions)[number], TakeoffAdjacentSpaceKind[]>();
+  for (const [direction, byKind] of contactByDirection) {
+    const totalLength = totalLengthByDirection.get(direction) ?? 0;
+    const dominantThreshold = Math.max(
+      meaningfulAdjacentContactLength({ a: { x: 0, y: 0 }, b: { x: totalLength, y: 0 } }, tolerance),
+      totalLength * 0.45,
+    );
+    const kinds = Array.from(byKind.entries())
+      .filter(([, contactLength]) => contactLength >= dominantThreshold)
+      .map(([kind]) => kind);
+    if (kinds.length > 0) byDirection.set(direction, kinds);
   }
   return byDirection;
 }
@@ -3343,44 +3394,32 @@ export function TakeoffApp() {
       activeSketchTarget.surface === surface &&
       (!direction || !activeSketchTarget.direction || activeSketchTarget.direction === direction)
     );
-    const wallByDirection = new Map<TakeoffRoomComponent["direction"], TakeoffRoomComponent>();
-    for (const component of wallComponents) {
-      if (component.direction && !wallByDirection.has(component.direction)) wallByDirection.set(component.direction, component);
-    }
-    const detectedAdjacentByDirection = adjacentKindsByDirection(floor, room);
-    const directionDistance = (first: TakeoffRoomComponent["direction"], second: TakeoffRoomComponent["direction"]) => {
-      if (!first || !second) return Number.POSITIVE_INFINITY;
-      const firstIndex = directionOptions.indexOf(first);
-      const secondIndex = directionOptions.indexOf(second);
-      if (firstIndex < 0 || secondIndex < 0) return Number.POSITIVE_INFINITY;
-      const diff = Math.abs(firstIndex - secondIndex);
-      return Math.min(diff, directionOptions.length - diff);
+    const exteriorSegments = roomExteriorSegments(floor, room);
+    const sketchWallContext = (edge: { a: TakeoffPoint; b: TakeoffPoint }) => {
+      const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+      const exteriorSegment = exteriorSegments.find((segment) => sharedSegmentLength(edge, segment, tolerance) > 0.25);
+      const adjacentKinds = adjacentKindsForSegment(floor, edge);
+      return {
+        adjacentKinds,
+        direction: exteriorSegment?.direction ?? edgeDirectionFromRoom(edge, room),
+        exteriorSegment,
+        isLoadEdge: Boolean(exteriorSegment) || adjacentKinds.length > 0,
+      };
     };
-    const wallComponentForSketchEdge = (direction: NonNullable<TakeoffRoomComponent["direction"]>) => {
-      const exact = wallByDirection.get(direction);
-      if (exact) return exact;
-      const detectedAdjacent = detectedAdjacentByDirection.get(direction) ?? [];
-      const garageCandidate = wallComponents.find((component) =>
-        component.adjacency === "garage" &&
-        detectedAdjacent.includes("garage") &&
-        directionDistance(component.direction, direction) <= 1
-      );
-      if (garageCandidate) return garageCandidate;
-      return wallComponents.find((component) =>
-        component.direction &&
-        directionDistance(component.direction, direction) <= 1 &&
-        directionDistance(component.direction, direction) === Math.min(...wallComponents
-          .filter((candidate) => candidate.direction)
-          .map((candidate) => directionDistance(candidate.direction, direction)))
-      );
+    const wallComponentForSketchEdge = (edge: { a: TakeoffPoint; b: TakeoffPoint }) => {
+      const context = sketchWallContext(edge);
+      if (!context.isLoadEdge) return null;
+      return wallComponents.find((component) => {
+        if (!component.direction || component.direction !== context.direction) return false;
+        const adjacency = component.adjacency ?? "exterior";
+        if (adjacency === "exterior") return Boolean(context.exteriorSegment) && context.adjacentKinds.length === 0;
+        if (adjacency === "unknown") return context.isLoadEdge;
+        return context.adjacentKinds.includes(adjacency as TakeoffAdjacentSpaceKind);
+      }) ?? null;
     };
     const labelForSurface = (surface: TakeoffRoomComponent["surface"], direction?: TakeoffRoomComponent["direction"]) => {
       if (surface === "floor") return floorComponent ? componentSketchLabel(floorComponent) : "Floor";
       if (surface === "ceiling") return ceilingComponents[0] ? componentSketchLabel(ceilingComponents[0]) : "Ceiling";
-      if (surface === "wall") {
-        const wall = direction ? wallComponentForSketchEdge(direction) : undefined;
-        return wall ? componentSketchLabel(wall) : null;
-      }
       return surface === "glass" ? "Glass" : "Door";
     };
     const openingMarker = (component: TakeoffRoomComponent, index: number, total: number) => {
@@ -3391,19 +3430,56 @@ export function TakeoffApp() {
       const ceilingA = ceilingProject(edge.a);
       const floorB = floorProject(edge.b);
       const ceilingB = ceilingProject(edge.b);
-      const a = { x: (floorA.x + ceilingA.x) / 2, y: (floorA.y + ceilingA.y) / 2 };
-      const b = { x: (floorB.x + ceilingB.x) / 2, y: (floorB.y + ceilingB.y) / 2 };
+      const wallBottom = { a: floorA, b: floorB };
+      const wallTop = { a: ceilingA, b: ceilingB };
       const t = total <= 1 ? 0.5 : (index + 1) / (total + 1);
-      const x = a.x + (b.x - a.x) * t;
-      const y = a.y + (b.y - a.y) * t;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
+      const bottomCenter = {
+        x: wallBottom.a.x + (wallBottom.b.x - wallBottom.a.x) * t,
+        y: wallBottom.a.y + (wallBottom.b.y - wallBottom.a.y) * t,
+      };
+      const topCenter = {
+        x: wallTop.a.x + (wallTop.b.x - wallTop.a.x) * t,
+        y: wallTop.a.y + (wallTop.b.y - wallTop.a.y) * t,
+      };
+      const dx = wallBottom.b.x - wallBottom.a.x;
+      const dy = wallBottom.b.y - wallBottom.a.y;
       const length = Math.max(Math.hypot(dx, dy), 1);
       const ux = dx / length;
       const uy = dy / length;
-      const markerLength = component.surface === "glass" ? 22 : 16;
-      const markerStart = { x: x - ux * markerLength / 2, y: y - uy * markerLength / 2 };
-      const markerEnd = { x: x + ux * markerLength / 2, y: y + uy * markerLength / 2 };
+      const vertical = {
+        x: topCenter.x - bottomCenter.x,
+        y: topCenter.y - bottomCenter.y,
+      };
+      const verticalLength = Math.max(Math.hypot(vertical.x, vertical.y), 1);
+      const vx = vertical.x / verticalLength;
+      const vy = vertical.y / verticalLength;
+      const panelWidth = component.surface === "glass" ? 24 : 18;
+      const panelHeight = component.surface === "glass" ? 34 : 48;
+      const centerHeight = component.surface === "glass" ? 0.58 : 0.46;
+      const centerPoint = {
+        x: bottomCenter.x + vertical.x * centerHeight,
+        y: bottomCenter.y + vertical.y * centerHeight,
+      };
+      const halfWidth = Math.min(panelWidth, Math.max(12, length * 0.42)) / 2;
+      const halfHeight = Math.min(panelHeight, Math.max(16, verticalLength * 0.64)) / 2;
+      const panel = [
+        { x: centerPoint.x - ux * halfWidth - vx * halfHeight, y: centerPoint.y - uy * halfWidth - vy * halfHeight },
+        { x: centerPoint.x + ux * halfWidth - vx * halfHeight, y: centerPoint.y + uy * halfWidth - vy * halfHeight },
+        { x: centerPoint.x + ux * halfWidth + vx * halfHeight, y: centerPoint.y + uy * halfWidth + vy * halfHeight },
+        { x: centerPoint.x - ux * halfWidth + vx * halfHeight, y: centerPoint.y - uy * halfWidth + vy * halfHeight },
+      ];
+      const mullionA = {
+        x: centerPoint.x - vx * halfHeight,
+        y: centerPoint.y - vy * halfHeight,
+      };
+      const mullionB = {
+        x: centerPoint.x + vx * halfHeight,
+        y: centerPoint.y + vy * halfHeight,
+      };
+      const labelPoint = {
+        x: centerPoint.x + uy * (halfWidth + 8),
+        y: centerPoint.y - ux * (halfWidth + 8),
+      };
       const active = isActive(component.surface, component.direction);
       return (
         <g
@@ -3411,8 +3487,9 @@ export function TakeoffApp() {
           className={`takeoff-room-sketch-opening takeoff-room-sketch-opening--${component.surface} ${active ? "takeoff-room-sketch-opening--active" : ""}`}
           onClick={() => focusRoomSketchPanel(room.id, component.surface, component.direction)}
         >
-          <line x1={markerStart.x} y1={markerStart.y} x2={markerEnd.x} y2={markerEnd.y} />
-          <text x={x + uy * 7} y={y - ux * 7}>{component.assembly}</text>
+          <polygon points={panel.map((point) => `${point.x},${point.y}`).join(" ")} />
+          {component.surface === "glass" ? <line x1={mullionA.x} y1={mullionA.y} x2={mullionB.x} y2={mullionB.y} /> : null}
+          <text x={labelPoint.x} y={labelPoint.y}>{component.assembly}</text>
         </g>
       );
     };
@@ -3453,13 +3530,14 @@ export function TakeoffApp() {
             onClick={() => focusRoomSketchPanel(room.id, "floor")}
           />
           {roomEdges.flatMap((edge) => {
-            const direction = edgeDirectionFromRoom(edge, room);
-            const wallComponent = wallComponentForSketchEdge(direction);
+            const context = sketchWallContext(edge);
+            const direction = context.direction;
+            const wallComponent = wallComponentForSketchEdge(edge);
             if (!wallComponent) return [];
             const quad = [floorProject(edge.a), floorProject(edge.b), ceilingProject(edge.b), ceilingProject(edge.a)];
             const midpoint = sketchLabelPoint(quad, (point) => point);
             const active = isActive("wall", direction);
-            const label = labelForSurface("wall", direction);
+            const label = componentSketchLabel(wallComponent);
             return [(
               <g
                 key={`${direction}-${edge.a.x}-${edge.a.y}`}

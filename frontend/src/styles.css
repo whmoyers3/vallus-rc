@@ -1866,23 +1866,32 @@ button.toolbar-primary:hover {
   stroke-width: 2.4;
 }
 
-.takeoff-room-sketch-opening line {
-  pointer-events: stroke;
-  stroke-linecap: round;
-  stroke-width: 5;
+.takeoff-room-sketch-opening polygon {
+  pointer-events: fill;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
 }
 
-.takeoff-room-sketch-opening--glass line {
+.takeoff-room-sketch-opening--glass polygon {
+  fill: rgba(112, 188, 210, 0.55);
   stroke: #1f6fb2;
 }
 
-.takeoff-room-sketch-opening--door line {
+.takeoff-room-sketch-opening--door polygon {
+  fill: rgba(122, 90, 51, 0.42);
   stroke: #7a5a33;
 }
 
-.takeoff-room-sketch-opening--active line {
+.takeoff-room-sketch-opening line {
+  pointer-events: none;
+  stroke: #0f5fa8;
+  stroke-linecap: round;
+  stroke-width: 1.2;
+}
+
+.takeoff-room-sketch-opening--active polygon {
   stroke: #0f4f87;
-  stroke-width: 7;
+  stroke-width: 2.4;
 }
 
 .takeoff-room-sketch-ridge {
