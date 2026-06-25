@@ -1808,29 +1808,36 @@ function shapeFromPoints(points: TakeoffPoint[], center: TakeoffPoint) {
   return shape;
 }
 
-function simplifyPolygonPoints(points: TakeoffPoint[], options: { duplicateTolerance?: number; collinearTolerance?: number; shortSegmentTolerance?: number } = {}) {
+function simplifyPolygonPoints(points: TakeoffPoint[], options: { duplicateTolerance?: number; collinearTolerance?: number; shortSegmentTolerance?: number; preserveIndices?: number[] } = {}): TakeoffPoint[] {
   if (points.length <= 3) return points;
   const duplicateTolerance = options.duplicateTolerance ?? 0.02;
   const collinearTolerance = options.collinearTolerance ?? 0.08;
   const shortSegmentTolerance = options.shortSegmentTolerance ?? 0.18;
-  const deduped = points.filter((point, index) => index === 0 || distance(point, points[index - 1]) > duplicateTolerance);
-  if (deduped.length > 2 && distance(deduped[0], deduped[deduped.length - 1]) <= duplicateTolerance) deduped.pop();
-  if (deduped.length <= 3) return deduped;
-  let simplified = deduped;
+  const preserveIndices = new Set(options.preserveIndices ?? []);
+  type SimplifyEntry = { point: TakeoffPoint; originalIndex: number; preserve: boolean };
+  let entries: SimplifyEntry[] = points
+    .map((point, index) => ({ point, originalIndex: index, preserve: preserveIndices.has(index) }))
+    .filter((entry, index, entries) => index === 0 || entry.preserve || distance(entry.point, entries[index - 1].point) > duplicateTolerance);
+  if (entries.length > 2 && distance(entries[0].point, entries[entries.length - 1].point) <= duplicateTolerance && !entries[entries.length - 1].preserve) {
+    entries = entries.slice(0, -1);
+  }
+  if (entries.length <= 3) return entries.map(({ point }) => point);
+  let simplified = entries;
   let changed = true;
   while (changed && simplified.length > 3) {
     changed = false;
     const nextPoints = simplified.filter((point, index) => {
-      const previous = simplified[(index - 1 + simplified.length) % simplified.length];
-      const next = simplified[(index + 1) % simplified.length];
-      const previousLength = distance(previous, point);
-      const nextLength = distance(point, next);
+      if (point.preserve) return true;
+      const previous = simplified[(index - 1 + simplified.length) % simplified.length].point;
+      const next = simplified[(index + 1) % simplified.length].point;
+      const previousLength = distance(previous, point.point);
+      const nextLength = distance(point.point, next);
       const segmentLength = distance(previous, next);
       if (segmentLength <= duplicateTolerance) {
         changed = true;
         return false;
       }
-      const offLine = Math.abs((next.x - previous.x) * (previous.y - point.y) - (previous.x - point.x) * (next.y - previous.y)) / segmentLength;
+      const offLine = Math.abs((next.x - previous.x) * (previous.y - point.point.y) - (previous.x - point.point.x) * (next.y - previous.y)) / segmentLength;
       const isNearStraightRun = offLine <= collinearTolerance;
       const isTinyJogOnLine = offLine <= collinearTolerance * 1.75 && Math.min(previousLength, nextLength) <= shortSegmentTolerance;
       if (isNearStraightRun || isTinyJogOnLine) {
@@ -1842,7 +1849,9 @@ function simplifyPolygonPoints(points: TakeoffPoint[], options: { duplicateToler
     if (nextPoints.length < 3) break;
     simplified = nextPoints;
   }
-  return simplified.length >= 3 ? simplified.map((point) => ({ x: Number(point.x.toFixed(3)), y: Number(point.y.toFixed(3)) })) : deduped;
+  return simplified.length >= 3
+    ? simplified.map(({ point }) => ({ x: Number(point.x.toFixed(3)), y: Number(point.y.toFixed(3)) }))
+    : entries.map(({ point }) => point);
 }
 
 function cleanPolygonPointsForRender(points: TakeoffPoint[]) {
@@ -4534,11 +4543,12 @@ export function TakeoffApp() {
     setMessage(`Subtracted shape from ${targetRoom.name}.`);
   }
 
-  function createPolygonRoom(points: TakeoffPoint[]) {
+  function createPolygonRoom(points: TakeoffPoint[], preserveClosingEndpoints = false) {
     const simplifiedInput = simplifyPolygonPoints(points, {
       duplicateTolerance: 0.02,
       collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
       shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
+      preserveIndices: preserveClosingEndpoints ? [0, points.length - 1] : undefined,
     });
     if (simplifiedInput.length < 3) {
       setMessage("Polygon room needs at least 3 points.");
@@ -4571,7 +4581,7 @@ export function TakeoffApp() {
       setMessage("Add at least 3 polygon points before finishing the room.");
       return false;
     }
-    return createPolygonRoom(roomPolygonDraft);
+    return createPolygonRoom(roomPolygonDraft, true);
   }
 
   function addPolygonRoomPoint(point: TakeoffPoint, constrainAngle = false) {
@@ -4587,6 +4597,7 @@ export function TakeoffApp() {
         duplicateTolerance: 0.02,
         collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
         shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
+        preserveIndices: [0, next.length - 1],
       });
     });
     setMessage(roomPolygonDraft.length >= 2 ? "Polygon point added. Click Close or press Enter to finish." : "Polygon point added.");
@@ -6070,12 +6081,12 @@ export function TakeoffApp() {
                           if (!canClose) return;
                           event.preventDefault();
                           event.stopPropagation();
+                          finishPolygonRoom(true);
                         }}
                         onPointerDown={(event) => {
                           if (!canClose) return;
                           event.preventDefault();
                           event.stopPropagation();
-                          finishPolygonRoom(true);
                         }}
                         onPointerUp={(event) => {
                           if (!canClose) return;
