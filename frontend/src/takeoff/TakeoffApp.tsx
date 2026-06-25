@@ -2458,7 +2458,12 @@ function TakeoffModelPreview({
     const exteriorPoints = exteriorRingPoints(floor);
     if (exteriorPoints.length >= 3) scene.add(createHorizontalShapeMesh(exteriorPoints, center, -0.02, exteriorMaterial));
 
-    for (const [index, room] of floor.rooms.entries()) {
+    for (const [index, sourceRoom] of floor.rooms.entries()) {
+      const rawPoints = roomCorners(sourceRoom);
+      const renderPoints = cleanPolygonPointsForRender(rawPoints);
+      const room = renderPoints.length >= 3 && renderPoints.length !== rawPoints.length
+        ? { ...sourceRoom, polygon: renderPoints }
+        : sourceRoom;
       const points = roomCorners(room);
       const color = new THREE.Color(roomColor(index));
       const roomFloorMaterial = floorMaterial.clone();
@@ -3417,22 +3422,32 @@ export function TakeoffApp() {
         return context.adjacentKinds.includes(adjacency as TakeoffAdjacentSpaceKind);
       }) ?? null;
     };
+    const sketchEdgeKey = (edge: { a: TakeoffPoint; b: TakeoffPoint }) => `${edge.a.x},${edge.a.y}:${edge.b.x},${edge.b.y}`;
     const labelForSurface = (surface: TakeoffRoomComponent["surface"], direction?: TakeoffRoomComponent["direction"]) => {
       if (surface === "floor") return floorComponent ? componentSketchLabel(floorComponent) : "Floor";
       if (surface === "ceiling") return ceilingComponents[0] ? componentSketchLabel(ceilingComponents[0]) : "Ceiling";
       return surface === "glass" ? "Glass" : "Door";
     };
-    const openingMarker = (component: TakeoffRoomComponent, index: number, total: number) => {
-      if (!component.direction) return null;
-      const edge = roomEdges.find((candidate) => edgeDirectionFromRoom(candidate, room) === component.direction);
-      if (!edge) return null;
+    const openingSketchEdgeInfo = (component: TakeoffRoomComponent) => {
+      if (!component.placement || !component.direction) return null;
+      const edge = nearestRoomEdge(component.placement, room);
+      const tolerance = Math.max(1.5, floor.scale.feetPerGrid * 1.5, floor.scale.gridSnapInches / 12);
+      if (!edge || edge.distance > tolerance) return null;
+      if (sketchWallContext(edge).direction !== component.direction) return null;
+      const edgeLength = Math.max(0.001, distance(edge.a, edge.b));
+      const t = clamp(distance(edge.a, edge.point) / edgeLength, 0.08, 0.92);
+      return { edge, t };
+    };
+    const openingMarker = (component: TakeoffRoomComponent) => {
+      const edgeInfo = openingSketchEdgeInfo(component);
+      if (!edgeInfo) return null;
+      const { edge, t } = edgeInfo;
       const floorA = floorProject(edge.a);
       const ceilingA = ceilingProject(edge.a);
       const floorB = floorProject(edge.b);
       const ceilingB = ceilingProject(edge.b);
       const wallBottom = { a: floorA, b: floorB };
       const wallTop = { a: ceilingA, b: ceilingB };
-      const t = total <= 1 ? 0.5 : (index + 1) / (total + 1);
       const bottomCenter = {
         x: wallBottom.a.x + (wallBottom.b.x - wallBottom.a.x) * t,
         y: wallBottom.a.y + (wallBottom.b.y - wallBottom.a.y) * t,
@@ -3493,8 +3508,11 @@ export function TakeoffApp() {
         </g>
       );
     };
-    const openingsBySurfaceDirection = (surface: "glass" | "door", direction: TakeoffRoomComponent["direction"]) => (
-      (surface === "glass" ? glassComponents : doorComponents).filter((component) => component.direction === direction)
+    const openingsBySurfaceEdge = (surface: "glass" | "door", edge: { a: TakeoffPoint; b: TakeoffPoint }) => (
+      (surface === "glass" ? glassComponents : doorComponents).filter((component) => {
+        const edgeInfo = openingSketchEdgeInfo(component);
+        return edgeInfo && sketchEdgeKey(edgeInfo.edge) === sketchEdgeKey(edge);
+      })
     );
     const updateRidgeOffsetFromSketch = (event: React.PointerEvent<SVGLineElement>) => {
       const svg = event.currentTarget.ownerSVGElement;
@@ -3509,7 +3527,7 @@ export function TakeoffApp() {
       updateRoomCeilingGeometry(room.id, { ceilingRidgeOffset: Number((ratio * 2 - 1).toFixed(3)) });
     };
     return (
-      <div className={`takeoff-room-sketch takeoff-room-sketch--${mode}`}>
+      <div key={`${mode}-${room.id}`} className={`takeoff-room-sketch takeoff-room-sketch--${mode}`}>
         <div className="takeoff-component-head">
           <h3>{mode === "ceiling" ? "Ceiling Geometry Sketch" : "Room Load Sketch"}</h3>
           <div className="takeoff-room-sketch-actions">
@@ -3563,12 +3581,11 @@ export function TakeoffApp() {
             );
           })}
           {roomEdges.flatMap((edge) => {
-            const direction = edgeDirectionFromRoom(edge, room);
-            const glass = openingsBySurfaceDirection("glass", direction);
-            const doors = openingsBySurfaceDirection("door", direction);
+            const glass = openingsBySurfaceEdge("glass", edge);
+            const doors = openingsBySurfaceEdge("door", edge);
             return [
-              ...glass.map((component, index) => openingMarker(component, index, glass.length)),
-              ...doors.map((component, index) => openingMarker(component, index, doors.length)),
+              ...glass.map((component) => openingMarker(component)),
+              ...doors.map((component) => openingMarker(component)),
             ];
           })}
           {mode === "ceiling" && ceilingInfo.ceilingType === "vaulted" && (() => {
