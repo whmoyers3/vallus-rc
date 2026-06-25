@@ -1808,22 +1808,45 @@ function shapeFromPoints(points: TakeoffPoint[], center: TakeoffPoint) {
   return shape;
 }
 
-function cleanPolygonPointsForRender(points: TakeoffPoint[]) {
+function simplifyPolygonPoints(points: TakeoffPoint[], options: { duplicateTolerance?: number; collinearTolerance?: number; shortSegmentTolerance?: number } = {}) {
   if (points.length <= 3) return points;
-  const duplicateTolerance = 0.02;
-  const collinearTolerance = 0.06;
+  const duplicateTolerance = options.duplicateTolerance ?? 0.02;
+  const collinearTolerance = options.collinearTolerance ?? 0.08;
+  const shortSegmentTolerance = options.shortSegmentTolerance ?? 0.18;
   const deduped = points.filter((point, index) => index === 0 || distance(point, points[index - 1]) > duplicateTolerance);
   if (deduped.length > 2 && distance(deduped[0], deduped[deduped.length - 1]) <= duplicateTolerance) deduped.pop();
   if (deduped.length <= 3) return deduped;
-  const simplified = deduped.filter((point, index) => {
-    const previous = deduped[(index - 1 + deduped.length) % deduped.length];
-    const next = deduped[(index + 1) % deduped.length];
-    const segmentLength = distance(previous, next);
-    if (segmentLength <= duplicateTolerance) return false;
-    const offLine = Math.abs((next.x - previous.x) * (previous.y - point.y) - (previous.x - point.x) * (next.y - previous.y)) / segmentLength;
-    return offLine > collinearTolerance;
-  });
-  return simplified.length >= 3 ? simplified : deduped;
+  let simplified = deduped;
+  let changed = true;
+  while (changed && simplified.length > 3) {
+    changed = false;
+    const nextPoints = simplified.filter((point, index) => {
+      const previous = simplified[(index - 1 + simplified.length) % simplified.length];
+      const next = simplified[(index + 1) % simplified.length];
+      const previousLength = distance(previous, point);
+      const nextLength = distance(point, next);
+      const segmentLength = distance(previous, next);
+      if (segmentLength <= duplicateTolerance) {
+        changed = true;
+        return false;
+      }
+      const offLine = Math.abs((next.x - previous.x) * (previous.y - point.y) - (previous.x - point.x) * (next.y - previous.y)) / segmentLength;
+      const isNearStraightRun = offLine <= collinearTolerance;
+      const isTinyJogOnLine = offLine <= collinearTolerance * 1.75 && Math.min(previousLength, nextLength) <= shortSegmentTolerance;
+      if (isNearStraightRun || isTinyJogOnLine) {
+        changed = true;
+        return false;
+      }
+      return true;
+    });
+    if (nextPoints.length < 3) break;
+    simplified = nextPoints;
+  }
+  return simplified.length >= 3 ? simplified.map((point) => ({ x: Number(point.x.toFixed(3)), y: Number(point.y.toFixed(3)) })) : deduped;
+}
+
+function cleanPolygonPointsForRender(points: TakeoffPoint[]) {
+  return simplifyPolygonPoints(points, { duplicateTolerance: 0.02, collinearTolerance: 0.08, shortSegmentTolerance: 0.18 });
 }
 
 function createHorizontalShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.Material) {
@@ -2729,6 +2752,16 @@ function componentSourceLabel(source?: TakeoffRoomComponent["source"]) {
   return null;
 }
 
+function defaultOpeningLabel(surface: "glass" | "door", solarDirection?: TakeoffRoomComponent["solarDirection"]) {
+  if (surface === "door") return "Door";
+  return solarDirection === "Shaded" ? "Shaded window" : "Window";
+}
+
+function isAutoOpeningLabel(label?: string) {
+  if (!label) return true;
+  return ["window", "shaded window", "door"].includes(label.trim().toLowerCase());
+}
+
 function validationSectionLabel(section: ValidationSection) {
   const labels: Record<ValidationSection, string> = {
     merge: "Merge / attribution tools",
@@ -2828,6 +2861,7 @@ export function TakeoffApp() {
   const [selectedOpening, setSelectedOpening] = useState<OpeningMoveTarget | null>(null);
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressNextCanvasClickRef = useRef(false);
+  const modalPointerStartedOnBackdropRef = useRef(false);
   const openingDragMovedRef = useRef(false);
 
   useEffect(() => {
@@ -3677,16 +3711,23 @@ export function TakeoffApp() {
       const surfaceChanged = patch.surface && patch.surface !== current.surface;
       const option = surfaceChanged ? scheduleOptionsBySurface[nextSurface][0] : null;
       const targetAdjacent = pendingOpeningTarget?.adjacentKinds ?? [];
+      const solarDirectionProvided = Object.prototype.hasOwnProperty.call(patch, "solarDirection");
+      const nextSolarDirection = nextSurface === "glass"
+        ? solarDirectionProvided
+          ? patch.solarDirection
+          : surfaceChanged
+            ? targetAdjacent.includes("covered_porch") ? "Shaded" : undefined
+            : current.solarDirection
+        : undefined;
+      const shouldUseAutoLabel = patch.label === undefined && (surfaceChanged || solarDirectionProvided) && isAutoOpeningLabel(current.label);
       return {
         ...current,
         ...patch,
         assembly: patch.assembly ?? option?.code ?? current.assembly,
         width: patch.width ?? (surfaceChanged ? 3 : current.width),
         height: patch.height ?? (surfaceChanged ? (nextSurface === "glass" ? 5 : 6.67) : current.height),
-        label: patch.label ?? (surfaceChanged ? (nextSurface === "glass" ? "Window" : "Door") : current.label),
-        solarDirection: nextSurface === "glass"
-          ? patch.solarDirection ?? (surfaceChanged && targetAdjacent.includes("covered_porch") ? "Shaded" : current.solarDirection)
-          : undefined,
+        label: patch.label ?? (shouldUseAutoLabel ? defaultOpeningLabel(nextSurface, nextSolarDirection) : current.label),
+        solarDirection: nextSolarDirection,
       };
     });
   }
@@ -3731,12 +3772,13 @@ export function TakeoffApp() {
       },
       adjacentKinds: target.adjacentKinds,
     });
-    if (openingPlacement.surface === "glass" && target.adjacentKinds.includes("covered_porch")) {
+    if (openingPlacement.surface === "glass") {
+      const nextSolarDirection = target.adjacentKinds.includes("covered_porch") ? "Shaded" : undefined;
       setOpeningPlacement((current) => current
         ? {
             ...current,
-            solarDirection: "Shaded",
-            label: current.label && current.label !== "Window" ? current.label : "Shaded window",
+            solarDirection: nextSolarDirection,
+            label: isAutoOpeningLabel(current.label) ? defaultOpeningLabel("glass", nextSolarDirection) : current.label,
           }
         : current);
     }
@@ -3804,10 +3846,12 @@ export function TakeoffApp() {
       assembly: component.assembly,
       width,
       height,
-      label: component.label || (component.surface === "glass" ? "Window" : "Door"),
       solarDirection: component.surface === "glass"
         ? component.solarDirection ?? (adjacentKinds.includes("covered_porch") ? "Shaded" : undefined)
         : undefined,
+      label: component.surface === "glass" && isAutoOpeningLabel(component.label)
+        ? defaultOpeningLabel("glass", component.solarDirection ?? (adjacentKinds.includes("covered_porch") ? "Shaded" : undefined))
+        : component.label || defaultOpeningLabel(component.surface),
     });
   }
 
@@ -3842,7 +3886,7 @@ export function TakeoffApp() {
                       area,
                       width: openingPlacement.width,
                       height: openingPlacement.height,
-                      label: openingPlacement.label || (openingPlacement.surface === "glass" ? "Window" : "Door"),
+                      label: openingPlacement.label || defaultOpeningLabel(openingPlacement.surface, openingPlacement.solarDirection),
                       solarDirection: openingPlacement.surface === "glass"
                         ? openingPlacement.solarDirection ?? (adjacentKinds.includes("covered_porch") ? "Shaded" : undefined)
                         : undefined,
@@ -3883,6 +3927,10 @@ export function TakeoffApp() {
         if (!component) return room;
         const placement = projectedOpeningPlacement(current, point, room, component);
         if (!placement) return room;
+        const adjacentKinds = adjacentKindsForPlacedOpening(current, room, { ...component, placement });
+        const solarDirection = component.surface === "glass"
+          ? adjacentKinds.includes("covered_porch") ? "Shaded" : undefined
+          : component.solarDirection;
         return {
           ...room,
           components: roomComponents(room).map((existing) => (
@@ -3890,11 +3938,10 @@ export function TakeoffApp() {
               ? {
                   ...existing,
                   placement,
-                  solarDirection: existing.surface === "glass"
-                    ? adjacentKindsForPlacedOpening(current, room, { ...existing, placement }).includes("covered_porch")
-                      ? "Shaded"
-                      : existing.solarDirection
-                    : existing.solarDirection,
+                  solarDirection,
+                  label: existing.surface === "glass" && isAutoOpeningLabel(existing.label)
+                    ? defaultOpeningLabel("glass", solarDirection)
+                    : existing.label,
                 }
               : existing
           )),
@@ -4386,7 +4433,12 @@ export function TakeoffApp() {
   }
 
   function makeRoomFromPolygon(points: TakeoffPoint[]) {
-    const bounds = polygonBounds(points);
+    const simplifiedPoints = simplifyPolygonPoints(points, {
+      duplicateTolerance: 0.02,
+      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
+      shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
+    });
+    const bounds = polygonBounds(simplifiedPoints);
     const room = {
       id: nextId("room"),
       name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
@@ -4395,7 +4447,7 @@ export function TakeoffApp() {
       width: bounds.width,
       depth: bounds.depth,
       ceilingHeight: draftRoom.ceilingHeight,
-      polygon: points,
+      polygon: simplifiedPoints,
     } satisfies TakeoffRectRoom;
     return { ...room, components: defaultRoomComponents(rectArea(room)) };
   }
@@ -4469,7 +4521,11 @@ export function TakeoffApp() {
       setMessage("Subtraction would remove the entire room.");
       return;
     }
-    const polygon = clipPolygonToPoints(largest);
+    const polygon = simplifyPolygonPoints(clipPolygonToPoints(largest), {
+      duplicateTolerance: 0.02,
+      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
+      shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
+    });
     const bounds = polygonBounds(polygon);
     setFloor((current) => ({
       ...current,
@@ -4479,13 +4535,18 @@ export function TakeoffApp() {
   }
 
   function createPolygonRoom(points: TakeoffPoint[]) {
-    if (points.length < 3) {
+    const simplifiedInput = simplifyPolygonPoints(points, {
+      duplicateTolerance: 0.02,
+      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
+      shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
+    });
+    if (simplifiedInput.length < 3) {
       setMessage("Polygon room needs at least 3 points.");
       return false;
     }
     let availablePolygon: Polygon | null = null;
     try {
-      availablePolygon = availablePolygonFromPoints(points);
+      availablePolygon = availablePolygonFromPoints(simplifiedInput);
     } catch (error) {
       setMessage("That polygon could not be resolved. Try clearing points and drawing the room with simpler edges.");
       return false;
@@ -4519,7 +4580,15 @@ export function TakeoffApp() {
       finishPolygonRoom();
       return;
     }
-    setRoomPolygonDraft((current) => [...current, snapped]);
+    setRoomPolygonDraft((current) => {
+      const next = [...current, snapped];
+      if (next.length < 4) return next;
+      return simplifyPolygonPoints(next, {
+        duplicateTolerance: 0.02,
+        collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
+        shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
+      });
+    });
     setMessage(roomPolygonDraft.length >= 2 ? "Polygon point added. Click Close or press Enter to finish." : "Polygon point added.");
   }
 
@@ -4555,7 +4624,11 @@ export function TakeoffApp() {
     if (mergedPieces.length !== 1) return null;
     const largest = largestClipPolygon(merged);
     if (!largest) return null;
-    const polygon = clipPolygonToPoints(largest);
+    const polygon = simplifyPolygonPoints(clipPolygonToPoints(largest), {
+      duplicateTolerance: 0.02,
+      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
+      shortSegmentTolerance: Math.max(0.18, floor.scale.gridSnapInches / 18),
+    });
     const bounds = polygonBounds(polygon);
     const nextArea = polygonArea(polygon);
     return {
@@ -6507,10 +6580,13 @@ export function TakeoffApp() {
                                     <select
                                       aria-label="glass solar exposure"
                                       value={component.solarDirection ?? ""}
-                                      onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, {
-                                        solarDirection: event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined,
-                                        label: event.target.value === "Shaded" && (!component.label || component.label === "Window") ? "Shaded window" : component.label,
-                                      })}
+                                      onChange={(event) => {
+                                        const solarDirection = event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined;
+                                        updateRoomComponent(selectedRoom.id, component.id, {
+                                          solarDirection,
+                                          label: isAutoOpeningLabel(component.label) ? defaultOpeningLabel("glass", solarDirection) : component.label,
+                                        });
+                                      }}
                                     >
                                       <option value="">Wall direction</option>
                                       <option value="Shaded">Shaded</option>
@@ -7048,10 +7124,13 @@ export function TakeoffApp() {
                                   <select
                                     aria-label="glass solar exposure"
                                     value={component.solarDirection ?? ""}
-                                    onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, {
-                                      solarDirection: event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined,
-                                      label: event.target.value === "Shaded" && (!component.label || component.label === "Window") ? "Shaded window" : component.label,
-                                    })}
+                                    onChange={(event) => {
+                                      const solarDirection = event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined;
+                                      updateRoomComponent(selectedRoom.id, component.id, {
+                                        solarDirection,
+                                        label: isAutoOpeningLabel(component.label) ? defaultOpeningLabel("glass", solarDirection) : component.label,
+                                      });
+                                    }}
                                   >
                                     <option value="">Wall direction</option>
                                     <option value="Shaded">Shaded</option>
@@ -7139,8 +7218,24 @@ export function TakeoffApp() {
         const targetAdjacent = pendingOpeningTarget?.adjacentKinds ?? (editingRoom && editingComponent ? adjacentKindsForPlacedOpening(floor, editingRoom, editingComponent) : []);
         const selectedDefinition = scheduleOptionsBySurface[openingPlacement.surface].find((option) => option.code === openingPlacement.assembly);
         return (
-          <div className="modal-backdrop open-dialog-backdrop" onClick={closeOpeningDialog}>
-            <div className="modal takeoff-opening-modal" onClick={(event) => event.stopPropagation()}>
+          <div
+            className="modal-backdrop open-dialog-backdrop"
+            onPointerDown={(event) => {
+              modalPointerStartedOnBackdropRef.current = event.target === event.currentTarget;
+            }}
+            onClick={(event) => {
+              if (event.target === event.currentTarget && modalPointerStartedOnBackdropRef.current) closeOpeningDialog();
+              modalPointerStartedOnBackdropRef.current = false;
+            }}
+          >
+            <div
+              className="modal takeoff-opening-modal"
+              onPointerDown={(event) => {
+                modalPointerStartedOnBackdropRef.current = false;
+                event.stopPropagation();
+              }}
+              onClick={(event) => event.stopPropagation()}
+            >
               <div className="modal-head">
                 <h2>{editingOpeningTarget ? "Edit opening" : "What opening are you placing here?"}</h2>
                 <button className="modal-close" onClick={closeOpeningDialog}>x</button>
