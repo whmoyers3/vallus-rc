@@ -1767,6 +1767,12 @@ button.toolbar-primary:hover {
   margin: 0;
 }
 
+.takeoff-room-sketch-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
 .takeoff-room-sketch svg {
   background: #f8fafc;
   border: 1px solid #dde6ed;

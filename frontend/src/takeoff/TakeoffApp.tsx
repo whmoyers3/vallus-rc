@@ -1036,6 +1036,23 @@ function pointsToEdges(points: TakeoffPoint[]) {
   return points.map((point, index) => ({ a: point, b: points[(index + 1) % points.length] })).filter(({ a, b }) => distance(a, b) > 0.001);
 }
 
+function cornerPoints(points: TakeoffPoint[], minTurnDegrees = 12.5) {
+  if (points.length < 3) return points;
+  const minTurnRadians = minTurnDegrees * Math.PI / 180;
+  return points.filter((point, index) => {
+    const previous = points[(index - 1 + points.length) % points.length];
+    const next = points[(index + 1) % points.length];
+    const previousVector = { x: previous.x - point.x, y: previous.y - point.y };
+    const nextVector = { x: next.x - point.x, y: next.y - point.y };
+    const previousLength = Math.hypot(previousVector.x, previousVector.y);
+    const nextLength = Math.hypot(nextVector.x, nextVector.y);
+    if (previousLength <= 0.001 || nextLength <= 0.001) return false;
+    const dot = (previousVector.x * nextVector.x + previousVector.y * nextVector.y) / (previousLength * nextLength);
+    const angle = Math.acos(clamp(dot, -1, 1));
+    return Math.abs(Math.PI - angle) >= minTurnRadians;
+  });
+}
+
 function compassFromVector(dx: number, dy: number): (typeof directionOptions)[number] {
   const angle = Math.atan2(dy, dx) * 180 / Math.PI;
   const normalized = (angle + 360) % 360;
@@ -1056,6 +1073,32 @@ function edgeDirectionFromRoom(edge: { a: TakeoffPoint; b: TakeoffPoint }, room:
   };
   const center = roomCenter(room);
   return compassFromVector(midpoint.x - center.x, midpoint.y - center.y);
+}
+
+function exteriorEdgeDirection(
+  edge: { a: TakeoffPoint; b: TakeoffPoint },
+  exteriorPoints: TakeoffPoint[],
+  fallbackCenter: TakeoffPoint,
+  sampleDistance = 1,
+) {
+  const dx = edge.b.x - edge.a.x;
+  const dy = edge.b.y - edge.a.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0.001) return compassFromVector(edge.a.x - fallbackCenter.x, edge.a.y - fallbackCenter.y);
+  const midpoint = {
+    x: (edge.a.x + edge.b.x) / 2,
+    y: (edge.a.y + edge.b.y) / 2,
+  };
+  const normals = [
+    { x: -dy / length, y: dx / length },
+    { x: dy / length, y: -dx / length },
+  ];
+  const outward = normals.find((normal) => !pointInPolygon({
+    x: midpoint.x + normal.x * sampleDistance,
+    y: midpoint.y + normal.y * sampleDistance,
+  }, exteriorPoints));
+  if (outward) return compassFromVector(outward.x, outward.y);
+  return compassFromVector(midpoint.x - fallbackCenter.x, midpoint.y - fallbackCenter.y);
 }
 
 function edgeSharesSameHeightRoom(floor: TakeoffFloor, room: TakeoffRectRoom, edge: { a: TakeoffPoint; b: TakeoffPoint }, addedHeight: number) {
@@ -1151,11 +1194,7 @@ function roomExteriorWallSuggestions(floor: TakeoffFloor, room: TakeoffRectRoom)
     for (const exteriorEdge of exteriorEdges) {
       const sharedLength = sharedSegmentLength(roomEdge, exteriorEdge, tolerance);
       if (sharedLength <= 0.25) continue;
-      const midpoint = {
-        x: (exteriorEdge.a.x + exteriorEdge.b.x) / 2,
-        y: (exteriorEdge.a.y + exteriorEdge.b.y) / 2,
-      };
-      const direction = compassFromVector(midpoint.x - center.x, midpoint.y - center.y);
+      const direction = exteriorEdgeDirection(exteriorEdge, exteriorPoints, center, Math.max(0.75, tolerance * 2));
       lengths.set(direction, (lengths.get(direction) ?? 0) + sharedLength);
     }
   }
@@ -1188,13 +1227,9 @@ function roomExteriorSegments(floor: TakeoffFloor, room: TakeoffRectRoom) {
     for (const exteriorEdge of exteriorEdges) {
       const exposed = sharedSegment(roomEdge, exteriorEdge, tolerance);
       if (!exposed || exposed.length <= 0.25) continue;
-      const midpoint = {
-        x: (exteriorEdge.a.x + exteriorEdge.b.x) / 2,
-        y: (exteriorEdge.a.y + exteriorEdge.b.y) / 2,
-      };
       segments.push({
         ...exposed,
-        direction: compassFromVector(midpoint.x - center.x, midpoint.y - center.y),
+        direction: exteriorEdgeDirection(exteriorEdge, exteriorPoints, center, Math.max(0.75, tolerance * 2)),
         length: Number(exposed.length.toFixed(3)),
       });
     }
@@ -2885,6 +2920,8 @@ export function TakeoffApp() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [pendingRoomNameSelectId, setPendingRoomNameSelectId] = useState<string | null>(null);
   const [roomTileMetric, setRoomTileMetric] = useState<RoomTileMetric>("floor");
+  const [roomLoadSketchRotationSteps, setRoomLoadSketchRotationSteps] = useState(0);
+  const [ceilingSketchRotationSteps, setCeilingSketchRotationSteps] = useState(0);
   const [sliceRoomId, setSliceRoomId] = useState("");
   const [mergeTargetRoomId, setMergeTargetRoomId] = useState("");
   const [selectedUnassignedRegionId, setSelectedUnassignedRegionId] = useState<string | null>(null);
@@ -3145,12 +3182,25 @@ export function TakeoffApp() {
       x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
       y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
     };
+    const sketchRotationSteps = ((mode === "ceiling" ? ceilingSketchRotationSteps : roomLoadSketchRotationSteps) % 4 + 4) % 4;
+    const setSketchRotationSteps = mode === "ceiling" ? setCeilingSketchRotationSteps : setRoomLoadSketchRotationSteps;
+    const rotateLocalPoint = (x: number, y: number) => {
+      if (sketchRotationSteps === 1) return { x: -y, y: x };
+      if (sketchRotationSteps === 2) return { x: -x, y: -y };
+      if (sketchRotationSteps === 3) return { x: y, y: -x };
+      return { x, y };
+    };
+    const unrotateLocalPoint = (x: number, y: number) => {
+      if (sketchRotationSteps === 1) return { x: y, y: -x };
+      if (sketchRotationSteps === 2) return { x: -x, y: -y };
+      if (sketchRotationSteps === 3) return { x: -y, y: x };
+      return { x, y };
+    };
     const rawProject = (point: TakeoffPoint) => {
-      const x = point.x - center.x;
-      const y = point.y - center.y;
+      const rotated = rotateLocalPoint(point.x - center.x, point.y - center.y);
       return {
-        x: x + y * isoXFromDepth,
-        y: y * isoYFromDepth + x * isoYFromWidth,
+        x: rotated.x + rotated.y * isoXFromDepth,
+        y: rotated.y * isoYFromDepth + rotated.x * isoYFromWidth,
       };
     };
     const rawPoints = points.map(rawProject);
@@ -3181,7 +3231,8 @@ export function TakeoffApp() {
       const determinant = isoYFromDepth - isoXFromDepth * isoYFromWidth;
       const localX = (raw.x * isoYFromDepth - isoXFromDepth * raw.y) / determinant;
       const localY = (raw.y - isoYFromWidth * raw.x) / determinant;
-      return { x: localX + center.x, y: localY + center.y };
+      const unrotated = unrotateLocalPoint(localX, localY);
+      return { x: unrotated.x + center.x, y: unrotated.y + center.y };
     };
     const roomEdges = pointsToEdges(points);
     const wallComponents = roomSurfaceComponents(room, "wall");
@@ -3291,7 +3342,16 @@ export function TakeoffApp() {
       <div className={`takeoff-room-sketch takeoff-room-sketch--${mode}`}>
         <div className="takeoff-component-head">
           <h3>{mode === "ceiling" ? "Ceiling Geometry Sketch" : "Room Load Sketch"}</h3>
-          <span className="takeoff-component-total">{Math.round(rectArea(room))} sf</span>
+          <div className="takeoff-room-sketch-actions">
+            <button
+              type="button"
+              onClick={() => setSketchRotationSteps((current) => (current + 1) % 4)}
+              title="Rotate sketch view 90 degrees"
+            >
+              Rotate 90
+            </button>
+            <span className="takeoff-component-total">{Math.round(rectArea(room))} sf</span>
+          </div>
         </div>
         <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={`${room.name} load component sketch`}>
           <polygon
@@ -4265,6 +4325,20 @@ export function TakeoffApp() {
     return constrainAngle ? constrainPointToAngle(previous, snapped) : snapped;
   }
 
+  function snapAdjacentSpacePoint(point: TakeoffPoint) {
+    const threshold = 5;
+    const exteriorCorners = cornerPoints(exteriorRingPoints(floor));
+    let best = { point, distance: threshold };
+    for (const corner of exteriorCorners) {
+      const cornerDistance = distance(point, corner);
+      if (cornerDistance <= best.distance) best = { point: corner, distance: cornerDistance };
+    }
+    return {
+      x: Number(best.point.x.toFixed(3)),
+      y: Number(best.point.y.toFixed(3)),
+    };
+  }
+
   function findMovablePoint(point: TakeoffPoint) {
     const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
     let bestTarget: MovablePointTarget | null = null;
@@ -4857,8 +4931,9 @@ export function TakeoffApp() {
       return;
     }
     if (workflowStep === "trace" && adjacentDrawMode) {
+      const snappedPoint = snapAdjacentSpacePoint(point);
       event.currentTarget.setPointerCapture(event.pointerId);
-      setDragState({ kind: "adjacent", start: point, current: point });
+      setDragState({ kind: "adjacent", start: snappedPoint, current: snappedPoint });
       return;
     }
     if (workflowStep === "trace" && roomDrawMode) {
@@ -4895,7 +4970,7 @@ export function TakeoffApp() {
     if (dragState.kind === "move-opening") {
       moveOpening(dragState.openingTarget, point);
     }
-    setDragState((current) => (current ? { ...current, current: point } : current));
+    setDragState((current) => (current ? { ...current, current: current.kind === "adjacent" ? snapAdjacentSpacePoint(point) : point } : current));
   }
 
   function handleCanvasPointerUp(event: React.PointerEvent<SVGSVGElement>) {
@@ -6832,7 +6907,7 @@ export function TakeoffApp() {
               </button>
             </div>
             {adjacentDrawMode ? (
-              <p className="takeoff-note">Drag a rectangle along the outside of conditioned space to tag a garage, attic, crawl space, or exterior-adjacent area.</p>
+              <p className="takeoff-note">Drag a rectangle along the outside of conditioned space. Start or release within 5 ft of an exterior corner to snap; drag beyond that to intentionally wrap around the corner.</p>
             ) : (
               <p className="takeoff-muted">Adjacent spaces tag exterior wall treatment without adding conditioned room area.</p>
             )}
