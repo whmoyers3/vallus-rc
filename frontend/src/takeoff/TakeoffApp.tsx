@@ -2883,6 +2883,7 @@ export function TakeoffApp() {
   const [subtractRoomId, setSubtractRoomId] = useState("");
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [pendingRoomNameSelectId, setPendingRoomNameSelectId] = useState<string | null>(null);
   const [roomTileMetric, setRoomTileMetric] = useState<RoomTileMetric>("floor");
   const [sliceRoomId, setSliceRoomId] = useState("");
   const [mergeTargetRoomId, setMergeTargetRoomId] = useState("");
@@ -2893,6 +2894,7 @@ export function TakeoffApp() {
   const [pendingOpeningTarget, setPendingOpeningTarget] = useState<PendingOpeningTarget>(null);
   const [editingOpeningTarget, setEditingOpeningTarget] = useState<EditingOpeningTarget>(null);
   const [selectedOpening, setSelectedOpening] = useState<OpeningMoveTarget | null>(null);
+  const roomNameInputRef = useRef<HTMLInputElement | null>(null);
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressNextCanvasClickRef = useRef(false);
   const modalPointerStartedOnBackdropRef = useRef(false);
@@ -2918,6 +2920,13 @@ export function TakeoffApp() {
   const unassignedArea = computedFootprintArea - assignedArea;
   const payload = useMemo(() => buildVrcPayload(takeoffProject), [takeoffProject]);
   const selectedRoom = floor.rooms.find((room) => room.id === selectedRoomId) ?? null;
+  const roomRenameShortcutEnabled = workflowStep === "trace" &&
+    !roomDrawMode &&
+    !roomPolygonMode &&
+    !adjacentDrawMode &&
+    !subtractMode &&
+    !openingModeActive &&
+    !(traceTool === "exterior" && !floor.perimeterLocked);
   const projectInfoComplete = projectName.trim().length > 0 && location.trim().length > 0;
   const hasReference = Boolean(floor.reference);
   const hasHorizontalScale = floor.calibration.lines.some((line) => line.orientation === "horizontal" && scaleLineHasKnownDimension(line));
@@ -3035,6 +3044,15 @@ export function TakeoffApp() {
     const stillPresent = validation.some((issue, index) => validationIssueKey(issue, index) === activeValidationTarget.key);
     if (!stillPresent) setActiveValidationTarget(null);
   }, [activeValidationTarget, validation]);
+
+  useEffect(() => {
+    if (!pendingRoomNameSelectId || selectedRoomId !== pendingRoomNameSelectId) return;
+    const input = roomNameInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+    setPendingRoomNameSelectId(null);
+  }, [pendingRoomNameSelectId, selectedRoomId]);
 
   useEffect(() => {
     setLeftSectionsOpen((current) => ({
@@ -5953,6 +5971,14 @@ export function TakeoffApp() {
                     event.stopPropagation();
                     setSelectedRoomId(room.id);
                   }}
+                  onDoubleClick={(event) => {
+                    if (!roomRenameShortcutEnabled) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setEditingRoomId(null);
+                    setSelectedRoomId(room.id);
+                    setPendingRoomNameSelectId(room.id);
+                  }}
                   style={{ cursor: openingModeActive ? "crosshair" : "pointer" }}
                 >
                   <polygon
@@ -6059,6 +6085,14 @@ export function TakeoffApp() {
                         if (openingModeActive) return;
                         event.stopPropagation();
                         setEditingRoomId(room.id);
+                      }}
+                      onDoubleClick={(event) => {
+                        if (!roomRenameShortcutEnabled) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setEditingRoomId(null);
+                        setSelectedRoomId(room.id);
+                        setPendingRoomNameSelectId(room.id);
                       }}
                       style={{ cursor: "text", fontWeight: 700 }}
                     >
@@ -7041,7 +7075,7 @@ export function TakeoffApp() {
                 })()}
                 <label>
                   Name
-                  <input value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
+                  <input ref={roomNameInputRef} value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
                 </label>
                 <label>
                   Room type
