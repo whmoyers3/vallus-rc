@@ -3041,6 +3041,7 @@ export function TakeoffApp() {
   });
   const [zoom, setZoom] = useState(1);
   const [planReviewMode, setPlanReviewMode] = useState<PlanReviewMode>("plan");
+  const [modelPreviewRevision, setModelPreviewRevision] = useState(0);
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
   const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("trace");
   const [calibrationOrientation, setCalibrationOrientation] = useState<TakeoffScaleLine["orientation"]>("horizontal");
@@ -3075,6 +3076,13 @@ export function TakeoffApp() {
   const suppressNextCanvasClickRef = useRef(false);
   const modalPointerStartedOnBackdropRef = useRef(false);
   const openingDragMovedRef = useRef(false);
+
+  function openPlanReviewMode(mode: PlanReviewMode) {
+    if (mode === "elevation") {
+      setModelPreviewRevision((current) => current + 1);
+    }
+    setPlanReviewMode(mode);
+  }
 
   useEffect(() => {
     return () => {
@@ -3124,6 +3132,11 @@ export function TakeoffApp() {
   const validationTargetId = (section: ValidationSection) => selectedRoom ? validationSectionElementId(selectedRoom.id, section) : undefined;
   const setLeftSectionOpen = (section: LeftSetupSection, open: boolean) => {
     setLeftSectionsOpen((current) => ({ ...current, [section]: open }));
+  };
+  const handleProjectSectionBlur = (event: React.FocusEvent<HTMLDetailsElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    if (projectInfoComplete) setLeftSectionOpen("project", false);
   };
   const floorScheduleOptions = componentSchedule.filter((component) => component.category === "Floor");
   const ceilingScheduleOptions = componentSchedule.filter((component) => component.category === "Ceiling");
@@ -3235,12 +3248,11 @@ export function TakeoffApp() {
   useEffect(() => {
     setLeftSectionsOpen((current) => ({
       ...current,
-      project: projectInfoComplete ? false : current.project,
       mode: hasReference ? false : current.mode,
       scale: hasReference && !scaleApplied ? true : false,
       exterior: scaleApplied && floor.exteriorPolygon.length < 3 ? true : current.exterior,
     }));
-  }, [floor.exteriorPolygon.length, hasReference, projectInfoComplete, scaleApplied]);
+  }, [floor.exteriorPolygon.length, hasReference, scaleApplied]);
 
   const canvasWidth = 720;
   const canvasHeight = 420;
@@ -3964,7 +3976,7 @@ export function TakeoffApp() {
     if (!prompt) return;
     setSelectedRoomId(prompt.roomId);
     setRightPanelOpen(true);
-    setPlanReviewMode("elevation");
+    openPlanReviewMode("elevation");
     setRoomTileMetric("wall");
     setStaleCeilingWallPrompt(null);
     scrollToWallComponents(prompt.roomId);
@@ -5744,7 +5756,12 @@ export function TakeoffApp() {
             <button className="takeoff-rail-toggle" onClick={() => setLeftPanelOpen(true)} aria-label="Show setup panel">Setup</button>
           ) : (
           <>
-          <details className="takeoff-panel takeoff-left-details" open={leftSectionsOpen.project} onToggle={(event) => setLeftSectionOpen("project", event.currentTarget.open)}>
+          <details
+            className="takeoff-panel takeoff-left-details"
+            open={leftSectionsOpen.project}
+            onBlur={handleProjectSectionBlur}
+            onToggle={(event) => setLeftSectionOpen("project", event.currentTarget.open)}
+          >
             <summary>
               Project
               <button
@@ -6041,7 +6058,7 @@ export function TakeoffApp() {
                       className={planReviewMode === mode.id ? "toolbar-primary" : ""}
                       data-tooltip={mode.tooltip}
                       aria-label={mode.tooltip}
-                      onClick={() => setPlanReviewMode(mode.id)}
+                      onClick={() => openPlanReviewMode(mode.id)}
                     >
                       {mode.label}
                     </button>
@@ -6064,6 +6081,7 @@ export function TakeoffApp() {
           <div className="takeoff-canvas-scroll" ref={canvasScrollRef}>
             {planReviewMode === "elevation" ? (
               <TakeoffModelPreview
+                key={`takeoff-model-preview-${modelPreviewRevision}`}
                 floor={floor}
                 referenceUrl={referenceUrl}
                 componentSchedule={componentSchedule}
