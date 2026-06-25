@@ -4441,8 +4441,17 @@ export function TakeoffApp() {
     });
   }
 
-  function makeRoomFromPolygon(points: TakeoffPoint[]) {
-    const bounds = polygonBounds(points);
+  function simplifiedRoomPolygon(points: TakeoffPoint[]) {
+    return simplifyPolygonPoints(points, {
+      duplicateTolerance: 0.02,
+      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
+      shortSegmentTolerance: 0,
+    });
+  }
+
+  function makeRoomFromPolygon(points: TakeoffPoint[], simplify = false) {
+    const polygon = simplify ? simplifiedRoomPolygon(points) : points;
+    const bounds = polygonBounds(polygon);
     const room = {
       id: nextId("room"),
       name: `${draftRoom.name || "Room"} ${floor.rooms.length + 1}`,
@@ -4451,7 +4460,7 @@ export function TakeoffApp() {
       width: bounds.width,
       depth: bounds.depth,
       ceilingHeight: draftRoom.ceilingHeight,
-      polygon: points,
+      polygon,
     } satisfies TakeoffRectRoom;
     return { ...room, components: defaultRoomComponents(rectArea(room)) };
   }
@@ -4470,7 +4479,7 @@ export function TakeoffApp() {
       return;
     }
     const rooms = availablePolygons.map(({ polygon }, index) => {
-      const room = makeRoomFromPolygon(clipPolygonToPoints(polygon));
+      const room = makeRoomFromPolygon(clipPolygonToPoints(polygon), true);
       return availablePolygons.length > 1 ? { ...room, name: `${room.name}${String.fromCharCode(65 + index)}` } : room;
     });
     setFloor((current) => ({ ...current, rooms: [...current.rooms, ...rooms] }));
