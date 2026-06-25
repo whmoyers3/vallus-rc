@@ -4550,16 +4550,16 @@ export function TakeoffApp() {
       setMessage("Drag a larger area to create a room.");
       return;
     }
-    const availablePolygons = mergePolygonEntries([
-      ...availablePolygonsFromRect(rect),
-      ...unassignedPolygonsInsideRect(rect),
-    ]);
+    let availablePolygons = availablePolygonsFromRect(rect);
+    if (availablePolygons.length === 0) {
+      availablePolygons = mergePolygonEntries(unassignedPolygonsInsideRect(rect));
+    }
     if (availablePolygons.length === 0) {
       setMessage("No open room area remains after clipping to the exterior and existing rooms.");
       return;
     }
     const rooms = availablePolygons.map(({ polygon }, index) => {
-      const room = makeRoomFromPolygon(clipPolygonToPoints(polygon), true);
+      const room = makeRoomFromPolygon(clipPolygonToPoints(polygon));
       return availablePolygons.length > 1 ? { ...room, name: `${room.name}${String.fromCharCode(65 + index)}` } : room;
     });
     setFloor((current) => ({ ...current, rooms: [...current.rooms, ...rooms] }));
