@@ -137,6 +137,7 @@ export type TakeoffFloor = {
   };
   calibration: {
     lines: TakeoffScaleLine[];
+    linesVisible?: boolean;
     confirmed: boolean;
     appliedFactor: number;
     expectedArea?: number;

@@ -195,7 +195,7 @@ function makeInitialFloor(): TakeoffFloor {
     scale: { feetPerGrid: 1, gridSnapInches: 6 },
     defaultCeilingHeight: 9,
     conditionedPerimeter: { width: 0, depth: 0 },
-    calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
+    calibration: { lines: [], linesVisible: true, confirmed: false, appliedFactor: 1, areaConfirmed: false },
     exteriorPolygon: [],
     perimeterLocked: false,
     rooms: [],
@@ -1202,13 +1202,65 @@ function adjacentKindsForSegment(floor: TakeoffFloor, segment: { a: TakeoffPoint
   const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
   const kinds = new Set<TakeoffAdjacentSpaceKind>();
   for (const space of floor.adjacentSpaces ?? []) {
-    for (const adjacentEdge of pointsToEdges(adjacentSpaceCorners(space))) {
-      if (sharedSegmentLength(segment, adjacentEdge, tolerance) > 0.25) {
-        kinds.add(space.kind);
-      }
-    }
+    if (adjacentSpaceTouchesSegment(space, segment, tolerance)) kinds.add(space.kind);
   }
   return Array.from(kinds);
+}
+
+function segmentCorridorPolygon(segment: { a: TakeoffPoint; b: TakeoffPoint }, tolerance: number): Polygon | null {
+  const dx = segment.b.x - segment.a.x;
+  const dy = segment.b.y - segment.a.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0.001) return null;
+  const halfWidth = Math.max(0.15, tolerance);
+  const px = -dy / length * halfWidth;
+  const py = dx / length * halfWidth;
+  return pointsToClipPolygon([
+    { x: segment.a.x + px, y: segment.a.y + py },
+    { x: segment.b.x + px, y: segment.b.y + py },
+    { x: segment.b.x - px, y: segment.b.y - py },
+    { x: segment.a.x - px, y: segment.a.y - py },
+  ]);
+}
+
+function adjacentSpaceTouchesSegment(
+  space: TakeoffAdjacentSpace,
+  segment: { a: TakeoffPoint; b: TakeoffPoint },
+  tolerance: number,
+) {
+  const adjacentEdges = pointsToEdges(adjacentSpaceCorners(space));
+  if (adjacentEdges.some((edge) => sharedSegmentLength(segment, edge, tolerance) > 0.25)) return true;
+
+  const corridor = segmentCorridorPolygon(segment, tolerance);
+  if (!corridor) return false;
+  const overlapArea = intersection([corridor], [pointsToClipPolygon(adjacentSpaceCorners(space))])
+    .reduce((sum, polygon) => sum + clipPolygonArea(polygon), 0);
+  return overlapArea > Math.max(0.2, tolerance * 0.5);
+}
+
+function normalizeAdjacentSpaceRect(floor: TakeoffFloor, rect: PlanRect) {
+  const rectPolygon = pointsToClipPolygon(rectToPoints(rect));
+  const conditionedPoints = exteriorRingPoints(floor);
+  if (conditionedPoints.length < 3) return { rect, polygon: undefined };
+
+  const outsidePolygons = simplePolygonsFromMultiPolygon(
+    difference([rectPolygon], [pointsToClipPolygon(conditionedPoints)])
+  );
+  const largest = outsidePolygons
+    .sort((a, b) => b.area - a.area)[0]?.polygon;
+  if (!largest) return null;
+
+  const polygon = clipPolygonToPoints(largest);
+  const bounds = polygonBounds(polygon);
+  return {
+    rect: {
+      x: Number(bounds.x.toFixed(3)),
+      y: Number(bounds.y.toFixed(3)),
+      width: Number(bounds.width.toFixed(3)),
+      depth: Number(bounds.depth.toFixed(3)),
+    },
+    polygon: polygon.map((point) => ({ x: Number(point.x.toFixed(3)), y: Number(point.y.toFixed(3)) })),
+  };
 }
 
 function adjacentKindsByDirection(floor: TakeoffFloor, room: TakeoffRectRoom) {
@@ -1688,6 +1740,11 @@ function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFlo
       ...fallback.calibration,
       ...(rawFloor.calibration ?? {}),
       lines: rawFloor.calibration?.lines ?? [],
+      linesVisible: rawFloor.calibration?.linesVisible ?? !rawFloor.calibration?.confirmed,
+      confirmed: Boolean(
+        rawFloor.calibration?.confirmed ||
+        (rawFloor.reference && rawFloor.calibration?.appliedFactor && Math.abs(rawFloor.calibration.appliedFactor - 1) > 0.00001)
+      ),
     },
     conditionedPerimeter: { ...fallback.conditionedPerimeter, ...(rawFloor.conditionedPerimeter ?? {}) },
     exteriorPolygon: rawFloor.exteriorPolygon ?? [],
@@ -2761,7 +2818,12 @@ export function TakeoffApp() {
   const hasReference = Boolean(floor.reference);
   const hasHorizontalScale = floor.calibration.lines.some((line) => line.orientation === "horizontal" && scaleLineHasKnownDimension(line));
   const hasVerticalScale = floor.calibration.lines.some((line) => line.orientation === "vertical" && scaleLineHasKnownDimension(line));
-  const scaleReady = hasHorizontalScale && hasVerticalScale && !floor.calibration.confirmed;
+  const scaleApplied = Boolean(
+    floor.calibration.confirmed ||
+    (floor.reference && floor.calibration.appliedFactor && Math.abs(floor.calibration.appliedFactor - 1) > 0.00001)
+  );
+  const scaleLinesVisible = floor.calibration.linesVisible ?? true;
+  const scaleReady = hasHorizontalScale && hasVerticalScale && !scaleApplied;
   const activeRoomValidationTarget = activeValidationTarget && selectedRoom && activeValidationTarget.roomId === selectedRoom.id
     ? activeValidationTarget
     : null;
@@ -2875,10 +2937,10 @@ export function TakeoffApp() {
       ...current,
       project: projectInfoComplete ? false : current.project,
       mode: hasReference ? false : current.mode,
-      scale: hasReference && !floor.calibration.confirmed ? true : false,
-      exterior: floor.calibration.confirmed && floor.exteriorPolygon.length < 3 ? true : current.exterior,
+      scale: hasReference && !scaleApplied ? true : false,
+      exterior: scaleApplied && floor.exteriorPolygon.length < 3 ? true : current.exterior,
     }));
-  }, [floor.calibration.confirmed, floor.exteriorPolygon.length, hasReference, projectInfoComplete]);
+  }, [floor.exteriorPolygon.length, hasReference, projectInfoComplete, scaleApplied]);
 
   const canvasWidth = 720;
   const canvasHeight = 420;
@@ -3860,7 +3922,7 @@ export function TakeoffApp() {
 
     setFloor((current) => ({
       ...current,
-      calibration: { ...current.calibration, lines: [...current.calibration.lines, line], confirmed: false, areaConfirmed: false },
+      calibration: { ...current.calibration, lines: [...current.calibration.lines, line], linesVisible: true, confirmed: false, areaConfirmed: false },
     }));
     setCalibrationStart(null);
     const nextLines = [...floor.calibration.lines, line];
@@ -3886,6 +3948,7 @@ export function TakeoffApp() {
       calibration: {
         ...current.calibration,
         confirmed: false,
+        linesVisible: true,
         lines: current.calibration.lines.map((line) => (line.id === id ? { ...line, ...patch } : line)),
       },
     }));
@@ -3894,17 +3957,21 @@ export function TakeoffApp() {
   function removeScaleLine(id: string) {
     setFloor((current) => ({
       ...current,
-      calibration: { ...current.calibration, lines: current.calibration.lines.filter((line) => line.id !== id), confirmed: false },
+      calibration: { ...current.calibration, lines: current.calibration.lines.filter((line) => line.id !== id), linesVisible: true, confirmed: false },
     }));
   }
 
   function clearScaleLines() {
     setCalibrationStart(null);
-    setFloor((current) => ({ ...current, calibration: { ...current.calibration, lines: [], confirmed: false, areaConfirmed: false } }));
+    setFloor((current) => ({ ...current, calibration: { ...current.calibration, lines: [], linesVisible: true, confirmed: false, appliedFactor: 1, areaConfirmed: false } }));
     setMessage("Scale lines cleared.");
   }
 
-  function applyCalibration(clearLinesAfterApply = false) {
+  function setScaleLinesVisible(visible: boolean) {
+    setFloor((current) => ({ ...current, calibration: { ...current.calibration, linesVisible: visible } }));
+  }
+
+  function applyCalibration(hideLinesAfterApply = false) {
     const factor = calibrationFactor(floor.calibration.lines);
     if (!factor) {
       setMessage("Add at least one scale line with a known dimension before applying scale.");
@@ -3940,13 +4007,12 @@ export function TakeoffApp() {
         })),
         calibration: {
           ...current.calibration,
-          lines: clearLinesAfterApply
-            ? []
-            : current.calibration.lines.map((line) => ({
-                ...scaleLine(line, relativeFactor),
-                sourceStart: line.sourceStart ?? line.start,
-                sourceEnd: line.sourceEnd ?? line.end,
-              })),
+          lines: current.calibration.lines.map((line) => ({
+            ...scaleLine(line, relativeFactor),
+            sourceStart: line.sourceStart ?? line.start,
+            sourceEnd: line.sourceEnd ?? line.end,
+          })),
+          linesVisible: !hideLinesAfterApply,
           confirmed: true,
           appliedFactor: Number(factor.toFixed(5)),
           areaConfirmed: false,
@@ -3956,11 +4022,11 @@ export function TakeoffApp() {
     setWorkflowStep("trace");
     setTraceTool("exterior");
     setCalibrationStart(null);
-    setMessage(`Scale recorded in world feet. Average correction factor: ${factor.toFixed(3)}.${clearLinesAfterApply ? " Scale guide lines cleared." : ""}`);
+    setMessage(`Scale recorded in world feet. Average correction factor: ${factor.toFixed(3)}.${hideLinesAfterApply ? " Scale guide lines hidden." : ""}`);
   }
 
   function skipCalibration() {
-    setFloor((current) => ({ ...current, coordinateSpace: "world_feet", calibration: { ...current.calibration, confirmed: true } }));
+    setFloor((current) => ({ ...current, coordinateSpace: "world_feet", calibration: { ...current.calibration, confirmed: true, linesVisible: false } }));
     setWorkflowStep("trace");
     setTraceTool("exterior");
     setMessage("Calibration skipped. Trace carefully and confirm the computed floor area before room work.");
@@ -4093,18 +4159,22 @@ export function TakeoffApp() {
       setMessage("Drag a larger area to create an adjacent space.");
       return;
     }
+    const normalized = normalizeAdjacentSpaceRect(floor, rect);
+    if (!normalized) {
+      setMessage("Adjacent spaces must extend outside the conditioned footprint. Overlap the wall while drawing, but release past the exterior side.");
+      return;
+    }
     const label = adjacentSpaceKinds.find((kind) => kind.id === adjacentSpaceKind)?.label ?? "Adjacent";
     const space: TakeoffAdjacentSpace = {
       id: nextId("adjacent"),
       name: `${label} ${(floor.adjacentSpaces?.filter((existing) => existing.kind === adjacentSpaceKind).length ?? 0) + 1}`,
       kind: adjacentSpaceKind,
-      ...rect,
+      ...normalized.rect,
+      polygon: normalized.polygon,
     };
     const touchesExterior = floor.rooms.some((room) =>
       roomExteriorSegments(floor, room).some((segment) =>
-        pointsToEdges(adjacentSpaceCorners(space)).some((edge) =>
-          sharedSegmentLength(segment, edge, Math.max(0.35, floor.scale.feetPerGrid * 0.35)) > 0.25
-        )
+        adjacentSpaceTouchesSegment(space, segment, Math.max(0.35, floor.scale.feetPerGrid * 0.35))
       )
     );
     setFloor((current) => ({ ...current, adjacentSpaces: [...(current.adjacentSpaces ?? []), space] }));
@@ -4754,7 +4824,7 @@ export function TakeoffApp() {
           signedUrl: asset.signed_url,
           crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth },
         },
-        calibration: { lines: [], confirmed: false, appliedFactor: 1, areaConfirmed: false },
+        calibration: { lines: [], linesVisible: true, confirmed: false, appliedFactor: 1, areaConfirmed: false },
         exteriorPolygon: [],
         perimeterLocked: false,
       }));
@@ -4860,8 +4930,8 @@ export function TakeoffApp() {
       return {
         tone: "success" as const,
         title: "Horizontal and vertical scale measurements are set",
-        body: "Review the known dimensions, then apply scale to convert the reference into world feet and clear the guide lines.",
-        actionLabel: "Apply scale and clear lines",
+        body: "Review the known dimensions, then apply scale to convert the reference into world feet. The guide lines will be hidden but retained.",
+        actionLabel: "Apply scale and hide lines",
         action: () => applyCalibration(true),
       };
     }
@@ -4880,7 +4950,7 @@ export function TakeoffApp() {
         body,
       };
     }
-    if (!floor.calibration.confirmed && floor.reference) {
+    if (!scaleApplied && floor.reference) {
       return {
         tone: "info" as const,
         title: "Set import scale",
@@ -5094,32 +5164,44 @@ export function TakeoffApp() {
               </div>
               {workflowStep === "crop" && <p className="takeoff-note">Drag a rectangle around only the plan and visible dimensions. This removes title blocks and border clutter before scaling.</p>}
               {calibrationStart && <p className="takeoff-note">First point is set. Click the other end of the known dimension.</p>}
-              <div className="takeoff-scale-list">
-                {floor.calibration.lines.map((line) => {
-                  const measured = lineLength(scaleLineSourcePoints(line));
-                  const factor = measured > 0 && line.knownFeet > 0 ? line.knownFeet / measured : 0;
-                  return (
-                    <div key={line.id} className="takeoff-scale-row">
-                      <label>
-                        Label
-                        <input value={line.label} onChange={(event) => updateScaleLine(line.id, { label: event.target.value })} />
-                      </label>
-                      <label>
-                        Known ft
-                        <input type="number" min="0" step="0.1" value={line.knownFeet} onChange={(event) => updateScaleLine(line.id, { knownFeet: Number(event.target.value) })} />
-                      </label>
-                      <span>{measured.toFixed(1)} source ft · {factor ? factor.toFixed(3) : "-"}x</span>
-                      <button onClick={() => removeScaleLine(line.id)}>Remove</button>
-                    </div>
-                  );
-                })}
-              </div>
+              {floor.calibration.lines.length > 0 && !scaleLinesVisible && (
+                <p className="takeoff-muted">{floor.calibration.lines.length} scale guide line{floor.calibration.lines.length === 1 ? "" : "s"} hidden but retained.</p>
+              )}
+              {scaleLinesVisible && (
+                <div className="takeoff-scale-list">
+                  {floor.calibration.lines.map((line) => {
+                    const measured = lineLength(scaleLineSourcePoints(line));
+                    const factor = measured > 0 && line.knownFeet > 0 ? line.knownFeet / measured : 0;
+                    return (
+                      <div key={line.id} className="takeoff-scale-row">
+                        <label>
+                          Label
+                          <input value={line.label} onChange={(event) => updateScaleLine(line.id, { label: event.target.value })} />
+                        </label>
+                        <label>
+                          Known ft
+                          <input type="number" min="0" step="0.1" value={line.knownFeet} onChange={(event) => updateScaleLine(line.id, { knownFeet: Number(event.target.value) })} />
+                        </label>
+                        <span>{measured.toFixed(1)} source ft · {factor ? factor.toFixed(3) : "-"}x</span>
+                        <button onClick={() => removeScaleLine(line.id)}>Remove</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <p className="takeoff-muted">
-                {pendingScaleFactor ? `Average scale correction: ${pendingScaleFactor.toFixed(3)}x` : "Add at least one known dimension."}
+                {pendingScaleFactor
+                  ? `Average scale correction: ${pendingScaleFactor.toFixed(3)}x`
+                  : scaleApplied
+                    ? `Scale applied${floor.calibration.appliedFactor ? ` at ${floor.calibration.appliedFactor}x` : ""}.`
+                    : "Add at least one known dimension."}
               </p>
               <div className="takeoff-form-actions">
                 <button className="toolbar-primary" onClick={() => applyCalibration()}>Apply Scale</button>
-                {scaleReady && <button onClick={() => applyCalibration(true)}>Apply + Clear Lines</button>}
+                {scaleReady && <button onClick={() => applyCalibration(true)}>Apply + Hide Lines</button>}
+                {floor.calibration.lines.length > 0 && (
+                  <button onClick={() => setScaleLinesVisible(!scaleLinesVisible)}>{scaleLinesVisible ? "Hide Lines" : "Show Lines"}</button>
+                )}
                 <button onClick={skipCalibration}>Skip</button>
                 <button onClick={clearScaleLines}>Clear Lines</button>
                 <button onClick={clearCrop}>Reset Crop</button>
@@ -5211,7 +5293,7 @@ export function TakeoffApp() {
               <h2>{workflowStep === "crop" ? "Crop Plan Reference" : workflowStep === "calibrate" ? "Import Scale Setup" : "Plan Grid"}</h2>
               <p>
                 {Math.round(computedFootprintArea)} sf conditioned footprint · {floor.designGrid.width} x {floor.designGrid.depth} ft design grid
-                {floor.calibration.confirmed ? ` · scale ${floor.calibration.appliedFactor}x` : ""}
+                {scaleApplied ? ` · scale ${floor.calibration.appliedFactor}x` : ""}
               </p>
             </div>
             <div className="takeoff-stage-actions">
@@ -5362,7 +5444,7 @@ export function TakeoffApp() {
                   strokeWidth="2"
                 />
               )}
-              {floor.calibration.lines.map((line, index) => (
+              {scaleLinesVisible && floor.calibration.lines.map((line, index) => (
                 <g key={line.id}>
                   <line
                     x1={offsetX + line.start.x * scale}
@@ -6365,7 +6447,7 @@ export function TakeoffApp() {
               <div className="takeoff-adjacent-list">
                 {(floor.adjacentSpaces ?? []).map((space) => (
                   <div key={space.id} className="takeoff-adjacent-row">
-                    <span><strong>{space.name}</strong> · {Math.round(space.width * space.depth)} sf · {adjacentSpaceLabel(space.kind)}</span>
+                    <span><strong>{space.name}</strong> · {Math.round(polygonArea(adjacentSpaceCorners(space)))} sf · {adjacentSpaceLabel(space.kind)}</span>
                     <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
                   </div>
                 ))}
