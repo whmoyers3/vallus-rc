@@ -2918,7 +2918,7 @@ export function TakeoffApp() {
   const [subtractRoomId, setSubtractRoomId] = useState("");
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
-  const [pendingRoomNameSelectId, setPendingRoomNameSelectId] = useState<string | null>(null);
+  const [pendingInlineRoomNameSelectId, setPendingInlineRoomNameSelectId] = useState<string | null>(null);
   const [roomTileMetric, setRoomTileMetric] = useState<RoomTileMetric>("floor");
   const [roomLoadSketchRotationSteps, setRoomLoadSketchRotationSteps] = useState(0);
   const [ceilingSketchRotationSteps, setCeilingSketchRotationSteps] = useState(0);
@@ -2931,7 +2931,7 @@ export function TakeoffApp() {
   const [pendingOpeningTarget, setPendingOpeningTarget] = useState<PendingOpeningTarget>(null);
   const [editingOpeningTarget, setEditingOpeningTarget] = useState<EditingOpeningTarget>(null);
   const [selectedOpening, setSelectedOpening] = useState<OpeningMoveTarget | null>(null);
-  const roomNameInputRef = useRef<HTMLInputElement | null>(null);
+  const inlineRoomNameInputRef = useRef<HTMLInputElement | null>(null);
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressNextCanvasClickRef = useRef(false);
   const modalPointerStartedOnBackdropRef = useRef(false);
@@ -3083,13 +3083,15 @@ export function TakeoffApp() {
   }, [activeValidationTarget, validation]);
 
   useEffect(() => {
-    if (!pendingRoomNameSelectId || selectedRoomId !== pendingRoomNameSelectId) return;
-    const input = roomNameInputRef.current;
+    if (!pendingInlineRoomNameSelectId || editingRoomId !== pendingInlineRoomNameSelectId) return;
+    const input = inlineRoomNameInputRef.current;
     if (!input) return;
-    input.focus();
-    input.select();
-    setPendingRoomNameSelectId(null);
-  }, [pendingRoomNameSelectId, selectedRoomId]);
+    window.requestAnimationFrame(() => {
+      input.focus();
+      input.select();
+      setPendingInlineRoomNameSelectId(null);
+    });
+  }, [editingRoomId, pendingInlineRoomNameSelectId]);
 
   useEffect(() => {
     setLeftSectionsOpen((current) => ({
@@ -3117,6 +3119,12 @@ export function TakeoffApp() {
 
   function updateFloor(patch: Partial<TakeoffFloor>) {
     setFloor((current) => ({ ...current, ...patch }));
+  }
+
+  function startInlineRoomRename(roomId: string) {
+    setSelectedRoomId(roomId);
+    setEditingRoomId(roomId);
+    setPendingInlineRoomNameSelectId(roomId);
   }
 
   function updateRoom(roomId: string, patch: Partial<TakeoffRectRoom>) {
@@ -6050,9 +6058,7 @@ export function TakeoffApp() {
                     if (!roomRenameShortcutEnabled) return;
                     event.preventDefault();
                     event.stopPropagation();
-                    setEditingRoomId(null);
-                    setSelectedRoomId(room.id);
-                    setPendingRoomNameSelectId(room.id);
+                    startInlineRoomRename(room.id);
                   }}
                   style={{ cursor: openingModeActive ? "crosshair" : "pointer" }}
                 >
@@ -6133,9 +6139,17 @@ export function TakeoffApp() {
                   {editingRoomId === room.id ? (
                     <foreignObject x={offsetX + roomCenter(room).x * scale - 50} y={offsetY + roomCenter(room).y * scale - 17} width="120" height="32">
                       <input
+                        ref={inlineRoomNameInputRef}
                         className="takeoff-svg-input"
                         value={room.name}
                         autoFocus
+                        onFocus={(event) => event.currentTarget.select()}
+                        onClick={(event) => event.stopPropagation()}
+                        onDoubleClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          event.currentTarget.select();
+                        }}
                         onBlur={() => setEditingRoomId(null)}
                         onChange={(event) => {
                           const name = event.target.value;
@@ -6159,15 +6173,13 @@ export function TakeoffApp() {
                       onClick={(event) => {
                         if (openingModeActive) return;
                         event.stopPropagation();
-                        setEditingRoomId(room.id);
+                        startInlineRoomRename(room.id);
                       }}
                       onDoubleClick={(event) => {
                         if (!roomRenameShortcutEnabled) return;
                         event.preventDefault();
                         event.stopPropagation();
-                        setEditingRoomId(null);
-                        setSelectedRoomId(room.id);
-                        setPendingRoomNameSelectId(room.id);
+                        startInlineRoomRename(room.id);
                       }}
                       style={{ cursor: "text", fontWeight: 700 }}
                     >
@@ -7150,7 +7162,7 @@ export function TakeoffApp() {
                 })()}
                 <label>
                   Name
-                  <input ref={roomNameInputRef} value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
+                  <input value={selectedRoom.name} onChange={(event) => updateRoom(selectedRoom.id, { name: event.target.value })} />
                 </label>
                 <label>
                   Room type
