@@ -126,6 +126,11 @@ type ActiveValidationTarget = {
   section: ValidationSection;
   message: string;
 };
+type SketchTarget = {
+  roomId: string;
+  surface: TakeoffRoomComponent["surface"] | "ceiling-geometry";
+  direction?: TakeoffRoomComponent["direction"];
+};
 type UnassignedRegion = {
   id: string;
   label: string;
@@ -2694,6 +2699,54 @@ function componentValidationSection(surface: TakeoffRoomComponent["surface"]): V
   return "ceiling-components";
 }
 
+function sketchProjection(points: TakeoffPoint[], width: number, height: number, padding = 16) {
+  const bounds = polygonBounds(points);
+  const usableWidth = Math.max(1, width - padding * 2);
+  const usableHeight = Math.max(1, height - padding * 2);
+  const factor = Math.min(usableWidth / Math.max(bounds.width, 1), usableHeight / Math.max(bounds.depth, 1));
+  const offsetX = padding + (usableWidth - bounds.width * factor) / 2;
+  const offsetY = padding + (usableHeight - bounds.depth * factor) / 2;
+  const project = (point: TakeoffPoint) => ({
+    x: offsetX + (point.x - bounds.x) * factor,
+    y: offsetY + (point.y - bounds.y) * factor,
+  });
+  const unproject = (point: TakeoffPoint) => ({
+    x: (point.x - offsetX) / factor + bounds.x,
+    y: (point.y - offsetY) / factor + bounds.y,
+  });
+  return { bounds, factor, project, unproject };
+}
+
+function sketchPointList(points: TakeoffPoint[], project: (point: TakeoffPoint) => TakeoffPoint) {
+  return points.map((point) => {
+    const projected = project(point);
+    return `${projected.x},${projected.y}`;
+  }).join(" ");
+}
+
+function sketchLabelPoint(points: TakeoffPoint[], project: (point: TakeoffPoint) => TakeoffPoint) {
+  const projected = points.map(project);
+  return {
+    x: projected.reduce((sum, point) => sum + point.x, 0) / Math.max(projected.length, 1),
+    y: projected.reduce((sum, point) => sum + point.y, 0) / Math.max(projected.length, 1),
+  };
+}
+
+function componentSketchLabel(component: TakeoffRoomComponent) {
+  const bits = [component.assembly];
+  if (component.surface === "wall") bits.push(wallAdjacencyLabel(component.adjacency ?? "outside").replace(" wall", ""));
+  if (component.surface === "glass" && component.solarDirection) bits.push(component.solarDirection);
+  return bits.filter(Boolean).join(" ");
+}
+
+function componentSourceLabel(source?: TakeoffRoomComponent["source"]) {
+  if (source === "exterior-perimeter") return "Approved from suggested wall";
+  if (source === "raised-ceiling") return "Generated from raised ceiling";
+  if (source === "vault-gable") return "Generated from vaulted ceiling";
+  if (source === "opening-placement") return "Placed opening";
+  return null;
+}
+
 function validationSectionLabel(section: ValidationSection) {
   const labels: Record<ValidationSection, string> = {
     merge: "Merge / attribution tools",
@@ -2731,6 +2784,7 @@ export function TakeoffApp() {
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
   const [activeValidationTarget, setActiveValidationTarget] = useState<ActiveValidationTarget | null>(null);
+  const [activeSketchTarget, setActiveSketchTarget] = useState<SketchTarget | null>(null);
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", false, 0, "S", makeInitialFloor(), defaultComponentSchedule)));
   const [saveLoading, setSaveLoading] = useState(false);
@@ -2983,6 +3037,183 @@ export function TakeoffApp() {
         document.getElementById(validationSectionElementId(roomId, section))?.scrollIntoView({ behavior: "smooth", block: "center" });
       });
     });
+  }
+
+  function sketchSurfaceForSection(section: ValidationSection): SketchTarget["surface"] | null {
+    if (section === "wall-suggestions" || section === "wall-components") return "wall";
+    if (section === "glass-components") return "glass";
+    if (section === "door-components") return "door";
+    if (section === "floor-components") return "floor";
+    if (section === "ceiling-components") return "ceiling";
+    if (section === "ceiling-geometry") return "ceiling-geometry";
+    return null;
+  }
+
+  function focusRoomSketchPanel(roomId: string, surface: SketchTarget["surface"], direction?: TakeoffRoomComponent["direction"]) {
+    setActiveSketchTarget({ roomId, surface, direction });
+    const section = surface === "ceiling-geometry" ? "ceiling-geometry" : componentValidationSection(surface);
+    scrollToValidationSection(roomId, section);
+  }
+
+  function renderRoomLoadSketch(room: TakeoffRectRoom, mode: "load" | "ceiling" = "load") {
+    const points = roomCorners(room);
+    if (points.length < 3) return null;
+    const viewWidth = mode === "ceiling" ? 360 : 300;
+    const viewHeight = mode === "ceiling" ? 235 : 205;
+    const lift = { x: 18, y: -20 };
+    const { project, unproject } = sketchProjection(points, viewWidth, viewHeight, 28);
+    const liftedProject = (point: TakeoffPoint) => {
+      const base = project(point);
+      return { x: base.x + lift.x, y: base.y + lift.y };
+    };
+    const roomEdges = pointsToEdges(points);
+    const wallComponents = roomSurfaceComponents(room, "wall");
+    const glassComponents = roomSurfaceComponents(room, "glass");
+    const doorComponents = roomSurfaceComponents(room, "door");
+    const floorComponent = roomSurfaceComponents(room, "floor")[0];
+    const ceilingComponents = roomSurfaceComponents(room, "ceiling");
+    const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
+    const bounds = polygonBounds(points);
+    const ceilingPanels = ceilingInfo.ceilingType === "vaulted"
+      ? splitVaultFootprintAtRidge(points, bounds, ceilingInfo)
+      : [points];
+    const isActive = (surface: SketchTarget["surface"], direction?: TakeoffRoomComponent["direction"]) => (
+      activeSketchTarget?.roomId === room.id &&
+      activeSketchTarget.surface === surface &&
+      (!direction || !activeSketchTarget.direction || activeSketchTarget.direction === direction)
+    );
+    const wallByDirection = new Map<TakeoffRoomComponent["direction"], TakeoffRoomComponent>();
+    for (const component of wallComponents) {
+      if (component.direction && !wallByDirection.has(component.direction)) wallByDirection.set(component.direction, component);
+    }
+    const labelForSurface = (surface: TakeoffRoomComponent["surface"], direction?: TakeoffRoomComponent["direction"]) => {
+      if (surface === "floor") return floorComponent ? componentSketchLabel(floorComponent) : "Floor";
+      if (surface === "ceiling") return ceilingComponents[0] ? componentSketchLabel(ceilingComponents[0]) : "Ceiling";
+      if (surface === "wall") {
+        const wall = direction ? wallByDirection.get(direction) : undefined;
+        return wall ? componentSketchLabel(wall) : "Reference wall";
+      }
+      return surface === "glass" ? "Glass" : "Door";
+    };
+    const openingMarker = (component: TakeoffRoomComponent, index: number, total: number) => {
+      if (!component.direction) return null;
+      const edge = roomEdges.find((candidate) => edgeDirectionFromRoom(candidate, room) === component.direction);
+      if (!edge) return null;
+      const a = liftedProject(edge.a);
+      const b = liftedProject(edge.b);
+      const t = total <= 1 ? 0.5 : (index + 1) / (total + 1);
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t;
+      const active = isActive(component.surface, component.direction);
+      return (
+        <g
+          key={`${component.surface}-${component.id}`}
+          className={`takeoff-room-sketch-opening ${active ? "takeoff-room-sketch-opening--active" : ""}`}
+          onClick={() => focusRoomSketchPanel(room.id, component.surface, component.direction)}
+        >
+          <circle cx={x} cy={y} r={component.surface === "glass" ? 5 : 6} />
+          <text x={x + 7} y={y - 4}>{component.assembly}</text>
+        </g>
+      );
+    };
+    const openingsBySurfaceDirection = (surface: "glass" | "door", direction: TakeoffRoomComponent["direction"]) => (
+      (surface === "glass" ? glassComponents : doorComponents).filter((component) => component.direction === direction)
+    );
+    const updateRidgeOffsetFromSketch = (event: React.PointerEvent<SVGLineElement>) => {
+      const svg = event.currentTarget.ownerSVGElement;
+      if (!svg || ceilingInfo.ceilingType !== "vaulted") return;
+      const rect = svg.getBoundingClientRect();
+      const viewX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * viewWidth;
+      const viewY = ((event.clientY - rect.top) / Math.max(rect.height, 1)) * viewHeight;
+      const planPoint = unproject({ x: viewX - lift.x, y: viewY - lift.y });
+      const ratio = ceilingInfo.ridgeDirection === "E-W"
+        ? clamp((planPoint.y - bounds.y) / Math.max(bounds.depth, 1), 0, 1)
+        : clamp((planPoint.x - bounds.x) / Math.max(bounds.width, 1), 0, 1);
+      updateRoomCeilingGeometry(room.id, { ceilingRidgeOffset: Number((ratio * 2 - 1).toFixed(3)) });
+    };
+    return (
+      <div className={`takeoff-room-sketch takeoff-room-sketch--${mode}`}>
+        <div className="takeoff-component-head">
+          <h3>{mode === "ceiling" ? "Ceiling Geometry Sketch" : "Room Load Sketch"}</h3>
+          <span className="takeoff-component-total">{Math.round(rectArea(room))} sf</span>
+        </div>
+        <svg viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={`${room.name} load component sketch`}>
+          <polygon
+            className={`takeoff-room-sketch-floor ${isActive("floor") ? "takeoff-room-sketch-panel--active" : ""}`}
+            points={sketchPointList(points, project)}
+            onClick={() => focusRoomSketchPanel(room.id, "floor")}
+          />
+          {roomEdges.map((edge) => {
+            const direction = edgeDirectionFromRoom(edge, room);
+            const wallComponent = wallByDirection.get(direction);
+            const quad = [project(edge.a), project(edge.b), liftedProject(edge.b), liftedProject(edge.a)];
+            const midpoint = sketchLabelPoint(quad, (point) => point);
+            const active = isActive("wall", direction);
+            const isLoadWall = Boolean(wallComponent);
+            return (
+              <g
+                key={`${direction}-${edge.a.x}-${edge.a.y}`}
+                className={`takeoff-room-sketch-wall ${isLoadWall ? "takeoff-room-sketch-wall--load" : "takeoff-room-sketch-wall--reference"} ${active ? "takeoff-room-sketch-panel--active" : ""}`}
+                onClick={() => focusRoomSketchPanel(room.id, "wall", direction)}
+              >
+                <polygon points={quad.map((point) => `${point.x},${point.y}`).join(" ")} />
+                <text x={midpoint.x} y={midpoint.y}>{labelForSurface("wall", direction)}</text>
+              </g>
+            );
+          })}
+          {ceilingPanels.map((panel, index) => {
+            const labelPoint = sketchLabelPoint(panel, liftedProject);
+            return (
+              <g
+                key={`ceiling-panel-${index}`}
+                className={`takeoff-room-sketch-ceiling ${mode === "ceiling" ? "takeoff-room-sketch-ceiling--focus" : ""} ${isActive(mode === "ceiling" ? "ceiling-geometry" : "ceiling") ? "takeoff-room-sketch-panel--active" : ""}`}
+                onClick={() => focusRoomSketchPanel(room.id, mode === "ceiling" ? "ceiling-geometry" : "ceiling")}
+              >
+                <polygon points={sketchPointList(panel, liftedProject)} />
+                <text x={labelPoint.x} y={labelPoint.y}>{mode === "ceiling" && ceilingInfo.ceilingType === "vaulted" ? `Vault ${index + 1}` : labelForSurface("ceiling")}</text>
+              </g>
+            );
+          })}
+          {roomEdges.flatMap((edge) => {
+            const direction = edgeDirectionFromRoom(edge, room);
+            const glass = openingsBySurfaceDirection("glass", direction);
+            const doors = openingsBySurfaceDirection("door", direction);
+            return [
+              ...glass.map((component, index) => openingMarker(component, index, glass.length)),
+              ...doors.map((component, index) => openingMarker(component, index, doors.length)),
+            ];
+          })}
+          {mode === "ceiling" && ceilingInfo.ceilingType === "vaulted" && (() => {
+            const ridge = roomRidgePoints(room, { x: 0, y: 0 }, floor.defaultCeilingHeight ?? 9);
+            if (!ridge) return null;
+            const ridgeA = liftedProject({ x: ridge[0].x, y: ridge[0].z });
+            const ridgeB = liftedProject({ x: ridge[1].x, y: ridge[1].z });
+            return (
+              <line
+                className="takeoff-room-sketch-ridge"
+                x1={ridgeA.x}
+                y1={ridgeA.y}
+                x2={ridgeB.x}
+                y2={ridgeB.y}
+                onPointerDown={(event) => {
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  updateRidgeOffsetFromSketch(event);
+                }}
+                onPointerMove={(event) => {
+                  if (event.buttons !== 1) return;
+                  updateRidgeOffsetFromSketch(event);
+                }}
+              />
+            );
+          })()}
+        </svg>
+        <p className="takeoff-muted">
+          {mode === "ceiling"
+            ? "Ceiling panels are emphasized; room walls, floor, doors, and glass are muted for context."
+            : "Muted edges are reference geometry. Colored panels are assigned load components."}
+        </p>
+      </div>
+    );
   }
 
   function exportTakeoffJson() {
@@ -3344,7 +3575,7 @@ export function TakeoffApp() {
           return {
             ...room,
             components: components.map((component) => component.id === existing.id
-              ? { ...component, assembly, adjacency, area: Math.round(suggestion.area), label: `${suggestion.direction} ${label.toLowerCase()}` }
+              ? { ...component, assembly, adjacency, area: Math.round(suggestion.area), label: `${suggestion.direction} ${label.toLowerCase()}`, source: "exterior-perimeter" }
               : component),
           };
         }
@@ -3359,6 +3590,7 @@ export function TakeoffApp() {
               direction: suggestion.direction,
               area: Math.round(suggestion.area),
               label: `${suggestion.direction} ${label.toLowerCase()}`,
+              source: "exterior-perimeter",
               adjacency,
             },
           ],
@@ -4356,6 +4588,10 @@ export function TakeoffApp() {
       section,
       message: issue.message,
     });
+    if (issue.target?.roomId) {
+      const sketchSurface = sketchSurfaceForSection(section);
+      if (sketchSurface) setActiveSketchTarget({ roomId: issue.target.roomId, surface: sketchSurface });
+    }
     if (!issue.target) return;
     if (issue.target.type === "room" && issue.target.roomId) {
       setSelectedRoomId(issue.target.roomId);
@@ -5854,27 +6090,39 @@ export function TakeoffApp() {
                       }),
                       { grossArea: 0, glassArea: 0, doorArea: 0, netArea: 0 },
                     );
+                    const suggestionRows = suggestions.map((suggestion) => {
+                      const adjacentKinds = adjacentKindsByDirection(floor, selectedRoom).get(suggestion.direction) ?? [];
+                      const recommendation = recommendedWallTreatment(adjacentKinds, suggestedWallAssembly);
+                      const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
+                        component.direction === suggestion.direction &&
+                        component.adjacency === recommendation.adjacency &&
+                        component.assembly === recommendation.assembly &&
+                        Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
+                      );
+                      return { suggestion, adjacentKinds, recommendation, approved };
+                    });
+                    const allSuggestionsApproved = suggestionRows.length > 0 && suggestionRows.every((row) => row.approved);
+                    const suggestionHighlightClass = validationSectionClass("wall-suggestions");
                     return (
                       <>
-                        <div id={validationTargetId("wall-suggestions")} className={`takeoff-wall-suggestions ${validationSectionClass("wall-suggestions")}`}>
+                        <div id={validationTargetId("wall-suggestions")} className={`takeoff-wall-suggestions ${allSuggestionsApproved ? "takeoff-wall-suggestions--resolved" : ""} ${suggestionHighlightClass}`}>
                           <div className="takeoff-component-head">
                             <h3>Suggested Exterior Walls</h3>
-                            <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
-                              {scheduleOptionsBySurface.wall.map((option) => (
-                                <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                              ))}
-                            </select>
+                            {allSuggestionsApproved && !suggestionHighlightClass ? (
+                              <span className="takeoff-component-total">Applied</span>
+                            ) : (
+                              <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
+                                {scheduleOptionsBySurface.wall.map((option) => (
+                                  <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                                ))}
+                              </select>
+                            )}
                           </div>
-                          {suggestions.length ? suggestions.map((suggestion) => {
-                            const adjacentKinds = adjacentKindsByDirection(floor, selectedRoom).get(suggestion.direction) ?? [];
-                            const recommendation = recommendedWallTreatment(adjacentKinds, suggestedWallAssembly);
-                            const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
-                              component.direction === suggestion.direction &&
-                              component.adjacency === recommendation.adjacency &&
-                              component.assembly === recommendation.assembly &&
-                              Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
-                            );
-                            return (
+                          {allSuggestionsApproved && !suggestionHighlightClass ? (
+                            <p className="takeoff-muted">
+                              {suggestionRows.length} suggested wall area{suggestionRows.length === 1 ? "" : "s"} applied. Flagged wall components remain below for review.
+                            </p>
+                          ) : suggestionRows.length ? suggestionRows.map(({ suggestion, adjacentKinds, recommendation, approved }) => (
                               <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
                                 <span>
                                   Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
@@ -5887,11 +6135,12 @@ export function TakeoffApp() {
                                   {approved ? "Approved" : "Apply"}
                                 </button>
                               </div>
-                            );
-                          }) : (
+                          )) : (
                             <p className="takeoff-muted">No exterior/load-bearing wall exposure detected for this room.</p>
                           )}
-                          <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
+                          {(!allSuggestionsApproved || suggestionHighlightClass) && (
+                            <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
+                          )}
                         </div>
 
                         <div className="takeoff-wall-reconciliation">
@@ -6015,56 +6264,8 @@ export function TakeoffApp() {
                   {(() => {
                     const ceilingInfo = ceilingGeometryInfo(selectedRoom, floor.defaultCeilingHeight ?? 9);
                     const roomBounds = polygonBounds(roomCorners(selectedRoom));
-                    const sketchViewWidth = 310;
-                    const sketchViewMinY = -24;
-                    const sketchViewHeight = 220;
-                    const floorWidth = 220;
-                    const floorDepth = 76;
-                    const skew = 38;
-                    const baseX = 22;
-                    const baseY = 168;
-                    const heightScale = 6.4;
-                    const lowRise = Math.max(10, ceilingInfo.lowHeight * heightScale);
-                    const peakExtra = ceilingInfo.ceilingType === "vaulted" ? Math.max(8, (ceilingInfo.peakHeight - ceilingInfo.lowHeight) * heightScale) : 0;
-                    const backY = baseY - floorDepth;
-                    const floorFrontLeft = { x: baseX, y: baseY };
-                    const floorFrontRight = { x: baseX + floorWidth, y: baseY };
-                    const floorBackRight = { x: baseX + floorWidth + skew, y: backY };
-                    const floorBackLeft = { x: baseX + skew, y: backY };
-                    const topFrontLeft = { x: floorFrontLeft.x, y: floorFrontLeft.y - lowRise };
-                    const topFrontRight = { x: floorFrontRight.x, y: floorFrontRight.y - lowRise };
-                    const topBackRight = { x: floorBackRight.x, y: floorBackRight.y - lowRise };
-                    const topBackLeft = { x: floorBackLeft.x, y: floorBackLeft.y - lowRise };
-                    const ridgeRunsEastWest = ceilingInfo.ridgeDirection === "E-W";
-                    const ridgeStart = ridgeRunsEastWest
-                      ? { x: baseX + skew * ceilingInfo.ridgeRatio, y: baseY - lowRise - floorDepth * ceilingInfo.ridgeRatio - peakExtra }
-                      : { x: baseX + floorWidth * ceilingInfo.ridgeRatio, y: baseY - lowRise - peakExtra };
-                    const ridgeEnd = ridgeRunsEastWest
-                      ? { x: baseX + floorWidth + skew * ceilingInfo.ridgeRatio, y: baseY - lowRise - floorDepth * ceilingInfo.ridgeRatio - peakExtra }
-                      : { x: baseX + floorWidth * ceilingInfo.ridgeRatio + skew, y: backY - lowRise - peakExtra };
-                    const roofPlaneOne = ridgeRunsEastWest
-                      ? [topFrontLeft, topFrontRight, ridgeEnd, ridgeStart]
-                      : [topFrontLeft, topBackLeft, ridgeEnd, ridgeStart];
-                    const roofPlaneTwo = ridgeRunsEastWest
-                      ? [topBackLeft, topBackRight, ridgeEnd, ridgeStart]
-                      : [topFrontRight, topBackRight, ridgeEnd, ridgeStart];
-                    const gableTriangles = ridgeRunsEastWest
-                      ? [[topFrontLeft, topBackLeft, ridgeStart], [topFrontRight, topBackRight, ridgeEnd]]
-                      : [[topFrontLeft, topFrontRight, ridgeStart], [topBackLeft, topBackRight, ridgeEnd]];
-                    const pointList = (points: TakeoffPoint[]) => points.map((point) => `${point.x},${point.y}`).join(" ");
                     const ceilingSuggestions = ceilingWallSuggestionsForRoom(floor, selectedRoom, floor.defaultCeilingHeight ?? 9);
                     const hasCeilingSuggestions = ceilingSuggestions.length > 0;
-                    const updateRidgeOffsetFromEvent = (event: React.PointerEvent<SVGLineElement>) => {
-                      const svg = event.currentTarget.ownerSVGElement;
-                      if (!svg) return;
-                      const rect = svg.getBoundingClientRect();
-                      const viewX = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * sketchViewWidth;
-                      const viewY = sketchViewMinY + ((event.clientY - rect.top) / Math.max(rect.height, 1)) * sketchViewHeight;
-                      const ratio = ridgeRunsEastWest
-                        ? clamp((baseY - lowRise - peakExtra - viewY) / floorDepth, 0, 1)
-                        : clamp((viewX - baseX) / floorWidth, 0, 1);
-                      updateRoomCeilingGeometry(selectedRoom.id, { ceilingRidgeOffset: Number((ratio * 2 - 1).toFixed(3)) });
-                    };
                     return (
                       <div className={`takeoff-ceiling-qa ${ceilingInfo.needsReview ? "takeoff-ceiling-qa--warning" : ""} ${validationSectionClass("ceiling-geometry")}`}>
                         <div className="takeoff-component-head">
@@ -6074,55 +6275,7 @@ export function TakeoffApp() {
                           </button>
                         </div>
                         <div className="takeoff-ceiling-qa-grid">
-                          <svg viewBox={`0 ${sketchViewMinY} ${sketchViewWidth} ${sketchViewHeight}`} role="img" aria-label="Ceiling geometry preview">
-                            <polygon
-                              points={pointList([floorFrontLeft, floorFrontRight, floorBackRight, floorBackLeft])}
-                              fill="rgba(31,111,178,0.08)"
-                              stroke="#7fa6c7"
-                            />
-                            <polygon
-                              points={pointList([floorFrontLeft, floorFrontRight, topFrontRight, topFrontLeft])}
-                              fill="rgba(72,128,93,0.13)"
-                              stroke="#7ea48b"
-                            />
-                            <polygon
-                              points={pointList([floorFrontRight, floorBackRight, topBackRight, topFrontRight])}
-                              fill="rgba(72,128,93,0.1)"
-                              stroke="#7ea48b"
-                            />
-                            <polygon
-                              points={pointList([floorBackLeft, floorBackRight, topBackRight, topBackLeft])}
-                              fill="rgba(72,128,93,0.16)"
-                              stroke="#7ea48b"
-                            />
-                            {ceilingInfo.ceilingType === "vaulted" ? (
-                              <>
-                                <polygon points={pointList(roofPlaneOne)} fill="rgba(179,91,47,0.18)" stroke="#b35b2f" />
-                                <polygon points={pointList(roofPlaneTwo)} fill="rgba(179,91,47,0.1)" stroke="#b35b2f" />
-                                {gableTriangles.map((triangle, index) => (
-                                  <polygon key={`gable-${index}`} points={pointList(triangle)} fill="rgba(179,91,47,0.16)" stroke="#8f4a27" strokeDasharray="4 3" />
-                                ))}
-                                <line
-                                  className="takeoff-ridge-line"
-                                  x1={ridgeStart.x}
-                                  y1={ridgeStart.y}
-                                  x2={ridgeEnd.x}
-                                  y2={ridgeEnd.y}
-                                  onPointerDown={(event) => {
-                                    event.currentTarget.setPointerCapture(event.pointerId);
-                                    updateRidgeOffsetFromEvent(event);
-                                  }}
-                                  onPointerMove={(event) => {
-                                    if (event.buttons !== 1) return;
-                                    updateRidgeOffsetFromEvent(event);
-                                  }}
-                                />
-                                <text x="18" y="18" fill="#344558" fontSize="12">Drag ridge · {ceilingInfo.ridgeDirection}</text>
-                              </>
-                            ) : (
-                              <line x1={baseX} y1={baseY - lowRise} x2={baseX + floorWidth + skew} y2={backY - lowRise} stroke="#b35b2f" strokeWidth="2" />
-                            )}
-                          </svg>
+                          {renderRoomLoadSketch(selectedRoom, "ceiling")}
                           <div className="takeoff-ceiling-qa-copy">
                             <span>Floor default <strong>{floor.defaultCeilingHeight ?? 9} ft</strong></span>
                             <span>Room <strong>{Math.round(roomBounds.width)} x {Math.round(roomBounds.depth)} ft</strong></span>
@@ -6269,8 +6422,12 @@ export function TakeoffApp() {
                                 ...(isCompassDirection(component.direction) ? [component.direction] : []),
                               ]));
                               const isStaleCeilingWall = staleCeilingWallIds.has(component.id);
+                              const sourceLabel = componentSourceLabel(component.source);
+                              const isActiveComponentRow = activeSketchTarget?.roomId === selectedRoom.id &&
+                                activeSketchTarget.surface === component.surface &&
+                                (!activeSketchTarget.direction || !component.direction || activeSketchTarget.direction === component.direction);
                               return (
-                                <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""}`}>
+                                <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
                                   <select
                                     value={component.assembly}
                                     onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
@@ -6340,6 +6497,7 @@ export function TakeoffApp() {
                                   <button onClick={() => removeRoomComponent(selectedRoom.id, component.id)}>Remove</button>
                                   <p className="takeoff-component-meta">
                                     <strong>{selectedDefinition?.code ?? component.assembly}</strong>
+                                    {sourceLabel ? <em>{sourceLabel}</em> : null}
                                     {isStaleCeilingWall ? " · Stale ceiling-generated wall" : ""}
                                     {component.surface === "glass" && component.solarDirection ? ` · Solar ${component.solarDirection}` : ""}
                                     {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
@@ -6471,6 +6629,12 @@ export function TakeoffApp() {
             )}
           </details>
 
+          {selectedRoom && (
+            <section className="takeoff-panel">
+              {renderRoomLoadSketch(selectedRoom, "load")}
+            </section>
+          )}
+
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
               <h2>Validation</h2>
@@ -6579,27 +6743,39 @@ export function TakeoffApp() {
                     }),
                     { grossArea: 0, glassArea: 0, doorArea: 0, netArea: 0 },
                   );
+                  const suggestionRows = suggestions.map((suggestion) => {
+                    const adjacentKinds = adjacentKindsByDirection(floor, selectedRoom).get(suggestion.direction) ?? [];
+                    const recommendation = recommendedWallTreatment(adjacentKinds, suggestedWallAssembly);
+                    const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
+                      component.direction === suggestion.direction &&
+                      component.adjacency === recommendation.adjacency &&
+                      component.assembly === recommendation.assembly &&
+                      Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
+                    );
+                    return { suggestion, adjacentKinds, recommendation, approved };
+                  });
+                  const allSuggestionsApproved = suggestionRows.length > 0 && suggestionRows.every((row) => row.approved);
+                  const suggestionHighlightClass = validationSectionClass("wall-suggestions");
                   return (
                     <>
-                      <div className={`takeoff-wall-suggestions ${validationSectionClass("wall-suggestions")}`}>
+                      <div className={`takeoff-wall-suggestions ${allSuggestionsApproved ? "takeoff-wall-suggestions--resolved" : ""} ${suggestionHighlightClass}`}>
                         <div className="takeoff-component-head">
                           <h3>Suggested Exterior Walls</h3>
-                          <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
-                            {scheduleOptionsBySurface.wall.map((option) => (
-                              <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                            ))}
-                          </select>
+                          {allSuggestionsApproved && !suggestionHighlightClass ? (
+                            <span className="takeoff-component-total">Applied</span>
+                          ) : (
+                            <select value={suggestedWallAssembly} onChange={(event) => setSuggestedWallAssembly(event.target.value)}>
+                              {scheduleOptionsBySurface.wall.map((option) => (
+                                <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                              ))}
+                            </select>
+                          )}
                         </div>
-                        {suggestions.length ? suggestions.map((suggestion) => {
-                          const adjacentKinds = adjacentKindsByDirection(floor, selectedRoom).get(suggestion.direction) ?? [];
-                          const recommendation = recommendedWallTreatment(adjacentKinds, suggestedWallAssembly);
-                          const approved = roomSurfaceComponents(selectedRoom, "wall").some((component) =>
-                            component.direction === suggestion.direction &&
-                            component.adjacency === recommendation.adjacency &&
-                            component.assembly === recommendation.assembly &&
-                            Math.abs(component.area - Math.round(suggestion.area)) <= 0.5
-                          );
-                          return (
+                        {allSuggestionsApproved && !suggestionHighlightClass ? (
+                          <p className="takeoff-muted">
+                            {suggestionRows.length} suggested wall area{suggestionRows.length === 1 ? "" : "s"} applied. Flagged wall components remain below for review.
+                          </p>
+                        ) : suggestionRows.length ? suggestionRows.map(({ suggestion, adjacentKinds, recommendation, approved }) => (
                             <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
                               <span>
                                 Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
@@ -6612,11 +6788,12 @@ export function TakeoffApp() {
                                 {approved ? "Approved" : "Apply"}
                               </button>
                             </div>
-                          );
-                        }) : (
+                        )) : (
                           <p className="takeoff-muted">No exterior/load-bearing wall exposure detected for this room.</p>
                         )}
-                        <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
+                        {(!allSuggestionsApproved || suggestionHighlightClass) && (
+                          <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
+                        )}
                       </div>
 
                       <div className="takeoff-wall-reconciliation">
@@ -6785,8 +6962,12 @@ export function TakeoffApp() {
                               ...(isCompassDirection(component.direction) ? [component.direction] : []),
                             ]));
                             const isStaleCeilingWall = staleCeilingWallIds.has(component.id);
+                            const sourceLabel = componentSourceLabel(component.source);
+                            const isActiveComponentRow = activeSketchTarget?.roomId === selectedRoom.id &&
+                              activeSketchTarget.surface === component.surface &&
+                              (!activeSketchTarget.direction || !component.direction || activeSketchTarget.direction === component.direction);
                             return (
-                              <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""}`}>
+                              <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
                                 <select
                                   value={component.assembly}
                                   onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
@@ -6856,6 +7037,7 @@ export function TakeoffApp() {
                                 <button onClick={() => removeRoomComponent(selectedRoom.id, component.id)}>Remove</button>
                                 <p className="takeoff-component-meta">
                                   <strong>{selectedDefinition?.code ?? component.assembly}</strong>
+                                  {sourceLabel ? <em>{sourceLabel}</em> : null}
                                   {isStaleCeilingWall ? " · Stale ceiling-generated wall" : ""}
                                   {component.surface === "glass" && component.solarDirection ? ` · Solar ${component.solarDirection}` : ""}
                                   {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
