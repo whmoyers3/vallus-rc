@@ -125,6 +125,7 @@ type ActiveValidationTarget = {
   severity: TakeoffValidationIssue["severity"];
   section: ValidationSection;
   message: string;
+  issueType?: "room-type-suggestion";
 };
 type SketchTarget = {
   roomId: string;
@@ -1551,6 +1552,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
       issues.push({
         severity: "warning",
         message: `${room.name || "Room"} name suggests ${suggestedLabel}. Select that room type for internal gains or dismiss the suggestion.`,
+        issueType: "room-type-suggestion",
         target: roomTarget,
       });
     }
@@ -3217,10 +3219,12 @@ export function TakeoffApp() {
 
   function acceptRoomTypeSuggestion(roomId: string, suggestion: NonNullable<ReturnType<typeof inferredRoomTypeFromName>>) {
     updateRoom(roomId, { roomType: suggestion.type, roomTypeSuggestionDismissedKey: suggestion.key });
+    setActiveValidationTarget(null);
   }
 
   function rejectRoomTypeSuggestion(roomId: string, suggestion: NonNullable<ReturnType<typeof inferredRoomTypeFromName>>) {
     updateRoom(roomId, { roomType: "plain", roomTypeSuggestionDismissedKey: suggestion.key });
+    setActiveValidationTarget(null);
   }
 
   function updateRoomCeilingGeometry(roomId: string, patch: Partial<TakeoffRectRoom>) {
@@ -4968,6 +4972,7 @@ export function TakeoffApp() {
       severity: issue.severity,
       section,
       message: issue.message,
+      issueType: issue.issueType,
     });
     if (issue.target?.roomId) {
       const sketchSurface = sketchSurfaceForSection(section);
@@ -6454,17 +6459,34 @@ export function TakeoffApp() {
               {selectedRoom ? (
                 <>
                   {activeRoomValidationTarget && (
-                    <div className={`takeoff-active-validation takeoff-active-validation--${activeRoomValidationTarget.severity}`}>
-                      <div>
-                        <strong>{activeRoomValidationTarget.severity === "error" ? "Fix required" : "Review suggestion"}</strong>
-                        <span>{validationSectionLabel(activeRoomValidationTarget.section)}</span>
-                      </div>
-                      <p>{activeRoomValidationTarget.message}</p>
-                      <div className="takeoff-active-validation-actions">
-                        <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
-                        <button onClick={() => setActiveValidationTarget(null)}>Dismiss</button>
-                      </div>
-                    </div>
+                    (() => {
+                      const roomTypeSuggestion = activeRoomValidationTarget.issueType === "room-type-suggestion"
+                        ? inferredRoomTypeFromName(selectedRoom.name)
+                        : null;
+                      const suggestedLabel = roomTypeSuggestion
+                        ? roomTypeOptions.find((option) => option.id === roomTypeSuggestion.type)?.shortLabel ?? roomTypeLabel(roomTypeSuggestion.type)
+                        : "";
+                      return (
+                        <div className={`takeoff-active-validation takeoff-active-validation--${activeRoomValidationTarget.severity}`}>
+                          <div>
+                            <strong>{activeRoomValidationTarget.severity === "error" ? "Fix required" : "Review suggestion"}</strong>
+                            <span>{validationSectionLabel(activeRoomValidationTarget.section)}</span>
+                          </div>
+                          <p>{activeRoomValidationTarget.message}</p>
+                          <div className="takeoff-active-validation-actions">
+                            {roomTypeSuggestion ? (
+                              <>
+                                <button className="toolbar-primary" onClick={() => acceptRoomTypeSuggestion(selectedRoom.id, roomTypeSuggestion)}>Use {suggestedLabel}</button>
+                                <button onClick={() => rejectRoomTypeSuggestion(selectedRoom.id, roomTypeSuggestion)}>Keep Plain</button>
+                              </>
+                            ) : (
+                              <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
+                            )}
+                            <button onClick={() => setActiveValidationTarget(null)}>Dismiss</button>
+                          </div>
+                        </div>
+                      );
+                    })()
                   )}
                   {floor.rooms.length > 1 && (
                     <div id={validationTargetId("merge")} className={`takeoff-room-merge-tools ${validationSectionClass("merge")}`}>

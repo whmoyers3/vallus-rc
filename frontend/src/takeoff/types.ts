@@ -173,6 +173,7 @@ export type TakeoffProject = {
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
+  issueType?: "room-type-suggestion";
   target?: {
     type: "room" | "unassigned";
     roomId?: string;
