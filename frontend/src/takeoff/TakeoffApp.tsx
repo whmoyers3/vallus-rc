@@ -989,6 +989,60 @@ function pointInPolygon(point: TakeoffPoint, polygon: TakeoffPoint[]) {
   return inside;
 }
 
+function distanceToPolygonBoundary(point: TakeoffPoint, polygon: TakeoffPoint[]) {
+  return pointsToEdges(polygon).reduce((best, edge) => (
+    Math.min(best, distance(point, closestPointOnSegment(point, edge.a, edge.b)))
+  ), Number.POSITIVE_INFINITY);
+}
+
+function polygonLabelPoint(points: TakeoffPoint[]) {
+  if (points.length < 3) {
+    return points[0] ?? { x: 0, y: 0 };
+  }
+  const bounds = polygonBounds(points);
+  const fallback = {
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+  };
+  let best = pointInPolygon(fallback, points)
+    ? { point: fallback, score: distanceToPolygonBoundary(fallback, points) }
+    : { point: points[0], score: 0 };
+  const testPoint = (point: TakeoffPoint) => {
+    if (!pointInPolygon(point, points)) return;
+    const score = distanceToPolygonBoundary(point, points);
+    if (score > best.score) best = { point, score };
+  };
+  const columns = Math.max(3, Math.min(16, Math.ceil(bounds.width / 2)));
+  const rows = Math.max(3, Math.min(16, Math.ceil(bounds.depth / 2)));
+  const stepX = bounds.width / columns;
+  const stepY = bounds.depth / rows;
+
+  for (let xIndex = 0; xIndex < columns; xIndex += 1) {
+    for (let yIndex = 0; yIndex < rows; yIndex += 1) {
+      testPoint({
+        x: bounds.x + stepX * (xIndex + 0.5),
+        y: bounds.y + stepY * (yIndex + 0.5),
+      });
+    }
+  }
+
+  let refinement = Math.max(stepX, stepY) / 2;
+  for (let pass = 0; pass < 5; pass += 1) {
+    const anchor = best.point;
+    for (const dx of [-1, 0, 1]) {
+      for (const dy of [-1, 0, 1]) {
+        testPoint({ x: anchor.x + dx * refinement, y: anchor.y + dy * refinement });
+      }
+    }
+    refinement /= 2;
+  }
+
+  return {
+    x: Number(best.point.x.toFixed(3)),
+    y: Number(best.point.y.toFixed(3)),
+  };
+}
+
 function footprintArea(floor: TakeoffFloor) {
   const tracedArea = polygonArea(floor.exteriorPolygon);
   return tracedArea > 0 ? tracedArea : floor.conditionedPerimeter.width * floor.conditionedPerimeter.depth;
@@ -6003,10 +6057,7 @@ export function TakeoffApp() {
               {(floor.adjacentSpaces ?? []).map((space) => {
                 const color = adjacentSpaceColor(space.kind);
                 const points = adjacentSpaceCorners(space);
-                const center = {
-                  x: points.reduce((sum, point) => sum + point.x, 0) / Math.max(points.length, 1),
-                  y: points.reduce((sum, point) => sum + point.y, 0) / Math.max(points.length, 1),
-                };
+                const labelPoint = polygonLabelPoint(points);
                 return (
                   <g key={space.id} pointerEvents="none">
                     <polygon
@@ -6017,8 +6068,8 @@ export function TakeoffApp() {
                       strokeWidth="2"
                     />
                     <text
-                      x={offsetX + center.x * scale}
-                      y={offsetY + center.y * scale}
+                      x={offsetX + labelPoint.x * scale}
+                      y={offsetY + labelPoint.y * scale}
                       fontSize="11"
                       fill={color.stroke}
                       fontWeight="700"
@@ -6031,7 +6082,7 @@ export function TakeoffApp() {
               })}
               {floor.rooms.map((room, index) => {
                 const points = roomCorners(room);
-                const center = roomCenter(room);
+                const labelPoint = polygonLabelPoint(points);
                 const bounds = polygonBounds(points);
                 const color = roomColor(index);
                 const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
@@ -6083,8 +6134,8 @@ export function TakeoffApp() {
                             strokeLinecap="round"
                           />
                           <text
-                            x={offsetX + center.x * scale}
-                            y={offsetY + center.y * scale - 18}
+                            x={offsetX + labelPoint.x * scale}
+                            y={offsetY + labelPoint.y * scale - 18}
                             fontSize="10"
                             fill="#7f3f20"
                             fontWeight="700"
@@ -6095,8 +6146,8 @@ export function TakeoffApp() {
                         </>
                       ) : (
                         <text
-                          x={offsetX + center.x * scale}
-                          y={offsetY + center.y * scale - 18}
+                          x={offsetX + labelPoint.x * scale}
+                          y={offsetY + labelPoint.y * scale - 18}
                           fontSize="10"
                           fill="#31516b"
                           fontWeight="700"
@@ -6109,8 +6160,8 @@ export function TakeoffApp() {
                   )}
                   {planReviewMode === "floor" && (
                     <text
-                      x={offsetX + center.x * scale}
-                      y={offsetY + center.y * scale - 18}
+                      x={offsetX + labelPoint.x * scale}
+                      y={offsetY + labelPoint.y * scale - 18}
                       fontSize="10"
                       fill="#31516b"
                       fontWeight="700"
@@ -6137,7 +6188,7 @@ export function TakeoffApp() {
                     <circle key={`${room.id}-point-${pointIndex}`} cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="3.5" fill="#324457" stroke="#ffffff" strokeWidth="1.2" />
                   ))}
                   {editingRoomId === room.id ? (
-                    <foreignObject x={offsetX + roomCenter(room).x * scale - 50} y={offsetY + roomCenter(room).y * scale - 17} width="120" height="32">
+                    <foreignObject x={offsetX + labelPoint.x * scale - 50} y={offsetY + labelPoint.y * scale - 17} width="120" height="32">
                       <input
                         ref={inlineRoomNameInputRef}
                         className="takeoff-svg-input"
@@ -6165,8 +6216,8 @@ export function TakeoffApp() {
                     </foreignObject>
                   ) : (
                     <text
-                      x={offsetX + roomCenter(room).x * scale}
-                      y={offsetY + roomCenter(room).y * scale}
+                      x={offsetX + labelPoint.x * scale}
+                      y={offsetY + labelPoint.y * scale}
                       fontSize="12"
                       fill="#1f2933"
                       textAnchor="middle"
@@ -6186,7 +6237,7 @@ export function TakeoffApp() {
                       {room.name}
                     </text>
                   )}
-                  <text x={offsetX + roomCenter(room).x * scale} y={offsetY + roomCenter(room).y * scale + 16} fontSize="11" fill="#465667" textAnchor="middle">
+                  <text x={offsetX + labelPoint.x * scale} y={offsetY + labelPoint.y * scale + 16} fontSize="11" fill="#465667" textAnchor="middle">
                     {Math.round(rectArea(room))} sf
                   </text>
                   {roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door")).filter((component) => component.placement).map((component) => {
@@ -6898,7 +6949,7 @@ export function TakeoffApp() {
             {message && <p className="takeoff-message">{message}</p>}
           </details>
 
-          <details className="takeoff-panel takeoff-right-details">
+          <details className="takeoff-panel takeoff-right-details takeoff-adjacent-details">
             <summary>Adjacent Spaces</summary>
             <div className="takeoff-form-actions">
               <select value={adjacentSpaceKind} onChange={(event) => setAdjacentSpaceKind(event.target.value as TakeoffAdjacentSpaceKind)}>
