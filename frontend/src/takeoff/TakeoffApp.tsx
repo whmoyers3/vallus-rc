@@ -3225,6 +3225,20 @@ export function TakeoffApp() {
   const selectedUnassignedRegion = unassignedRegions.find((region) => region.id === selectedUnassignedRegionId) ?? unassignedRegions[0] ?? null;
   const activeUnassignedCells = selectedUnassignedRegion?.cells ?? unassignedCells;
   const unassignedCellArea = activeUnassignedCells.reduce((sum, cell) => sum + unassignedCellMeasuredArea(cell), 0);
+  const selectedUnassignedAdjacentRoomIds = selectedUnassignedRegion?.adjacentRoomIds ?? [];
+  const sliceRoomOptions = floor.rooms
+    .map((room, index) => ({ room, index, adjacentIndex: selectedUnassignedAdjacentRoomIds.indexOf(room.id) }))
+    .sort((first, second) => {
+      const firstAdjacent = first.adjacentIndex >= 0;
+      const secondAdjacent = second.adjacentIndex >= 0;
+      if (firstAdjacent !== secondAdjacent) return firstAdjacent ? -1 : 1;
+      if (firstAdjacent && secondAdjacent) return first.adjacentIndex - second.adjacentIndex;
+      return first.index - second.index;
+    })
+    .map(({ room }) => room);
+  const selectedSliceRoomId = sliceRoomId && sliceRoomOptions.some((room) => room.id === sliceRoomId)
+    ? sliceRoomId
+    : sliceRoomOptions[0]?.id ?? "";
   const validation = useMemo(() => buildValidation(floor, unassignedRegions), [floor, unassignedRegions]);
   const polygonDraftActive = roomPolygonMode && roomPolygonDraft.length > 0;
 
@@ -5024,14 +5038,14 @@ export function TakeoffApp() {
   }
 
   function assignHighlightedSlices() {
-    const candidateRooms = selectedUnassignedRegion?.adjacentRoomIds.length ? selectedUnassignedRegion.adjacentRoomIds : floor.rooms.map((room) => room.id);
-    const roomId = sliceRoomId && candidateRooms.includes(sliceRoomId) ? sliceRoomId : candidateRooms[0] || floor.rooms[0]?.id;
+    const candidateRooms = sliceRoomOptions.map((room) => room.id);
+    const roomId = selectedSliceRoomId || candidateRooms[0] || floor.rooms[0]?.id;
     if (!roomId || activeUnassignedCells.length === 0) return;
     const targetRoom = floor.rooms.find((room) => room.id === roomId);
     if (!targetRoom) return;
     const mergedRoom = mergePolygonsIntoRoom(targetRoom, activeUnassignedCells.map((cell) => pointsToClipPolygon(unassignedCellPoints(cell))));
     if (!mergedRoom) {
-      setMessage("Could not merge highlighted slices into that room.");
+      setMessage("Could not merge highlighted slices into that room. Try a room that touches the highlighted area; adjacent rooms are marked in the list.");
       return;
     }
     setFloor((current) => ({
@@ -5097,7 +5111,7 @@ export function TakeoffApp() {
     if (issue.target.type === "unassigned") {
       setSelectedRoomId(null);
       setSelectedUnassignedRegionId(issue.target.regionId ?? null);
-      setRightPanelOpen(false);
+      setRightPanelOpen(true);
       const region = unassignedRegions.find((candidate) => candidate.id === issue.target?.regionId);
       const adjacentRoomId = region?.adjacentRoomIds[0];
       if (adjacentRoomId) setSliceRoomId(adjacentRoomId);
@@ -7215,6 +7229,7 @@ export function TakeoffApp() {
                     const region = unassignedRegions.find((candidate) => candidate.id === event.target.value) ?? null;
                     setSelectedUnassignedRegionId(region?.id ?? null);
                     if (region?.adjacentRoomIds[0]) setSliceRoomId(region.adjacentRoomIds[0]);
+                    else if (floor.rooms[0]) setSliceRoomId(floor.rooms[0].id);
                   }}
                 >
                   {unassignedRegions.map((region) => (
@@ -7224,17 +7239,14 @@ export function TakeoffApp() {
                   ))}
                 </select>
                 <select
-                  value={
-                    sliceRoomId && (selectedUnassignedRegion?.adjacentRoomIds.length ? selectedUnassignedRegion.adjacentRoomIds.includes(sliceRoomId) : true)
-                      ? sliceRoomId
-                      : selectedUnassignedRegion?.adjacentRoomIds[0] || floor.rooms[0]?.id || ""
-                  }
+                  value={selectedSliceRoomId}
                   onChange={(event) => setSliceRoomId(event.target.value)}
                 >
-                  {(selectedUnassignedRegion?.adjacentRoomIds.length
-                    ? floor.rooms.filter((room) => selectedUnassignedRegion.adjacentRoomIds.includes(room.id))
-                    : floor.rooms
-                  ).map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+                  {sliceRoomOptions.map((room) => (
+                    <option key={room.id} value={room.id}>
+                      {room.name}{selectedUnassignedAdjacentRoomIds.includes(room.id) ? " (adjacent)" : ""}
+                    </option>
+                  ))}
                 </select>
                 <button onClick={assignHighlightedSlices}>Attribute Highlighted Area</button>
               </div>

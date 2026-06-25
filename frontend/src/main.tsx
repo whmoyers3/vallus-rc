@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TakeoffApp } from "./takeoff/TakeoffApp";
+import { RoomProfileLayoutPrototype } from "./takeoff/RoomProfileLayoutPrototype";
 import PlanSchematic from "./PlanSchematic";
 import { ventilationCfmForBedrooms } from "./loadRules";
 
@@ -5866,6 +5867,7 @@ function Root() {
   let routed = <App />;
   if (hash === "#/admin") routed = <AdminPanel />;
   if (hash === "#/takeoff") routed = <TakeoffApp />;
+  if (hash.startsWith("#/takeoff-room-profile-prototype")) routed = <RoomProfileLayoutPrototype />;
   if (hash.startsWith("#/airflow-wizard")) routed = <AirflowWizard />;
   return <AuthGate>{routed}</AuthGate>;
 }
