@@ -1541,6 +1541,19 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
 
   for (const room of floor.rooms) {
     const roomTarget = { type: "room" as const, roomId: room.id };
+    const roomTypeSuggestion = inferredRoomTypeFromName(room.name);
+    if (
+      roomTypeSuggestion &&
+      (room.roomType ?? "plain") !== roomTypeSuggestion.type &&
+      room.roomTypeSuggestionDismissedKey !== roomTypeSuggestion.key
+    ) {
+      const suggestedLabel = roomTypeOptions.find((option) => option.id === roomTypeSuggestion.type)?.shortLabel ?? roomTypeLabel(roomTypeSuggestion.type);
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} name suggests ${suggestedLabel}. Select that room type for internal gains or dismiss the suggestion.`,
+        target: roomTarget,
+      });
+    }
     if (!insidePerimeter(room, floor)) {
       issues.push({ severity: "error", message: `${room.name || "Room"} extends beyond the conditioned footprint by about ${Math.round(roomOutsideFootprintArea(room, floor))} sf.`, target: roomTarget });
     }
@@ -2802,16 +2815,29 @@ function normalizedRoomNameForInference(name: string) {
 function inferredRoomTypeFromName(name: string): { type: TakeoffRoomType; reason: string; key: string } | null {
   const normalized = normalizedRoomNameForInference(name);
   if (!normalized) return null;
+  const compact = normalized.replace(/\s+/g, "");
   const has = (pattern: RegExp) => pattern.test(normalized);
-  const hasEntertainmentLabel = has(/\bfamily room\b/) || has(/\bgathering\b/) || has(/\bgreat room\b/) || has(/\bentertainment area\b/);
-  const hasBedroomLanguage = has(/\bbed(room)?\b/) || has(/\bowners? suite\b/) || has(/\bmaster\b/);
+  const hasCompact = (pattern: RegExp) => pattern.test(compact);
+  const bedroomOrdinal = "(?:\\d+|one|two|three|four|five|six|seven|eight|nine|ten)";
+  const hasEntertainmentLabel = has(/\bfamily(?: room)?\b/) ||
+    has(/\bgathering(?: room)?\b/) ||
+    has(/\bgreat(?: room)?\b/) ||
+    has(/\bentertainment(?: area| room)?\b/) ||
+    has(/\brec(?:reation)? room\b/);
+  const hasBedroomLanguage = has(new RegExp(`\\bbed(?:room)?(?: ${bedroomOrdinal})?\\b`)) ||
+    has(/\bbdrm\b/) ||
+    has(/\bbr\b/) ||
+    has(/\bowners? suite\b/) ||
+    has(/\bprimary suite\b/) ||
+    has(/\bmaster\b/) ||
+    hasCompact(/^bed(?:room)?(?:\d+)?$/);
   if (hasEntertainmentLabel) {
     return { type: "entertainment", reason: "The room name reads like a family/gathering/entertainment space.", key: `${normalized}:entertainment` };
   }
-  if (has(/\bkitchen\b/)) {
+  if (has(/\bkitchen\b/) || has(/\bkitch(?:en)?\b/) || has(/\bkit\b/)) {
     return { type: "kitchen", reason: "The room name includes kitchen, which carries appliance/internal gains.", key: `${normalized}:kitchen` };
   }
-  if (has(/\blaundry\b/)) {
+  if (has(/\blaundry\b/) || has(/\blndry\b/) || has(/\butility\b/)) {
     return { type: "laundry", reason: "The room name includes laundry, which carries appliance/internal gains.", key: `${normalized}:laundry` };
   }
   if (hasBedroomLanguage) {
@@ -2826,6 +2852,7 @@ function validationIssueKey(issue: TakeoffValidationIssue, index?: number) {
 
 function validationSectionForIssue(issue: TakeoffValidationIssue): ValidationSection {
   const message = issue.message.toLowerCase();
+  if (message.includes("room type") || message.includes("internal gains")) return "room-profile";
   if (message.includes("suggested exterior wall")) return "wall-suggestions";
   if (message.includes("glass") || message.includes("window") || message.includes("opening")) return "glass-components";
   if (message.includes("door")) return "door-components";
