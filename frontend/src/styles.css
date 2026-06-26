@@ -2359,12 +2359,12 @@ button.toolbar-primary:hover {
   align-items: center;
   border: 1px solid #e1e7ec;
   border-radius: 6px;
-  grid-template-columns: 82px minmax(160px, 1.25fr) minmax(88px, 0.45fr) minmax(115px, 0.65fr) minmax(120px, 0.7fr) 86px auto;
+  grid-template-columns: 82px minmax(240px, 1.4fr) minmax(72px, 0.35fr) minmax(128px, 0.55fr) minmax(150px, 0.75fr) 96px auto;
   padding: 7px 8px;
 }
 
 .takeoff-component-row--workbench.takeoff-component-row--directional {
-  grid-template-columns: 82px minmax(160px, 1.15fr) 64px minmax(112px, 0.65fr) minmax(120px, 0.7fr) 86px auto;
+  grid-template-columns: 82px minmax(240px, 1.4fr) minmax(72px, 0.35fr) minmax(128px, 0.55fr) minmax(150px, 0.75fr) 96px auto;
 }
 
 .takeoff-component-row--workbench > select:first-of-type,
@@ -2378,6 +2378,19 @@ button.toolbar-primary:hover {
   color: #526170;
   font-size: 12px;
   font-weight: 800;
+}
+
+.takeoff-component-row--workbench > .takeoff-component-assembly,
+.takeoff-component-row--workbench > .takeoff-component-label,
+.takeoff-component-row--workbench > .takeoff-component-direction,
+.takeoff-component-row--workbench > .takeoff-component-treatment,
+.takeoff-component-row--workbench > .takeoff-component-area,
+.takeoff-component-row--workbench > .takeoff-component-remove {
+  grid-column: auto;
+}
+
+.takeoff-component-placeholder {
+  min-height: 1px;
 }
 
 .takeoff-component-row--stale {
@@ -2426,6 +2439,15 @@ button.toolbar-primary:hover {
 
 .takeoff-component-row--directional > input[aria-label$="label"] {
   grid-column: 1 / -1;
+}
+
+.takeoff-component-row--workbench > select:first-child,
+.takeoff-component-row--workbench > select:first-of-type,
+.takeoff-component-row--workbench.takeoff-component-row--directional > select:first-child,
+.takeoff-component-row--workbench.takeoff-component-row--directional > select:first-of-type,
+.takeoff-component-row--workbench:not(.takeoff-component-row--directional) > input[aria-label$="label"],
+.takeoff-component-row--workbench.takeoff-component-row--directional > input[aria-label$="label"] {
+  grid-column: auto;
 }
 
 .takeoff-component-meta {

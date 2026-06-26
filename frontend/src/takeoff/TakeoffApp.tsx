@@ -414,8 +414,15 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function effectiveCeilingType(room: TakeoffRectRoom): NonNullable<TakeoffRectRoom["ceilingType"]> {
+  const explicitType = room.ceilingType ?? "flat";
+  if (explicitType !== "flat") return explicitType;
+  const hasVaultedComponent = room.components?.some((component) => component.surface === "ceiling" && component.assembly === "C2");
+  return hasVaultedComponent ? "vaulted" : explicitType;
+}
+
 function ceilingGeometryInfo(room: TakeoffRectRoom, defaultCeilingHeight = 9) {
-  const ceilingType = room.ceilingType ?? "flat";
+  const ceilingType = effectiveCeilingType(room);
   const lowHeight = ceilingType === "vaulted" ? room.ceilingLowHeight ?? room.ceilingHeight : room.ceilingHeight;
   const peakHeight = ceilingType === "vaulted" ? room.ceilingPeakHeight ?? Math.max(lowHeight, room.ceilingHeight) : room.ceilingHeight;
   const ridgeDirection = room.ceilingRidgeDirection ?? "E-W";
@@ -579,8 +586,8 @@ function legacyComponentsForRoom(room: TakeoffRectRoom): TakeoffRoomComponent[] 
       label: assembly === "F1" ? "Framed / exposed floor" : "Slab",
     });
   }
-  if ((room.ceilingType ?? "flat") !== "none") {
-    const assembly = room.ceilingType === "vaulted" ? "C2" : "C1";
+  if (effectiveCeilingType(room) !== "none") {
+    const assembly = effectiveCeilingType(room) === "vaulted" ? "C2" : "C1";
     components.push({
       id: `${room.id}-ceiling-default`,
       surface: "ceiling",
@@ -605,7 +612,7 @@ function componentAreaTotal(room: TakeoffRectRoom, surface: TakeoffRoomComponent
 }
 
 function roomSurfaceNoLoad(room: TakeoffRectRoom, surface: TakeoffRoomComponent["surface"]) {
-  return (surface === "floor" && room.floorType === "none") || (surface === "ceiling" && room.ceilingType === "none");
+  return (surface === "floor" && room.floorType === "none") || (surface === "ceiling" && effectiveCeilingType(room) === "none");
 }
 
 function roomAreaReconciliation(room: TakeoffRectRoom, surface: "floor" | "ceiling") {
@@ -2547,7 +2554,7 @@ function TakeoffModelPreview({
         }
       }
 
-      if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
+      if (visibleLayers.ceilings && effectiveCeilingType(room) !== "none") {
         const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
         if (ceilingInfo.ceilingType === "vaulted") {
           for (const part of slopedCeilingMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, roomCeilingMaterial)) {
@@ -3474,8 +3481,9 @@ export function TakeoffApp() {
       if (!context.isLoadEdge) return null;
       return wallComponents.find((component) => {
         if (!component.direction || component.direction !== context.direction) return false;
-        const adjacency = component.adjacency ?? "exterior";
-        if (adjacency === "exterior") return Boolean(context.exteriorSegment) && context.adjacentKinds.length === 0;
+        const adjacency = component.adjacency ?? "outside";
+        const adjacencyKey = String(adjacency);
+        if (adjacencyKey === "outside" || adjacencyKey === "exterior") return Boolean(context.exteriorSegment) && context.adjacentKinds.length === 0;
         if (adjacency === "unknown") return context.isLoadEdge;
         return context.adjacentKinds.includes(adjacency as TakeoffAdjacentSpaceKind);
       }) ?? null;
@@ -3726,24 +3734,27 @@ export function TakeoffApp() {
               <span className="takeoff-component-kind">{componentSurfaceLabel(surface)}</span>
               <select
                 value={component.assembly}
-                onChange={(event) => updateRoomComponent(room.id, component.id, { assembly: event.target.value })}
+                className="takeoff-component-assembly"
+                onChange={(event) => updateRoomComponentAssembly(room.id, component.id, surface, event.target.value)}
               >
                 {options.map((option) => (
                   <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
                 ))}
               </select>
-              {componentNeedsDirection(surface) && (
+              {componentNeedsDirection(surface) ? (
                 <select
                   value={component.direction ?? ""}
+                  className="takeoff-component-direction"
                   onChange={(event) => updateRoomComponent(room.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
                 >
                   <option value="">Direction</option>
                   {directionChoices.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
                 </select>
-              )}
+              ) : <span className="takeoff-component-placeholder" aria-hidden="true" />}
               {surface === "wall" && (
                 <select
                   aria-label="wall adjacent space"
+                  className="takeoff-component-treatment"
                   value={component.adjacency ?? "outside"}
                   onChange={(event) => {
                     const adjacency = event.target.value as TakeoffWallAdjacency;
@@ -3765,6 +3776,7 @@ export function TakeoffApp() {
               {surface === "glass" && (
                 <select
                   aria-label="glass solar exposure"
+                  className="takeoff-component-treatment"
                   value={component.solarDirection ?? ""}
                   onChange={(event) => {
                     const solarDirection = event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined;
@@ -3779,8 +3791,10 @@ export function TakeoffApp() {
                   <option value="Skylight">Skylight</option>
                 </select>
               )}
+              {surface !== "wall" && surface !== "glass" ? <span className="takeoff-component-placeholder" aria-hidden="true" /> : null}
               <input
                 aria-label={`${surface} component label`}
+                className="takeoff-component-label"
                 value={component.label ?? ""}
                 placeholder="Label"
                 onChange={(event) => updateRoomComponent(room.id, component.id, { label: event.target.value })}
@@ -3790,10 +3804,11 @@ export function TakeoffApp() {
                 type="number"
                 min="0"
                 step="1"
+                className="takeoff-component-area"
                 value={component.area}
                 onChange={(event) => updateRoomComponent(room.id, component.id, { area: Number(event.target.value) })}
               />
-              <button onClick={() => removeRoomComponent(room.id, component.id)}>Remove</button>
+              <button className="takeoff-component-remove" onClick={() => removeRoomComponent(room.id, component.id)}>Remove</button>
               <p className="takeoff-component-meta">
                 <strong>{selectedDefinition?.code ?? component.assembly}</strong>
                 {sourceLabel ? <em>{sourceLabel}</em> : null}
@@ -4032,6 +4047,46 @@ export function TakeoffApp() {
         return {
           ...room,
           components: roomComponents(room).map((component) => (component.id === componentId ? { ...component, ...patch } : component)),
+        };
+      }),
+    }));
+  }
+
+  function updateRoomComponentAssembly(roomId: string, componentId: string, surface: TakeoffRoomComponent["surface"], assembly: string) {
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        const nextRoom: TakeoffRectRoom = { ...room };
+        if (surface === "floor") {
+          nextRoom.floorType = assembly === "F1" ? "framed" : "slab";
+        }
+        if (surface === "ceiling") {
+          nextRoom.ceilingType = assembly === "C2" ? "vaulted" : "flat";
+          nextRoom.ceilingGeometryApproved = false;
+          if (assembly === "C2") {
+            nextRoom.ceilingLowHeight = nextRoom.ceilingLowHeight ?? nextRoom.ceilingHeight;
+            nextRoom.ceilingPeakHeight = nextRoom.ceilingPeakHeight ?? Math.max(nextRoom.ceilingHeight, nextRoom.ceilingHeight + 1);
+            nextRoom.ceilingRidgeDirection = nextRoom.ceilingRidgeDirection ?? "E-W";
+            nextRoom.ceilingRidgeOffset = nextRoom.ceilingRidgeOffset ?? 0;
+          } else {
+            nextRoom.ceilingLowHeight = undefined;
+            nextRoom.ceilingPeakHeight = undefined;
+            nextRoom.ceilingRidgeDirection = undefined;
+            nextRoom.ceilingRidgeOffset = undefined;
+          }
+        }
+        return {
+          ...nextRoom,
+          components: roomComponents(room).map((component) => {
+            if (component.id !== componentId) return component;
+            const nextLabel = surface === "ceiling"
+              ? assembly === "C2" ? "Vaulted ceiling" : "Flat ceiling"
+              : surface === "floor"
+                ? assembly === "F1" ? "Framed / exposed floor" : "Slab"
+                : component.label;
+            return { ...component, assembly, label: nextLabel };
+          }),
         };
       }),
     }));
@@ -7016,7 +7071,7 @@ export function TakeoffApp() {
                               <label>
                                 Ceiling shape
                                 <select
-                                  value={selectedRoom.ceilingType ?? "flat"}
+                                  value={effectiveCeilingType(selectedRoom)}
                                   onChange={(event) => updateRoomCeilingType(selectedRoom.id, event.target.value as NonNullable<TakeoffRectRoom["ceilingType"]>)}
                                 >
                                   <option value="flat">Flat / taller flat</option>
@@ -7024,7 +7079,7 @@ export function TakeoffApp() {
                                   <option value="none">No ceiling load</option>
                                 </select>
                               </label>
-                              {(selectedRoom.ceilingType ?? "flat") === "vaulted" && (
+                              {effectiveCeilingType(selectedRoom) === "vaulted" && (
                                 <div className="takeoff-ceiling-shape-grid">
                                   <label>
                                     Low height ft
@@ -7572,7 +7627,7 @@ export function TakeoffApp() {
                   <label>
                     Ceiling shape
                     <select
-                      value={selectedRoom.ceilingType ?? "flat"}
+                      value={effectiveCeilingType(selectedRoom)}
                       onChange={(event) => updateRoomCeilingType(selectedRoom.id, event.target.value as NonNullable<TakeoffRectRoom["ceilingType"]>)}
                     >
                       <option value="flat">Flat / taller flat</option>
@@ -7580,7 +7635,7 @@ export function TakeoffApp() {
                       <option value="none">No ceiling load</option>
                     </select>
                   </label>
-                  {(selectedRoom.ceilingType ?? "flat") === "vaulted" && (
+                  {effectiveCeilingType(selectedRoom) === "vaulted" && (
                     <div className="takeoff-ceiling-shape-grid">
                       <label>
                         Low height ft
