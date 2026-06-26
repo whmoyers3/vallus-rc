@@ -1514,6 +1514,49 @@ function verticalProfileRange(profile: TakeoffVerticalProfile | undefined) {
   return null;
 }
 
+function adjacentSpaceCeilingHeight(space: TakeoffAdjacentSpace, defaultCeilingHeight = 9) {
+  return space.ceilingHeight ?? verticalProfileRange(space.verticalProfile)?.zMin ?? defaultCeilingHeight;
+}
+
+function adjacentSpaceAsRoom(space: TakeoffAdjacentSpace, defaultCeilingHeight = 9): TakeoffRectRoom {
+  const profileRange = verticalProfileRange(space.verticalProfile);
+  const ceilingHeight = adjacentSpaceCeilingHeight(space, defaultCeilingHeight);
+  return {
+    id: space.id,
+    name: space.name,
+    x: space.x,
+    y: space.y,
+    width: space.width,
+    depth: space.depth,
+    polygon: space.polygon,
+    ceilingHeight,
+    ceilingType: space.ceilingType ?? (space.verticalProfile?.kind === "gable" ? "vaulted" : "flat"),
+    ceilingLowHeight: space.ceilingLowHeight ?? ceilingHeight,
+    ceilingPeakHeight: space.ceilingPeakHeight ?? profileRange?.zMax ?? ceilingHeight,
+    ceilingRidgeDirection: space.ceilingRidgeDirection ?? (space.verticalProfile?.kind === "gable" ? space.verticalProfile.ridgeDirection : "E-W"),
+    ceilingRidgeOffset: space.ceilingRidgeOffset ?? (space.verticalProfile?.kind === "gable" ? space.verticalProfile.ridgeOffset ?? 0 : 0),
+    floorType: "none",
+    components: [],
+  };
+}
+
+function verticalProfileForAdjacentSpace(space: TakeoffAdjacentSpace, defaultCeilingHeight = 9): TakeoffVerticalProfile {
+  const ceilingType = space.ceilingType ?? "flat";
+  if (ceilingType === "none") return { kind: "none" };
+  const ceilingHeight = adjacentSpaceCeilingHeight(space, defaultCeilingHeight);
+  if (ceilingType === "vaulted") {
+    return {
+      kind: "gable",
+      zMin: space.ceilingLowHeight ?? ceilingHeight,
+      lowHeight: space.ceilingLowHeight ?? ceilingHeight,
+      peakHeight: space.ceilingPeakHeight ?? Math.max(ceilingHeight, ceilingHeight + 1),
+      ridgeDirection: space.ceilingRidgeDirection ?? "E-W",
+      ridgeOffset: space.ceilingRidgeOffset ?? 0,
+    };
+  }
+  return { kind: "flat", zMin: ceilingHeight, zMax: ceilingHeight };
+}
+
 function boundaryForAdjacency(adjacency: TakeoffWallAdjacency): TakeoffBoundaryType {
   if (adjacency === "attic") return "attic_knee_wall";
   if (adjacency === "garage") return "garage_wall";
@@ -1549,13 +1592,15 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
         if (!span || span.length < meaningfulAdjacentContactLength(segment, tolerance)) continue;
         const zMin = Math.max(0, profileRange.zMin);
         const zMax = Math.max(zMin, profileRange.zMax);
-        if (zMax - zMin <= 0.25) continue;
+        const exposedZMin = zMin;
+        const exposedZMax = Math.min(zMax, room.ceilingHeight);
+        const exposedHeight = Math.max(0, exposedZMax - exposedZMin);
+        if (exposedHeight <= 0.25) continue;
 
-        const area = Number((span.length * (zMax - zMin)).toFixed(3));
+        const area = Number((span.length * exposedHeight).toFixed(3));
         if (area <= 1) continue;
-        const existingWallOverlapHeight = Math.max(0, Math.min(zMax, room.ceilingHeight) - Math.max(zMin, 0));
-        const existingWallOverlapArea = Number((span.length * existingWallOverlapHeight).toFixed(3));
-        const wholeSectionArea = Number((span.length * Math.max(room.ceilingHeight, zMax - zMin)).toFixed(3));
+        const existingWallOverlapArea = area;
+        const wholeSectionArea = Number((span.length * room.ceilingHeight).toFixed(3));
         const id = [
           "boundary",
           room.id,
@@ -1563,8 +1608,8 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
           segment.direction,
           Math.round(span.start * 10),
           Math.round(span.end * 10),
-          Math.round(zMin * 10),
-          Math.round(zMax * 10),
+          Math.round(exposedZMin * 10),
+          Math.round(exposedZMax * 10),
         ].join(":");
         candidates.push({
           id,
@@ -1576,15 +1621,15 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
           direction: segment.direction,
           spanStart: Number(span.start.toFixed(3)),
           spanEnd: Number(span.end.toFixed(3)),
-          zMin: Number(zMin.toFixed(3)),
-          zMax: Number(zMax.toFixed(3)),
+          zMin: Number(exposedZMin.toFixed(3)),
+          zMax: Number(exposedZMax.toFixed(3)),
           area,
           existingWallOverlapArea,
           wholeSectionArea,
           recommendedAdjacency: "attic",
           recommendedAssembly: "W3",
           recommendedBoundary: "attic_knee_wall",
-          reason: `${space.name || "Covered porch"} closed ceiling/roof profile creates attic-side exposure from ${Number(zMin.toFixed(1))} ft to ${Number(zMax.toFixed(1))} ft over ${Number(span.length.toFixed(1))} lf.`,
+          reason: `${space.name || "Covered porch"} closed ceiling/roof profile overlaps the conditioned wall from ${Number(exposedZMin.toFixed(1))} ft to ${Number(exposedZMax.toFixed(1))} ft over ${Number(span.length.toFixed(1))} lf.`,
         });
       }
     }
@@ -2635,6 +2680,10 @@ function TakeoffModelPreview({
     const interiorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9aa9b5, depthWrite: false, transparent: true, opacity: 0.16, side: THREE.DoubleSide });
     const selectedWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6aa0d6, depthWrite: false, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
     const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, depthWrite: false, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
+    const adjacentFloorMaterial = new THREE.MeshPhongMaterial({ color: 0xd9c274, depthWrite: false, transparent: true, opacity: 0.22, side: THREE.DoubleSide });
+    const adjacentWallMaterial = new THREE.MeshPhongMaterial({ color: 0xc59a49, depthWrite: false, transparent: true, opacity: 0.24, side: THREE.DoubleSide });
+    const adjacentSelectedMaterial = new THREE.MeshPhongMaterial({ color: 0xd48a2b, depthWrite: false, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
+    const adjacentCeilingMaterial = new THREE.MeshPhongMaterial({ color: 0xe2d8a2, depthWrite: false, transparent: true, opacity: 0.28, side: THREE.DoubleSide });
     const kneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xb35b2f, depthWrite: false, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
     const glassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.78, side: THREE.DoubleSide });
     const doorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.82, side: THREE.DoubleSide });
@@ -2789,6 +2838,77 @@ function TakeoffModelPreview({
           } satisfies ModelSurfaceSelection;
           scene.add(openingMesh);
         }
+      }
+    }
+
+    for (const space of floor.adjacentSpaces ?? []) {
+      const sourceRoom = adjacentSpaceAsRoom(space, floor.defaultCeilingHeight ?? 9);
+      const rawPoints = roomCorners(sourceRoom);
+      const renderPoints = cleanPolygonPointsForRender(rawPoints);
+      if (renderPoints.length < 3) continue;
+      const room = renderPoints.length !== rawPoints.length ? { ...sourceRoom, polygon: renderPoints } : sourceRoom;
+      const points = roomCorners(room);
+      const selected = room.id === selectedRoomId;
+      const area = Number(rectArea(room).toFixed(3));
+
+      if (visibleLayers.floors) {
+        const floorMesh = createHorizontalShapeMesh(points, center, -0.01, selected ? adjacentSelectedMaterial : adjacentFloorMaterial);
+        floorMesh.userData.roomId = room.id;
+        floorMesh.userData.modelSurface = {
+          roomId: room.id,
+          roomName: room.name,
+          kind: "floor",
+          label: `${adjacentSpaceLabel(space.kind)} footprint`,
+          surface: "floor",
+          area,
+        } satisfies ModelSurfaceSelection;
+        scene.add(floorMesh);
+      }
+
+      if (visibleLayers.walls) {
+        for (const edge of pointsToEdges(points)) {
+          const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), selected ? adjacentSelectedMaterial : adjacentWallMaterial);
+          wallMesh.userData.roomId = room.id;
+          wallMesh.userData.modelSurface = {
+            roomId: room.id,
+            roomName: room.name,
+            kind: "interior-wall",
+            label: `${adjacentSpaceLabel(space.kind)} side`,
+          } satisfies ModelSurfaceSelection;
+          scene.add(wallMesh);
+        }
+      }
+
+      if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
+        const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
+        if (ceilingInfo.ceilingType === "vaulted") {
+          for (const part of slopedCeilingMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, adjacentCeilingMaterial)) {
+            part.mesh.userData.roomId = room.id;
+            part.mesh.userData.modelSurface = {
+              roomId: room.id,
+              roomName: room.name,
+              kind: part.kind,
+              label: `${adjacentSpaceLabel(space.kind)} vaulted roof`,
+              surface: "ceiling",
+              area: part.area,
+            } satisfies ModelSurfaceSelection;
+            scene.add(part.mesh);
+          }
+        } else {
+          const ceilingMesh = createHorizontalShapeMesh(points, center, room.ceilingHeight, adjacentCeilingMaterial);
+          ceilingMesh.userData.roomId = room.id;
+          ceilingMesh.userData.modelSurface = {
+            roomId: room.id,
+            roomName: room.name,
+            kind: "ceiling",
+            label: `${adjacentSpaceLabel(space.kind)} ceiling / roof`,
+            surface: "ceiling",
+            area,
+          } satisfies ModelSurfaceSelection;
+          scene.add(ceilingMesh);
+        }
+        const ridge = roomRidgePoints(room, center, floor.defaultCeilingHeight ?? 9);
+        if (ridge) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial));
       }
     }
 
@@ -3327,6 +3447,8 @@ export function TakeoffApp() {
   const unassignedArea = computedFootprintArea - assignedArea;
   const payload = useMemo(() => buildVrcPayload(takeoffProject), [takeoffProject]);
   const selectedRoom = floor.rooms.find((room) => room.id === selectedRoomId) ?? null;
+  const selectedAdjacentSpace = selectedRoom ? null : (floor.adjacentSpaces ?? []).find((space) => space.id === selectedRoomId) ?? null;
+  const selectedAdjacentRoom = selectedAdjacentSpace ? adjacentSpaceAsRoom(selectedAdjacentSpace, floor.defaultCeilingHeight ?? 9) : null;
   const roomRenameShortcutEnabled = workflowStep === "trace" &&
     !roomDrawMode &&
     !roomPolygonMode &&
@@ -5442,6 +5564,8 @@ export function TakeoffApp() {
         ? {
             closedCeilingBelow: false,
             boundaryIntent: "attic" as const,
+            ceilingHeight: floor.defaultCeilingHeight ?? 9,
+            ceilingType: "flat" as const,
             verticalProfile: { kind: "flat" as const, zMin: floor.defaultCeilingHeight ?? 9, zMax: floor.defaultCeilingHeight ?? 9 },
           }
         : {}),
@@ -5452,6 +5576,7 @@ export function TakeoffApp() {
       )
     );
     setFloor((current) => ({ ...current, adjacentSpaces: [...(current.adjacentSpaces ?? []), space] }));
+    setSelectedRoomId(space.id);
     setMessage(touchesExterior
       ? `${space.name} added. Shared walls will be tagged in room reconciliation.`
       : `${space.name} added. It does not appear to touch a conditioned exterior wall yet.`);
@@ -5459,6 +5584,7 @@ export function TakeoffApp() {
 
   function removeAdjacentSpace(id: string) {
     setFloor((current) => ({ ...current, adjacentSpaces: (current.adjacentSpaces ?? []).filter((space) => space.id !== id) }));
+    if (selectedRoomId === id) setSelectedRoomId(null);
   }
 
   function updateAdjacentSpace(id: string, patch: Partial<TakeoffAdjacentSpace>) {
@@ -5466,6 +5592,37 @@ export function TakeoffApp() {
       ...current,
       adjacentSpaces: (current.adjacentSpaces ?? []).map((space) => (space.id === id ? { ...space, ...patch } : space)),
     }));
+  }
+
+  function updateAdjacentSpaceCeilingGeometry(id: string, patch: Partial<Pick<
+    TakeoffAdjacentSpace,
+    "ceilingHeight" | "ceilingType" | "ceilingLowHeight" | "ceilingPeakHeight" | "ceilingRidgeDirection" | "ceilingRidgeOffset" | "closedCeilingBelow"
+  >>) {
+    setFloor((current) => ({
+      ...current,
+      adjacentSpaces: (current.adjacentSpaces ?? []).map((space) => {
+        if (space.id !== id) return space;
+        const next = { ...space, ...patch };
+        return {
+          ...next,
+          verticalProfile: verticalProfileForAdjacentSpace(next, current.defaultCeilingHeight ?? 9),
+        };
+      }),
+    }));
+  }
+
+  function updateAdjacentSpaceCeilingType(id: string, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>) {
+    const space = floor.adjacentSpaces?.find((candidate) => candidate.id === id);
+    if (!space) return;
+    const ceilingHeight = adjacentSpaceCeilingHeight(space, floor.defaultCeilingHeight ?? 9);
+    updateAdjacentSpaceCeilingGeometry(id, {
+      ceilingType,
+      ceilingHeight,
+      ceilingLowHeight: ceilingType === "vaulted" ? space.ceilingLowHeight ?? ceilingHeight : undefined,
+      ceilingPeakHeight: ceilingType === "vaulted" ? space.ceilingPeakHeight ?? Math.max(ceilingHeight, ceilingHeight + 1) : undefined,
+      ceilingRidgeDirection: ceilingType === "vaulted" ? space.ceilingRidgeDirection ?? "E-W" : undefined,
+      ceilingRidgeOffset: ceilingType === "vaulted" ? space.ceilingRidgeOffset ?? 0 : undefined,
+    });
   }
 
   function subtractDraggedShape(rect: PlanRect) {
@@ -6782,14 +6939,24 @@ export function TakeoffApp() {
                 const color = adjacentSpaceColor(space.kind);
                 const points = adjacentSpaceCorners(space);
                 const labelPoint = polygonLabelPoint(points);
+                const isSelected = selectedRoomId === space.id;
                 return (
-                  <g key={space.id} pointerEvents="none">
+                  <g
+                    key={space.id}
+                    pointerEvents={polygonDraftActive ? "none" : undefined}
+                    onClick={(event) => {
+                      if (openingModeActive) return;
+                      event.stopPropagation();
+                      setSelectedRoomId(space.id);
+                    }}
+                    style={{ cursor: openingModeActive ? "crosshair" : "pointer" }}
+                  >
                     <polygon
                       points={points.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
                       fill={color.fill}
-                      stroke={color.stroke}
+                      stroke={isSelected ? "#0f5fa8" : color.stroke}
                       strokeDasharray="7 4"
-                      strokeWidth="2"
+                      strokeWidth={isSelected ? "3" : "2"}
                     />
                     <text
                       x={offsetX + labelPoint.x * scale}
@@ -7112,8 +7279,8 @@ export function TakeoffApp() {
                   ))}
                 </div>
               </div>
-              {floor.rooms.length === 0 ? (
-                <p className="takeoff-muted">Draw or add rooms to build the room profile list.</p>
+              {floor.rooms.length === 0 && (floor.adjacentSpaces ?? []).length === 0 ? (
+                <p className="takeoff-muted">Draw or add rooms to build the space profile list.</p>
               ) : (
                 <div className="takeoff-room-tile-list">
                   {floor.rooms.map((room) => {
@@ -7129,6 +7296,23 @@ export function TakeoffApp() {
                         {room.roomType && room.roomType !== "plain" && (
                           <em>{roomTypeLabel(room.roomType)}</em>
                         )}
+                      </button>
+                    );
+                  })}
+                  {(floor.adjacentSpaces ?? []).length > 0 && (
+                    <div className="takeoff-space-list-divider">Adjacent / Unconditioned</div>
+                  )}
+                  {(floor.adjacentSpaces ?? []).map((space) => {
+                    const roomLike = adjacentSpaceAsRoom(space, floor.defaultCeilingHeight ?? 9);
+                    return (
+                      <button
+                        key={space.id}
+                        className={`takeoff-room-tile takeoff-room-tile--adjacent ${selectedRoomId === space.id ? "takeoff-room-tile--selected" : ""}`}
+                        onClick={() => setSelectedRoomId(space.id)}
+                      >
+                        <strong>{space.name}</strong>
+                        <span>{Math.round(rectArea(roomLike))} sf · {adjacentSpaceLabel(space.kind)}</span>
+                        <em>{space.closedCeilingBelow ? "Closed ceiling" : "Unconditioned"}</em>
                       </button>
                     );
                   })}
@@ -7612,8 +7796,138 @@ export function TakeoffApp() {
                     </>
                   );
                 })()
+              ) : selectedAdjacentSpace && selectedAdjacentRoom ? (
+                (() => {
+                  const spaceArea = rectArea(selectedAdjacentRoom);
+                  const ceilingInfo = ceilingGeometryInfo(selectedAdjacentRoom, floor.defaultCeilingHeight ?? 9);
+                  const roomBounds = polygonBounds(roomCorners(selectedAdjacentRoom));
+                  return (
+                    <>
+                      <div className="takeoff-workbench-head takeoff-workbench-head--adjacent">
+                        <div>
+                          <input
+                            className="takeoff-room-title-input"
+                            value={selectedAdjacentSpace.name}
+                            onChange={(event) => updateAdjacentSpace(selectedAdjacentSpace.id, { name: event.target.value })}
+                            aria-label="Adjacent space name"
+                          />
+                          <p className="takeoff-muted">
+                            {Math.round(spaceArea)} sf · {adjacentSpaceLabel(selectedAdjacentSpace.kind)} · unconditioned
+                          </p>
+                        </div>
+                        <div className="takeoff-workbench-actions">
+                          <button onClick={() => removeAdjacentSpace(selectedAdjacentSpace.id)}>Remove Space</button>
+                        </div>
+                      </div>
+
+                      <div className="takeoff-workbench-metrics takeoff-workbench-metrics--adjacent">
+                        <span>Area <strong>{Math.round(spaceArea)} sf</strong></span>
+                        <span>Ceiling <strong>{selectedAdjacentRoom.ceilingHeight} ft</strong></span>
+                        <span>Peak <strong>{ceilingInfo.peakHeight} ft</strong></span>
+                        <span>{selectedAdjacentSpace.closedCeilingBelow ? "Closed ceiling" : "Open / roof only"}</span>
+                      </div>
+
+                      <div className="takeoff-workbench-section">
+                        <button
+                          type="button"
+                          className="takeoff-workbench-toggle"
+                          onClick={() => setRoomWorkbenchSections((current) => ({ ...current, ceiling: !current.ceiling }))}
+                        >
+                          <span>Ceiling / Roof Geometry</span>
+                          <strong>{ceilingInfo.ceilingType === "vaulted" ? `${ceilingInfo.lowHeight}/${ceilingInfo.peakHeight} ft` : `${selectedAdjacentRoom.ceilingHeight} ft flat`}</strong>
+                          <em>{roomWorkbenchSections.ceiling ? "Hide" : "Show"}</em>
+                        </button>
+                        {roomWorkbenchSections.ceiling && (
+                          <div className="takeoff-workbench-section-body">
+                            <div className="takeoff-ceiling-shape">
+                              <label>
+                                Closed ceiling
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(selectedAdjacentSpace.closedCeilingBelow)}
+                                  onChange={(event) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { closedCeilingBelow: event.target.checked })}
+                                />
+                              </label>
+                              <label>
+                                Ceiling height ft
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.5"
+                                  value={selectedAdjacentRoom.ceilingHeight}
+                                  onChange={(event) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingHeight: Number(event.target.value) })}
+                                />
+                              </label>
+                              <label>
+                                Ceiling shape
+                                <select
+                                  value={selectedAdjacentRoom.ceilingType ?? "flat"}
+                                  onChange={(event) => updateAdjacentSpaceCeilingType(selectedAdjacentSpace.id, event.target.value as NonNullable<TakeoffRectRoom["ceilingType"]>)}
+                                >
+                                  <option value="flat">Flat / roof only</option>
+                                  <option value="vaulted">Vaulted / gable</option>
+                                  <option value="none">No ceiling/roof geometry</option>
+                                </select>
+                              </label>
+                              {(selectedAdjacentRoom.ceilingType ?? "flat") === "vaulted" && (
+                                <div className="takeoff-ceiling-shape-grid">
+                                  <label>
+                                    Low height ft
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.5"
+                                      value={selectedAdjacentRoom.ceilingLowHeight ?? selectedAdjacentRoom.ceilingHeight}
+                                      onChange={(event) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingLowHeight: Number(event.target.value) })}
+                                    />
+                                  </label>
+                                  <label>
+                                    Peak height ft
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.5"
+                                      value={selectedAdjacentRoom.ceilingPeakHeight ?? Math.max(selectedAdjacentRoom.ceilingHeight, selectedAdjacentRoom.ceilingHeight + 1)}
+                                      onChange={(event) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingPeakHeight: Number(event.target.value) })}
+                                    />
+                                  </label>
+                                  <label>
+                                    Ridge direction
+                                    <select
+                                      value={selectedAdjacentRoom.ceilingRidgeDirection ?? "E-W"}
+                                      onChange={(event) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingRidgeDirection: event.target.value as NonNullable<TakeoffRectRoom["ceilingRidgeDirection"]> })}
+                                    >
+                                      <option value="E-W">East - West</option>
+                                      <option value="N-S">North - South</option>
+                                    </select>
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+                            <div className="takeoff-ceiling-qa">
+                              <div className="takeoff-component-head">
+                                <h3>Unconditioned Space Geometry</h3>
+                              </div>
+                              <div className="takeoff-ceiling-qa-grid">
+                                {renderRoomLoadSketch(selectedAdjacentRoom, "ceiling")}
+                                <div className="takeoff-ceiling-qa-copy">
+                                  <span>Floor default <strong>{floor.defaultCeilingHeight ?? 9} ft</strong></span>
+                                  <span>Space <strong>{Math.round(roomBounds.width)} x {Math.round(roomBounds.depth)} ft</strong></span>
+                                  <span>Low / peak <strong>{ceilingInfo.lowHeight} / {ceilingInfo.peakHeight} ft</strong></span>
+                                  <span>Ridge offset <strong>{Math.round(ceilingInfo.ridgeOffset * 100)}%</strong></span>
+                                  <span>Ceiling surface <strong>{Math.round(ceilingInfo.slopedCeilingArea)} sf</strong></span>
+                                  <span>Boundary use <strong>{selectedAdjacentSpace.closedCeilingBelow ? "Can create adjacent attic exposure" : "Visual only"}</strong></span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()
               ) : (
-                <p className="takeoff-muted">Select a room on the plan or in the room list.</p>
+                <p className="takeoff-muted">Select a room or shaded adjacent space on the plan or in the space list.</p>
               )}
             </section>
           </div>
@@ -7704,46 +8018,10 @@ export function TakeoffApp() {
                   <div key={space.id} className="takeoff-adjacent-row">
                     <div className="takeoff-adjacent-row-main">
                       <span><strong>{space.name}</strong> · {Math.round(polygonArea(adjacentSpaceCorners(space)))} sf · {adjacentSpaceLabel(space.kind)}</span>
+                      <button className={selectedRoomId === space.id ? "toolbar-primary" : ""} onClick={() => setSelectedRoomId(space.id)}>Select</button>
                       <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
                     </div>
-                    {space.kind === "covered_porch" && (
-                      <div className="takeoff-adjacent-profile">
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(space.closedCeilingBelow)}
-                            onChange={(event) => updateAdjacentSpace(space.id, { closedCeilingBelow: event.target.checked })}
-                          />
-                          Closed ceiling
-                        </label>
-                        <label>
-                          Attic start ft
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.5"
-                            value={verticalProfileRange(space.verticalProfile)?.zMin ?? floor.defaultCeilingHeight ?? 9}
-                            onChange={(event) => {
-                              const current = verticalProfileRange(space.verticalProfile) ?? { zMin: floor.defaultCeilingHeight ?? 9, zMax: floor.defaultCeilingHeight ?? 9 };
-                              updateAdjacentSpace(space.id, { verticalProfile: { kind: "flat", zMin: Number(event.target.value), zMax: current.zMax } });
-                            }}
-                          />
-                        </label>
-                        <label>
-                          Roof top ft
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.5"
-                            value={verticalProfileRange(space.verticalProfile)?.zMax ?? floor.defaultCeilingHeight ?? 9}
-                            onChange={(event) => {
-                              const current = verticalProfileRange(space.verticalProfile) ?? { zMin: floor.defaultCeilingHeight ?? 9, zMax: floor.defaultCeilingHeight ?? 9 };
-                              updateAdjacentSpace(space.id, { verticalProfile: { kind: "flat", zMin: current.zMin, zMax: Number(event.target.value) } });
-                            }}
-                          />
-                        </label>
-                      </div>
-                    )}
+                    <p className="takeoff-muted">Select this shaded space to edit its ceiling / roof geometry in the Rooms panel.</p>
                   </div>
                 ))}
               </div>
@@ -7868,6 +8146,22 @@ export function TakeoffApp() {
                   <button onClick={(event) => { event.stopPropagation(); removeRoom(room.id); }}>Remove</button>
                 </div>
               ))}
+              {(floor.adjacentSpaces ?? []).map((space) => {
+                const roomLike = adjacentSpaceAsRoom(space, floor.defaultCeilingHeight ?? 9);
+                return (
+                  <div
+                    key={space.id}
+                    className={`takeoff-room-row takeoff-room-row--adjacent ${selectedRoomId === space.id ? "takeoff-room-row--selected" : ""}`}
+                    onClick={() => setSelectedRoomId(space.id)}
+                  >
+                    <div>
+                      <strong>{space.name}</strong>
+                      <span>{Math.round(rectArea(roomLike))} sf · {adjacentSpaceLabel(space.kind)} · {roomLike.ceilingHeight} ft</span>
+                    </div>
+                    <button onClick={(event) => { event.stopPropagation(); removeAdjacentSpace(space.id); }}>Remove</button>
+                  </div>
+                );
+              })}
             </div>
           </section>
 

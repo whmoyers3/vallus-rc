@@ -1337,6 +1337,16 @@ button.toolbar-primary:hover {
   gap: 8px;
 }
 
+.takeoff-space-list-divider {
+  color: #647486;
+  flex-basis: 100%;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  margin-top: 2px;
+  text-transform: uppercase;
+}
+
 .takeoff-room-tile {
   background: #ffffff;
   border: 1px solid #d6e0e8;
@@ -1373,6 +1383,17 @@ button.toolbar-primary:hover {
   justify-self: start;
   line-height: 1.2;
   padding: 2px 7px;
+}
+
+.takeoff-room-tile--adjacent {
+  background: #fff9e9;
+  border-color: #dec580;
+}
+
+.takeoff-room-tile--adjacent em {
+  background: #f6edcf;
+  border-color: #dbc071;
+  color: #674d13;
 }
 
 .takeoff-room-tile--selected {
@@ -1847,6 +1868,11 @@ button.toolbar-primary:hover {
   background: #eef5fb;
   border-color: #7fb0d5;
   box-shadow: inset 3px 0 0 #1f6fb2;
+}
+
+.takeoff-room-row--adjacent {
+  background: #fff9e9;
+  border-color: #dec580;
 }
 
 .takeoff-room-row strong,

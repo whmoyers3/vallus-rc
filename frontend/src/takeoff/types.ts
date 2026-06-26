@@ -62,6 +62,12 @@ export type TakeoffAdjacentSpace = {
   width: number;
   depth: number;
   polygon?: TakeoffPoint[];
+  ceilingHeight?: number;
+  ceilingType?: "none" | "flat" | "vaulted";
+  ceilingLowHeight?: number;
+  ceilingPeakHeight?: number;
+  ceilingRidgeDirection?: "E-W" | "N-S";
+  ceilingRidgeOffset?: number;
   verticalProfile?: TakeoffVerticalProfile;
   closedCeilingBelow?: boolean;
   boundaryIntent?: TakeoffWallAdjacency;
