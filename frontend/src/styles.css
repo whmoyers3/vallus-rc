@@ -1812,6 +1812,7 @@ button.toolbar-primary:hover {
 .takeoff-component-head {
   align-items: center;
   display: flex;
+  gap: 10px;
   justify-content: space-between;
   margin-bottom: 6px;
 }
@@ -1984,6 +1985,17 @@ button.toolbar-primary:hover {
   stroke: #8a6532;
 }
 
+.takeoff-room-sketch-wall--generated polygon {
+  fill: rgba(179, 91, 47, 0.18);
+  stroke: #9a4d28;
+  stroke-dasharray: 3 3;
+}
+
+.takeoff-room-sketch-wall--attic polygon {
+  fill: rgba(120, 86, 150, 0.16);
+  stroke: #785696;
+}
+
 .takeoff-room-sketch-ceiling polygon {
   fill: rgba(179, 91, 47, 0.16);
   stroke: #b35b2f;
@@ -1998,6 +2010,16 @@ button.toolbar-primary:hover {
 .takeoff-room-sketch--ceiling .takeoff-room-sketch-wall polygon {
   fill: rgba(100, 116, 139, 0.045);
   stroke: #c5d0da;
+}
+
+.takeoff-room-sketch--ceiling .takeoff-room-sketch-wall--generated polygon {
+  fill: rgba(179, 91, 47, 0.2);
+  stroke: #9a4d28;
+}
+
+.takeoff-room-sketch--ceiling .takeoff-room-sketch-wall--attic polygon {
+  fill: rgba(120, 86, 150, 0.16);
+  stroke: #785696;
 }
 
 .takeoff-room-sketch--ceiling .takeoff-room-sketch-opening circle {
@@ -2351,7 +2373,27 @@ button.toolbar-primary:hover {
   padding: 10px;
 }
 
+.takeoff-component-head-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.takeoff-component-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.takeoff-component-filter-row button {
+  min-height: 30px;
+  padding: 4px 9px;
+}
+
 .takeoff-component-list--workbench {
+  display: grid;
   gap: 7px;
 }
 
@@ -2359,6 +2401,11 @@ button.toolbar-primary:hover {
   align-items: center;
   border: 1px solid #e1e7ec;
   border-radius: 6px;
+  display: grid;
+  gap: 6px 8px;
+  grid-template-areas:
+    "kind assembly direction treatment label area remove"
+    "meta meta meta meta meta meta meta";
   grid-template-columns: 82px minmax(240px, 1.4fr) minmax(72px, 0.35fr) minmax(128px, 0.55fr) minmax(150px, 0.75fr) 96px auto;
   padding: 7px 8px;
 }
@@ -2378,19 +2425,49 @@ button.toolbar-primary:hover {
   color: #526170;
   font-size: 12px;
   font-weight: 800;
+  grid-area: kind;
 }
 
-.takeoff-component-row--workbench > .takeoff-component-assembly,
-.takeoff-component-row--workbench > .takeoff-component-label,
-.takeoff-component-row--workbench > .takeoff-component-direction,
-.takeoff-component-row--workbench > .takeoff-component-treatment,
-.takeoff-component-row--workbench > .takeoff-component-area,
+.takeoff-component-row--workbench > * {
+  min-width: 0;
+}
+
+.takeoff-component-row--workbench > .takeoff-component-assembly {
+  grid-area: assembly !important;
+}
+
+.takeoff-component-row--workbench > .takeoff-component-direction {
+  grid-area: direction !important;
+}
+
+.takeoff-component-row--workbench > .takeoff-component-treatment {
+  grid-area: treatment !important;
+}
+
+.takeoff-component-row--workbench > .takeoff-component-label {
+  grid-area: label !important;
+}
+
+.takeoff-component-row--workbench > .takeoff-component-area {
+  grid-area: area !important;
+}
+
 .takeoff-component-row--workbench > .takeoff-component-remove {
-  grid-column: auto;
+  grid-area: remove !important;
 }
 
 .takeoff-component-placeholder {
+  align-self: stretch;
+  display: block;
   min-height: 1px;
+}
+
+.takeoff-component-direction-placeholder {
+  grid-area: direction;
+}
+
+.takeoff-component-treatment-placeholder {
+  grid-area: treatment;
 }
 
 .takeoff-component-row--stale {
@@ -2453,7 +2530,7 @@ button.toolbar-primary:hover {
 .takeoff-component-meta {
   color: #657384;
   font-size: 11px;
-  grid-column: 1 / -1;
+  grid-area: meta !important;
   line-height: 1.35;
   margin: 0;
 }
@@ -2715,6 +2792,15 @@ button.toolbar-primary:hover {
   .takeoff-component-row--workbench,
   .takeoff-component-row--workbench.takeoff-component-row--directional {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "kind"
+      "assembly"
+      "direction"
+      "treatment"
+      "label"
+      "area"
+      "remove"
+      "meta";
   }
   .takeoff-workbench-head {
     display: grid;
