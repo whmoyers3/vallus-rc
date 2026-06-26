@@ -9,6 +9,7 @@ import type {
   TakeoffAdjacentSpace,
   TakeoffAdjacentSpaceKind,
   TakeoffAuthoringMode,
+  TakeoffBoundaryType,
   TakeoffComponentCategory,
   TakeoffComponentDefinition,
   TakeoffFloor,
@@ -20,6 +21,7 @@ import type {
   TakeoffRoomType,
   TakeoffScaleLine,
   TakeoffValidationIssue,
+  TakeoffVerticalProfile,
   TakeoffWallAdjacency,
 } from "./types";
 
@@ -116,6 +118,26 @@ type StaleCeilingWallPrompt = {
   roomName: string;
   components: Array<{ id: string; label: string; area: number; source?: TakeoffRoomComponentSource }>;
 } | null;
+type TakeoffBoundaryCandidate = {
+  id: string;
+  roomId: string;
+  roomName: string;
+  adjacentSpaceId: string;
+  adjacentSpaceName: string;
+  surface: "wall";
+  direction: (typeof directionOptions)[number];
+  spanStart: number;
+  spanEnd: number;
+  zMin: number;
+  zMax: number;
+  area: number;
+  existingWallOverlapArea: number;
+  wholeSectionArea: number;
+  recommendedAdjacency: TakeoffWallAdjacency;
+  recommendedAssembly: string;
+  recommendedBoundary: TakeoffBoundaryType;
+  reason: string;
+};
 type OrientationLoadResult = { facing: string; cooling: number; heating: number; tons: number };
 type TakeoffCalcResult = OrientationLoadResult & { orientations: OrientationLoadResult[]; baseFacing: string };
 type ValidationSection = "merge" | "wall-suggestions" | "wall-components" | "glass-components" | "door-components" | "floor-components" | "ceiling-components" | "ceiling-geometry" | "room-profile";
@@ -126,7 +148,7 @@ type ActiveValidationTarget = {
   severity: TakeoffValidationIssue["severity"];
   section: ValidationSection;
   message: string;
-  issueType?: "room-type-suggestion";
+  issueType?: TakeoffValidationIssue["issueType"];
 };
 type SketchTarget = {
   roomId: string;
@@ -141,6 +163,29 @@ type UnassignedRegion = {
   bounds: PlanRect;
   adjacentRoomIds: string[];
 };
+
+function referenceDisplayRectForFloor(floor: TakeoffFloor): PlanRect {
+  const gridWidth = Math.max(floor.designGrid.width, 1);
+  const gridDepth = Math.max(floor.designGrid.depth, 1);
+  const crop = floor.reference?.crop ?? { x: 0, y: 0, width: gridWidth, depth: gridDepth };
+  const cropAspect = Math.max(crop.width, 1) / Math.max(crop.depth, 1);
+  const gridAspect = gridWidth / gridDepth;
+
+  return cropAspect >= gridAspect
+    ? {
+        x: 0,
+        y: (gridDepth - gridWidth / cropAspect) / 2,
+        width: gridWidth,
+        depth: gridWidth / cropAspect,
+      }
+    : {
+        x: (gridWidth - gridDepth * cropAspect) / 2,
+        y: 0,
+        width: gridDepth * cropAspect,
+        depth: gridDepth,
+      };
+}
+
 const adjacentSpaceKinds: Array<{ id: TakeoffAdjacentSpaceKind; label: string }> = [
   { id: "garage", label: "Garage" },
   { id: "attic", label: "Attic" },
@@ -1360,6 +1405,45 @@ function adjacentSpaceContactLength(
   return Math.min(segmentLength(segment), Math.max(sharedEdgeLength, corridorSpan));
 }
 
+function projectedSpanRangeOnSegment(points: TakeoffPoint[], segment: { a: TakeoffPoint; b: TakeoffPoint }) {
+  const dx = segment.b.x - segment.a.x;
+  const dy = segment.b.y - segment.a.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0.001 || points.length === 0) return null;
+  const ux = dx / length;
+  const uy = dy / length;
+  const projections = points.map((point) => (point.x - segment.a.x) * ux + (point.y - segment.a.y) * uy);
+  const start = Math.max(0, Math.min(...projections));
+  const end = Math.min(length, Math.max(...projections));
+  if (end - start <= 0.001) return null;
+  return { start, end, length: end - start };
+}
+
+function adjacentSpaceContactSpan(
+  space: TakeoffAdjacentSpace,
+  segment: { a: TakeoffPoint; b: TakeoffPoint },
+  tolerance: number,
+) {
+  const ranges: Array<{ start: number; end: number; length: number }> = [];
+  for (const edge of pointsToEdges(adjacentSpaceCorners(space))) {
+    const shared = sharedSegment(segment, edge, tolerance);
+    if (!shared || shared.length <= 0.05) continue;
+    const range = projectedSpanRangeOnSegment([shared.a, shared.b], segment);
+    if (range) ranges.push(range);
+  }
+
+  const corridor = segmentCorridorPolygon(segment, tolerance);
+  if (corridor) {
+    const corridorOverlaps = intersection([corridor], [pointsToClipPolygon(adjacentSpaceCorners(space))]);
+    for (const polygon of corridorOverlaps) {
+      const range = projectedSpanRangeOnSegment(clipRingToPoints(polygon[0] ?? []), segment);
+      if (range) ranges.push(range);
+    }
+  }
+
+  return ranges.sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
 function adjacentSpaceTouchesSegment(
   space: TakeoffAdjacentSpace,
   segment: { a: TakeoffPoint; b: TakeoffPoint },
@@ -1420,6 +1504,92 @@ function adjacentKindsByDirection(floor: TakeoffFloor, room: TakeoffRectRoom) {
     if (kinds.length > 0) byDirection.set(direction, kinds);
   }
   return byDirection;
+}
+
+function verticalProfileRange(profile: TakeoffVerticalProfile | undefined) {
+  if (!profile || profile.kind === "none" || profile.kind === "unknown") return null;
+  if (profile.kind === "flat") return { zMin: profile.zMin, zMax: profile.zMax };
+  if (profile.kind === "shed") return { zMin: profile.zMin, zMax: Math.max(profile.lowHeight, profile.highHeight) };
+  if (profile.kind === "gable") return { zMin: profile.zMin, zMax: profile.peakHeight };
+  return null;
+}
+
+function boundaryForAdjacency(adjacency: TakeoffWallAdjacency): TakeoffBoundaryType {
+  if (adjacency === "attic") return "attic_knee_wall";
+  if (adjacency === "garage") return "garage_wall";
+  if (adjacency === "crawlspace") return "crawlspace_wall";
+  if (adjacency === "conditioned") return "partition";
+  if (adjacency === "outside") return "exterior";
+  return "unknown";
+}
+
+function componentBoundaryForSurface(component: TakeoffRoomComponent): TakeoffBoundaryType | undefined {
+  if (component.boundary) return component.boundary;
+  if (component.surface === "wall") return boundaryForAdjacency(component.adjacency ?? "outside");
+  if (component.surface === "floor") {
+    if (component.assembly === "F2") return "slab";
+    if (/garage/i.test(component.label ?? "")) return "floor_over_garage";
+    if (/cantilever/i.test(component.label ?? "")) return "cantilever";
+    return "framed_floor";
+  }
+  if (component.surface === "ceiling") return component.assembly === "C2" ? "vaulted_ceiling" : "flat_ceiling";
+  return undefined;
+}
+
+function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandidate[] {
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const candidates: TakeoffBoundaryCandidate[] = [];
+  for (const room of floor.rooms) {
+    for (const segment of roomExteriorSegments(floor, room)) {
+      for (const space of floor.adjacentSpaces ?? []) {
+        if (space.kind !== "covered_porch" || !space.closedCeilingBelow) continue;
+        const profileRange = verticalProfileRange(space.verticalProfile);
+        if (!profileRange) continue;
+        const span = adjacentSpaceContactSpan(space, segment, tolerance);
+        if (!span || span.length < meaningfulAdjacentContactLength(segment, tolerance)) continue;
+        const zMin = Math.max(0, profileRange.zMin);
+        const zMax = Math.max(zMin, profileRange.zMax);
+        if (zMax - zMin <= 0.25) continue;
+
+        const area = Number((span.length * (zMax - zMin)).toFixed(3));
+        if (area <= 1) continue;
+        const existingWallOverlapHeight = Math.max(0, Math.min(zMax, room.ceilingHeight) - Math.max(zMin, 0));
+        const existingWallOverlapArea = Number((span.length * existingWallOverlapHeight).toFixed(3));
+        const wholeSectionArea = Number((span.length * Math.max(room.ceilingHeight, zMax - zMin)).toFixed(3));
+        const id = [
+          "boundary",
+          room.id,
+          space.id,
+          segment.direction,
+          Math.round(span.start * 10),
+          Math.round(span.end * 10),
+          Math.round(zMin * 10),
+          Math.round(zMax * 10),
+        ].join(":");
+        candidates.push({
+          id,
+          roomId: room.id,
+          roomName: room.name || "Room",
+          adjacentSpaceId: space.id,
+          adjacentSpaceName: space.name || "Covered porch",
+          surface: "wall",
+          direction: segment.direction,
+          spanStart: Number(span.start.toFixed(3)),
+          spanEnd: Number(span.end.toFixed(3)),
+          zMin: Number(zMin.toFixed(3)),
+          zMax: Number(zMax.toFixed(3)),
+          area,
+          existingWallOverlapArea,
+          wholeSectionArea,
+          recommendedAdjacency: "attic",
+          recommendedAssembly: "W3",
+          recommendedBoundary: "attic_knee_wall",
+          reason: `${space.name || "Covered porch"} closed ceiling/roof profile creates attic-side exposure from ${Number(zMin.toFixed(1))} ft to ${Number(zMax.toFixed(1))} ft over ${Number(span.length.toFixed(1))} lf.`,
+        });
+      }
+    }
+  }
+  return candidates;
 }
 
 function adjacentKindsForPlacedOpening(floor: TakeoffFloor, room: TakeoffRectRoom, component: TakeoffRoomComponent) {
@@ -1762,6 +1932,17 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     }
   }
 
+  for (const candidate of boundaryCandidatesForFloor(floor)) {
+    if (floor.boundaryCandidateResolutions?.[candidate.id]) continue;
+    issues.push({
+      severity: "warning",
+      message: `${candidate.roomName} ${candidate.direction} wall may need ${Math.round(candidate.area)} sf of attic/knee-wall treatment. ${candidate.reason}`,
+      issueType: "boundary-candidate",
+      boundaryCandidateId: candidate.id,
+      target: { type: "room", roomId: candidate.roomId },
+    });
+  }
+
   return issues;
 }
 
@@ -1801,6 +1982,7 @@ function buildVrcPayload(project: TakeoffProject) {
       assembly: component.assembly,
       direction: payloadDirectionForComponent(component),
       area: component.area,
+      ...(componentBoundaryForSurface(component) ? { boundary: componentBoundaryForSurface(component) } : {}),
       ...(component.source ? { source: component.source } : {}),
       ...(component.adjacency ? { adjacency: component.adjacency } : {}),
       ...(component.geometryLabel ? { geometry_label: component.geometryLabel } : {}),
@@ -2206,12 +2388,16 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
   const width = Math.max(floor.designGrid.width, 1);
   const depth = Math.max(floor.designGrid.depth, 1);
   const crop = floor.reference?.crop;
+  const display = referenceDisplayRectForFloor(floor);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   if (crop && crop.width > 0 && crop.depth > 0) {
     texture.repeat.set(crop.width / width, crop.depth / depth);
     texture.offset.set(crop.x / width, 1 - (crop.y + crop.depth) / depth);
+  } else {
+    texture.repeat.set(1, 1);
+    texture.offset.set(0, 0);
   }
   texture.needsUpdate = true;
 
@@ -2222,10 +2408,10 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
     side: THREE.DoubleSide,
     transparent: true,
   });
-  const geometry = new THREE.PlaneGeometry(width, depth);
+  const geometry = new THREE.PlaneGeometry(Math.max(display.width, 1), Math.max(display.depth, 1));
   geometry.rotateX(-Math.PI / 2);
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.set(width / 2 - center.x, -0.08, depth / 2 - center.y);
+  mesh.position.set(display.x + display.width / 2 - center.x, -0.08, display.y + display.depth / 2 - center.y);
   return mesh;
 }
 
@@ -3201,21 +3387,7 @@ export function TakeoffApp() {
     : 0;
   const activeDragRect = dragState ? rectFromPoints(dragState.start, dragState.current) : null;
   const visibleCrop = floor.reference?.crop ?? { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
-  const cropAspect = Math.max(visibleCrop.width, 1) / Math.max(visibleCrop.depth, 1);
-  const gridAspect = Math.max(floor.designGrid.width, 1) / Math.max(floor.designGrid.depth, 1);
-  const referenceDisplay = cropAspect >= gridAspect
-    ? {
-        x: 0,
-        y: (floor.designGrid.depth - floor.designGrid.width / cropAspect) / 2,
-        width: floor.designGrid.width,
-        depth: floor.designGrid.width / cropAspect,
-      }
-    : {
-        x: (floor.designGrid.width - floor.designGrid.depth * cropAspect) / 2,
-        y: 0,
-        width: floor.designGrid.depth * cropAspect,
-        depth: floor.designGrid.depth,
-      };
+  const referenceDisplay = referenceDisplayRectForFloor(floor);
   const unassignedCells = useMemo(() => {
     if (floor.exteriorPolygon.length < 3 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
@@ -4357,6 +4529,65 @@ export function TakeoffApp() {
     });
   }
 
+  function resolveBoundaryCandidate(candidateId: string, resolution: "slice" | "whole-section" | "ignore") {
+    const candidate = boundaryCandidatesForFloor(floor).find((entry) => entry.id === candidateId);
+    if (!candidate) {
+      setMessage("That boundary warning is no longer current.");
+      return;
+    }
+    const kneeWallArea = resolution === "whole-section" ? candidate.wholeSectionArea : candidate.area;
+    const exteriorOverlapArea = resolution === "whole-section" ? candidate.wholeSectionArea : candidate.existingWallOverlapArea;
+    setFloor((current) => ({
+      ...current,
+      boundaryCandidateResolutions: {
+        ...(current.boundaryCandidateResolutions ?? {}),
+        [candidate.id]: resolution,
+      },
+      rooms: current.rooms.map((room) => {
+        if (room.id !== candidate.roomId || resolution === "ignore") return room;
+        const components = roomComponents(room);
+        const nextComponents = components.map((component) => {
+          if (
+            exteriorOverlapArea > 0 &&
+            component.surface === "wall" &&
+            component.direction === candidate.direction &&
+            wallCanHostOpenings(component)
+          ) {
+            return { ...component, area: Math.max(0, Math.round((component.area || 0) - exteriorOverlapArea)) };
+          }
+          return component;
+        });
+        return {
+          ...room,
+          components: [
+            ...nextComponents,
+            {
+              id: nextId("component-boundary-wall"),
+              surface: "wall",
+              assembly: candidate.recommendedAssembly,
+              direction: candidate.direction,
+              area: Math.round(kneeWallArea),
+              label: resolution === "whole-section" ? `${candidate.direction} porch knee-wall section` : `${candidate.direction} porch knee-wall slice`,
+              source: "manual",
+              adjacency: candidate.recommendedAdjacency,
+              boundary: candidate.recommendedBoundary,
+              geometryLabel: `${candidate.adjacentSpaceName} ${candidate.zMin}-${candidate.zMax} ft`,
+              spanStart: candidate.spanStart,
+              spanEnd: candidate.spanEnd,
+              zMin: candidate.zMin,
+              zMax: candidate.zMax,
+            },
+          ],
+        };
+      }),
+    }));
+    setMessage(
+      resolution === "ignore"
+        ? "Boundary warning ignored for this adjacent space."
+        : `${Math.round(kneeWallArea)} sf ${candidate.recommendedAssembly} knee-wall component added to ${candidate.roomName}.`
+    );
+  }
+
   function addSelectedWorkbenchComponent(roomId: string) {
     if (!componentAddSurface) return;
     addRoomComponent(roomId, componentAddSurface);
@@ -5207,6 +5438,13 @@ export function TakeoffApp() {
       kind: adjacentSpaceKind,
       ...normalized.rect,
       polygon: normalized.polygon,
+      ...(adjacentSpaceKind === "covered_porch"
+        ? {
+            closedCeilingBelow: false,
+            boundaryIntent: "attic" as const,
+            verticalProfile: { kind: "flat" as const, zMin: floor.defaultCeilingHeight ?? 9, zMax: floor.defaultCeilingHeight ?? 9 },
+          }
+        : {}),
     };
     const touchesExterior = floor.rooms.some((room) =>
       roomExteriorSegments(floor, room).some((segment) =>
@@ -5221,6 +5459,13 @@ export function TakeoffApp() {
 
   function removeAdjacentSpace(id: string) {
     setFloor((current) => ({ ...current, adjacentSpaces: (current.adjacentSpaces ?? []).filter((space) => space.id !== id) }));
+  }
+
+  function updateAdjacentSpace(id: string, patch: Partial<TakeoffAdjacentSpace>) {
+    setFloor((current) => ({
+      ...current,
+      adjacentSpaces: (current.adjacentSpaces ?? []).map((space) => (space.id === id ? { ...space, ...patch } : space)),
+    }));
   }
 
   function subtractDraggedShape(rect: PlanRect) {
@@ -7457,8 +7702,48 @@ export function TakeoffApp() {
               <div className="takeoff-adjacent-list">
                 {(floor.adjacentSpaces ?? []).map((space) => (
                   <div key={space.id} className="takeoff-adjacent-row">
-                    <span><strong>{space.name}</strong> · {Math.round(polygonArea(adjacentSpaceCorners(space)))} sf · {adjacentSpaceLabel(space.kind)}</span>
-                    <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
+                    <div className="takeoff-adjacent-row-main">
+                      <span><strong>{space.name}</strong> · {Math.round(polygonArea(adjacentSpaceCorners(space)))} sf · {adjacentSpaceLabel(space.kind)}</span>
+                      <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
+                    </div>
+                    {space.kind === "covered_porch" && (
+                      <div className="takeoff-adjacent-profile">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(space.closedCeilingBelow)}
+                            onChange={(event) => updateAdjacentSpace(space.id, { closedCeilingBelow: event.target.checked })}
+                          />
+                          Closed ceiling
+                        </label>
+                        <label>
+                          Attic start ft
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            value={verticalProfileRange(space.verticalProfile)?.zMin ?? floor.defaultCeilingHeight ?? 9}
+                            onChange={(event) => {
+                              const current = verticalProfileRange(space.verticalProfile) ?? { zMin: floor.defaultCeilingHeight ?? 9, zMax: floor.defaultCeilingHeight ?? 9 };
+                              updateAdjacentSpace(space.id, { verticalProfile: { kind: "flat", zMin: Number(event.target.value), zMax: current.zMax } });
+                            }}
+                          />
+                        </label>
+                        <label>
+                          Roof top ft
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            value={verticalProfileRange(space.verticalProfile)?.zMax ?? floor.defaultCeilingHeight ?? 9}
+                            onChange={(event) => {
+                              const current = verticalProfileRange(space.verticalProfile) ?? { zMin: floor.defaultCeilingHeight ?? 9, zMax: floor.defaultCeilingHeight ?? 9 };
+                              updateAdjacentSpace(space.id, { verticalProfile: { kind: "flat", zMin: current.zMin, zMax: Number(event.target.value) } });
+                            }}
+                          />
+                        </label>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -7499,15 +7784,26 @@ export function TakeoffApp() {
                 {validation.map((issue, index) => (
                   (() => {
                     const issueKey = validationIssueKey(issue, index);
+                    const boundaryCandidate = issue.boundaryCandidateId
+                      ? boundaryCandidatesForFloor(floor).find((candidate) => candidate.id === issue.boundaryCandidateId)
+                      : null;
                     return (
-                      <button
-                        key={issueKey}
-                        className={`takeoff-issue takeoff-issue--${issue.severity} ${issue.target ? "takeoff-issue--clickable" : ""} ${activeValidationTarget?.key === issueKey ? "takeoff-issue--active" : ""}`}
-                        onClick={() => focusValidationIssue(issue, issueKey)}
-                        disabled={!issue.target}
-                      >
-                        {issue.message}
-                      </button>
+                      <div key={issueKey} className="takeoff-issue-stack">
+                        <button
+                          className={`takeoff-issue takeoff-issue--${issue.severity} ${issue.target ? "takeoff-issue--clickable" : ""} ${activeValidationTarget?.key === issueKey ? "takeoff-issue--active" : ""}`}
+                          onClick={() => focusValidationIssue(issue, issueKey)}
+                          disabled={!issue.target}
+                        >
+                          {issue.message}
+                        </button>
+                        {boundaryCandidate && (
+                          <div className="takeoff-boundary-actions">
+                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "slice")}>Slice wall</button>
+                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "whole-section")}>Whole section</button>
+                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "ignore")}>Keep exterior</button>
+                          </div>
+                        )}
+                      </div>
                     );
                   })()
                 ))}

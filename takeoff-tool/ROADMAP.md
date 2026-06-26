@@ -142,13 +142,16 @@ Goal: support garage, attic, crawlspace, slab, and partial floor/ceiling exposur
 Deliverables:
 
 - Exterior/unconditioned overlay polygons for garage, porch/outdoor, and attic-adjacent spaces.
+- Height/profile metadata for adjacent spaces, including covered porch roof/ceiling primitives.
 - Vertical overlays for slab, crawlspace below, garage below, conditioned above, attic above, open-to-below, and cantilever/outdoor below.
 - Partial-area overlays for ceiling and floor components.
+- Boundary-candidate validation for partial horizontal/vertical wall slices.
 - Validation panel for missing or conflicting boundary conditions.
 
 Acceptance criteria:
 
 - Foyer-style partial ceiling case is supported.
+- Covered porch roof/ceiling conditions can flag partial attic/knee-wall exposure on an exterior wall.
 - Second-floor room over garage exports `F1 garage floor`.
 - Slab ranch can be finished quickly with global defaults.
 
@@ -162,6 +165,7 @@ Deliverables:
 - Per-room height override.
 - Ceiling profile wizard for flat, taller flat, vaulted, gable, kneewall, and partial conditioned-above cases.
 - Lightweight Three.js room preview.
+- 3D adjacent-space preview for porch/garage/attic volumes that can explain generated boundary candidates.
 - Generated wall/ceiling/volume changes from the ceiling profile.
 
 Acceptance criteria:
@@ -183,6 +187,7 @@ Deliverables:
 - Ghost overlay upper/lower floors.
 - Cross-floor vertical relationship assignment.
 - Cross-floor validation.
+- Shared boundary-candidate rules for floor-over-garage, cantilever, exterior-below, and conditioned-above overlaps.
 
 Acceptance criteria:
 

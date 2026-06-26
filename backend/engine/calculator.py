@@ -100,6 +100,28 @@ def infer_cooling_cltd(item: LineItem) -> float:
     assembly_code = item.assembly.code.upper() if item.assembly else ""
     name = item.name.upper()
     direction = item.direction.upper() if item.direction else None
+    boundary = (item.boundary or "").upper().replace("-", "_")
+
+    if boundary in {"ATTIC", "ATTIC_KNEE_WALL", "KNEE_WALL"}:
+        return SPECIAL_CLTD["ATTIC_WALL"]
+    if boundary in {"GARAGE", "GARAGE_WALL"}:
+        return SPECIAL_CLTD["GARAGE_WALL"] if assembly_code.startswith("W") else SPECIAL_CLTD["FLOOR_OVER_GARAGE"]
+    if boundary in {"PARTITION", "CONDITIONED"}:
+        return SPECIAL_CLTD["PARTITION"]
+    if boundary in {"CRAWLSPACE", "CRAWLSPACE_WALL"}:
+        return 0.0
+    if boundary == "FLOOR_OVER_GARAGE":
+        return SPECIAL_CLTD["FLOOR_OVER_GARAGE"]
+    if boundary in {"CANTILEVER", "OUTDOOR_BELOW"}:
+        return SPECIAL_CLTD["CANTILEVER"]
+    if boundary in {"FRAMED_FLOOR"}:
+        return SPECIAL_CLTD["FRAMED_FLOOR"]
+    if boundary == "SLAB":
+        return SPECIAL_CLTD["SLAB"]
+    if boundary == "FLAT_CEILING":
+        return SPECIAL_CLTD["FLAT_CEILING"]
+    if boundary == "VAULTED_CEILING":
+        return SPECIAL_CLTD["VAULTED_CEILING"]
 
     if assembly_code == "W1" and direction in WALL_CLTD_BY_DIRECTION:
         return WALL_CLTD_BY_DIRECTION[direction]
@@ -135,10 +157,13 @@ def infer_heating_delta_t(item: LineItem, design_conditions: DesignConditions) -
         return item.heating_delta_t
     assembly_code = item.assembly.code.upper() if item.assembly else ""
     name = item.name.upper()
+    boundary = (item.boundary or "").upper().replace("-", "_")
 
     if assembly_code == "F2":
         return design_conditions.slab_delta_t
     if assembly_code == "W2":
+        return design_conditions.slab_delta_t
+    if boundary in {"GARAGE", "GARAGE_WALL", "PARTITION", "CONDITIONED", "CRAWLSPACE", "CRAWLSPACE_WALL"}:
         return design_conditions.slab_delta_t
     if assembly_code == "W1" and not item.direction and ("GARAGE" in name or "PARTITION" in name):
         return design_conditions.slab_delta_t

@@ -30,6 +30,7 @@ def line_item_from_dict(data: dict[str, Any], assemblies: dict[str, Assembly]) -
         watts=data.get("watts", 0.0),
         assembly=assembly,
         direction=data.get("direction"),
+        boundary=data.get("boundary") or data.get("adjacency"),
         cooling_load_factor=data.get("cooling_load_factor"),
         cooling_cltd=data.get("cooling_cltd"),
         heating_delta_t=data.get("heating_delta_t"),

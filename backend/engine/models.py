@@ -67,6 +67,7 @@ class LineItem:
     watts: float = 0.0
     assembly: Assembly | None = None
     direction: str | None = None
+    boundary: str | None = None
     cooling_load_factor: float | None = None
     cooling_cltd: float | None = None
     heating_delta_t: float | None = None

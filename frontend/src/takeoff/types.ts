@@ -9,6 +9,19 @@ export type TakeoffPoint = {
 
 export type TakeoffRoomComponentSource = "manual" | "exterior-perimeter" | "opening-placement" | "raised-ceiling" | "vault-gable";
 export type TakeoffWallAdjacency = "outside" | "attic" | "garage" | "crawlspace" | "conditioned" | "unknown";
+export type TakeoffBoundaryType =
+  | "exterior"
+  | "attic_knee_wall"
+  | "garage_wall"
+  | "partition"
+  | "crawlspace_wall"
+  | "floor_over_garage"
+  | "cantilever"
+  | "framed_floor"
+  | "slab"
+  | "flat_ceiling"
+  | "vaulted_ceiling"
+  | "unknown";
 
 export type TakeoffRoomComponent = {
   id: string;
@@ -22,11 +35,23 @@ export type TakeoffRoomComponent = {
   placement?: TakeoffPoint;
   source?: TakeoffRoomComponentSource;
   adjacency?: TakeoffWallAdjacency;
+  boundary?: TakeoffBoundaryType;
   geometryLabel?: string;
+  spanStart?: number;
+  spanEnd?: number;
+  zMin?: number;
+  zMax?: number;
   solarDirection?: "Shaded" | "Skylight";
 };
 
 export type TakeoffAdjacentSpaceKind = "garage" | "attic" | "crawl" | "covered_porch" | "exterior";
+export type TakeoffVerticalProfile =
+  | { kind: "none" }
+  | { kind: "flat"; zMin: number; zMax: number }
+  | { kind: "shed"; zMin: number; lowSide: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW"; lowHeight: number; highHeight: number }
+  | { kind: "gable"; zMin: number; lowHeight: number; peakHeight: number; ridgeDirection: "E-W" | "N-S"; ridgeOffset?: number }
+  | { kind: "unknown"; zMin?: number; zMax?: number };
+export type TakeoffBoundaryCandidateResolution = "slice" | "whole-section" | "ignore";
 
 export type TakeoffAdjacentSpace = {
   id: string;
@@ -37,6 +62,9 @@ export type TakeoffAdjacentSpace = {
   width: number;
   depth: number;
   polygon?: TakeoffPoint[];
+  verticalProfile?: TakeoffVerticalProfile;
+  closedCeilingBelow?: boolean;
+  boundaryIntent?: TakeoffWallAdjacency;
 };
 
 export type TakeoffComponentCategory = "Wall" | "Door" | "Ceiling" | "Floor" | "Glass";
@@ -152,6 +180,7 @@ export type TakeoffFloor = {
   perimeterLocked: boolean;
   rooms: TakeoffRectRoom[];
   adjacentSpaces?: TakeoffAdjacentSpace[];
+  boundaryCandidateResolutions?: Record<string, TakeoffBoundaryCandidateResolution>;
   attributedSlices?: Array<{
     id: string;
     roomId: string;
@@ -173,7 +202,8 @@ export type TakeoffProject = {
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
-  issueType?: "room-type-suggestion";
+  issueType?: "room-type-suggestion" | "boundary-candidate";
+  boundaryCandidateId?: string;
   target?: {
     type: "room" | "unassigned";
     roomId?: string;
