@@ -2452,8 +2452,33 @@ button.toolbar-primary:hover {
   grid-area: area !important;
 }
 
-.takeoff-component-row--workbench > .takeoff-component-remove {
+.takeoff-component-row--workbench > .takeoff-component-edit,
+.takeoff-component-row--workbench > .takeoff-component-actions {
   grid-area: remove !important;
+}
+
+.takeoff-component-display {
+  color: #263442;
+  font-size: 12px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.takeoff-component-row--readonly .takeoff-component-assembly {
+  font-weight: 700;
+}
+
+.takeoff-component-actions {
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.takeoff-component-actions button,
+.takeoff-component-edit {
+  min-width: 58px;
 }
 
 .takeoff-component-placeholder {

@@ -3070,6 +3070,7 @@ export function TakeoffApp() {
   const [roomWorkbenchSections, setRoomWorkbenchSections] = useState({ floor: false, ceiling: false, reconciliation: false });
   const [componentAddSurface, setComponentAddSurface] = useState<TakeoffRoomComponent["surface"] | "">("");
   const [componentSurfaceFilters, setComponentSurfaceFilters] = useState<TakeoffRoomComponent["surface"][]>(allComponentSurfaces);
+  const [editingComponentId, setEditingComponentId] = useState<string | null>(null);
   const [suggestedWallRowAssemblies, setSuggestedWallRowAssemblies] = useState<Record<string, string>>({});
   const [suggestedWallRowAdjacencies, setSuggestedWallRowAdjacencies] = useState<Record<string, TakeoffWallAdjacency>>({});
   const [selectedUnassignedRegionId, setSelectedUnassignedRegionId] = useState<string | null>(null);
@@ -3106,6 +3107,7 @@ export function TakeoffApp() {
     setRoomTypeMenuOpen(false);
     setComponentAddSurface("");
     setComponentSurfaceFilters(allComponentSurfaces);
+    setEditingComponentId(null);
     setSuggestedWallRowAssemblies({});
     setSuggestedWallRowAdjacencies({});
   }, [selectedRoomId]);
@@ -3792,86 +3794,109 @@ export function TakeoffApp() {
           const isActiveComponentRow = activeSketchTarget?.roomId === room.id &&
             activeSketchTarget.surface === component.surface &&
             (!activeSketchTarget.direction || !component.direction || activeSketchTarget.direction === component.direction);
+          const isEditingComponent = editingComponentId === component.id;
+          const treatmentLabel = surface === "wall"
+            ? wallAdjacencyLabel(component.adjacency ?? "outside")
+            : surface === "glass"
+              ? component.solarDirection ?? "Wall direction"
+              : "—";
+          const assemblyLabel = selectedDefinition ? `${selectedDefinition.code} - ${selectedDefinition.description}` : component.assembly;
           return (
-            <div key={component.id} className={`takeoff-component-row takeoff-component-row--workbench ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
+            <div key={component.id} className={`takeoff-component-row takeoff-component-row--workbench ${isEditingComponent ? "takeoff-component-row--editing" : "takeoff-component-row--readonly"} ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
               <span className="takeoff-component-kind">{componentSurfaceLabel(surface)}</span>
-              <select
-                value={component.assembly}
-                className="takeoff-component-assembly"
-                onChange={(event) => updateRoomComponentAssembly(room.id, component.id, surface, event.target.value)}
-              >
-                {options.map((option) => (
-                  <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                ))}
-              </select>
-              {componentNeedsDirection(surface) ? (
-                <select
-                  value={component.direction ?? ""}
-                  className="takeoff-component-direction"
-                  onChange={(event) => updateRoomComponent(room.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
-                >
-                  <option value="">Direction</option>
-                  {directionChoices.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
-                </select>
-              ) : <span className="takeoff-component-placeholder takeoff-component-direction-placeholder" aria-hidden="true" />}
-              {surface === "wall" && (
-                <select
-                  aria-label="wall adjacent space"
-                  className="takeoff-component-treatment"
-                  value={component.adjacency ?? "outside"}
-                  onChange={(event) => {
-                    const adjacency = event.target.value as TakeoffWallAdjacency;
-                    updateRoomComponent(room.id, component.id, {
-                      adjacency,
-                      assembly: adjacency === "outside" ? component.assembly : defaultWallAssemblyForAdjacency(adjacency),
-                      label: component.label && !/exterior wall/i.test(component.label) ? component.label : wallAdjacencyLabel(adjacency),
-                    });
-                  }}
-                >
-                  <option value="outside">Exterior</option>
-                  <option value="garage">Garage</option>
-                  <option value="attic">Attic</option>
-                  <option value="crawlspace">Crawlspace</option>
-                  <option value="conditioned">Conditioned</option>
-                  <option value="unknown">Unknown</option>
-                </select>
+              {isEditingComponent ? (
+                <>
+                  <select
+                    value={component.assembly}
+                    className="takeoff-component-assembly"
+                    onChange={(event) => updateRoomComponentAssembly(room.id, component.id, surface, event.target.value)}
+                  >
+                    {options.map((option) => (
+                      <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                    ))}
+                  </select>
+                  {componentNeedsDirection(surface) ? (
+                    <select
+                      value={component.direction ?? ""}
+                      className="takeoff-component-direction"
+                      onChange={(event) => updateRoomComponent(room.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
+                    >
+                      <option value="">Direction</option>
+                      {directionChoices.map((direction) => <option key={direction} value={direction}>{direction}</option>)}
+                    </select>
+                  ) : <span className="takeoff-component-placeholder takeoff-component-direction-placeholder" aria-hidden="true" />}
+                  {surface === "wall" && (
+                    <select
+                      aria-label="wall adjacent space"
+                      className="takeoff-component-treatment"
+                      value={component.adjacency ?? "outside"}
+                      onChange={(event) => {
+                        const adjacency = event.target.value as TakeoffWallAdjacency;
+                        updateRoomComponent(room.id, component.id, {
+                          adjacency,
+                          assembly: adjacency === "outside" ? component.assembly : defaultWallAssemblyForAdjacency(adjacency),
+                          label: component.label && !/exterior wall/i.test(component.label) ? component.label : wallAdjacencyLabel(adjacency),
+                        });
+                      }}
+                    >
+                      <option value="outside">Exterior</option>
+                      <option value="garage">Garage</option>
+                      <option value="attic">Attic</option>
+                      <option value="crawlspace">Crawlspace</option>
+                      <option value="conditioned">Conditioned</option>
+                      <option value="unknown">Unknown</option>
+                    </select>
+                  )}
+                  {surface === "glass" && (
+                    <select
+                      aria-label="glass solar exposure"
+                      className="takeoff-component-treatment"
+                      value={component.solarDirection ?? ""}
+                      onChange={(event) => {
+                        const solarDirection = event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined;
+                        updateRoomComponent(room.id, component.id, {
+                          solarDirection,
+                          label: isAutoOpeningLabel(component.label) ? defaultOpeningLabel("glass", solarDirection) : component.label,
+                        });
+                      }}
+                    >
+                      <option value="">Wall direction</option>
+                      <option value="Shaded">Shaded</option>
+                      <option value="Skylight">Skylight</option>
+                    </select>
+                  )}
+                  {surface !== "wall" && surface !== "glass" ? <span className="takeoff-component-placeholder takeoff-component-treatment-placeholder" aria-hidden="true" /> : null}
+                  <input
+                    aria-label={`${surface} component label`}
+                    className="takeoff-component-label"
+                    value={component.label ?? ""}
+                    placeholder="Label"
+                    onChange={(event) => updateRoomComponent(room.id, component.id, { label: event.target.value })}
+                  />
+                  <input
+                    aria-label={`${surface} component area`}
+                    type="number"
+                    min="0"
+                    step="1"
+                    className="takeoff-component-area"
+                    value={component.area}
+                    onChange={(event) => updateRoomComponent(room.id, component.id, { area: Number(event.target.value) })}
+                  />
+                  <div className="takeoff-component-actions">
+                    <button type="button" className="toolbar-primary" onClick={() => setEditingComponentId(null)}>Done</button>
+                    <button type="button" onClick={() => { removeRoomComponent(room.id, component.id); setEditingComponentId(null); }}>Remove</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="takeoff-component-display takeoff-component-assembly" title={assemblyLabel}>{assemblyLabel}</span>
+                  <span className="takeoff-component-display takeoff-component-direction">{component.direction ?? "All"}</span>
+                  <span className="takeoff-component-display takeoff-component-treatment">{treatmentLabel}</span>
+                  <span className="takeoff-component-display takeoff-component-label">{component.label || selectedDefinition?.description || componentSurfaceLabel(surface)}</span>
+                  <span className="takeoff-component-display takeoff-component-area">{Math.round(component.area)} sf</span>
+                  <button type="button" className="takeoff-component-edit" onClick={() => setEditingComponentId(component.id)}>Edit</button>
+                </>
               )}
-              {surface === "glass" && (
-                <select
-                  aria-label="glass solar exposure"
-                  className="takeoff-component-treatment"
-                  value={component.solarDirection ?? ""}
-                  onChange={(event) => {
-                    const solarDirection = event.target.value ? event.target.value as NonNullable<TakeoffRoomComponent["solarDirection"]> : undefined;
-                    updateRoomComponent(room.id, component.id, {
-                      solarDirection,
-                      label: isAutoOpeningLabel(component.label) ? defaultOpeningLabel("glass", solarDirection) : component.label,
-                    });
-                  }}
-                >
-                  <option value="">Wall direction</option>
-                  <option value="Shaded">Shaded</option>
-                  <option value="Skylight">Skylight</option>
-                </select>
-              )}
-              {surface !== "wall" && surface !== "glass" ? <span className="takeoff-component-placeholder takeoff-component-treatment-placeholder" aria-hidden="true" /> : null}
-              <input
-                aria-label={`${surface} component label`}
-                className="takeoff-component-label"
-                value={component.label ?? ""}
-                placeholder="Label"
-                onChange={(event) => updateRoomComponent(room.id, component.id, { label: event.target.value })}
-              />
-              <input
-                aria-label={`${surface} component area`}
-                type="number"
-                min="0"
-                step="1"
-                className="takeoff-component-area"
-                value={component.area}
-                onChange={(event) => updateRoomComponent(room.id, component.id, { area: Number(event.target.value) })}
-              />
-              <button className="takeoff-component-remove" onClick={() => removeRoomComponent(room.id, component.id)}>Remove</button>
               <p className="takeoff-component-meta">
                 <strong>{selectedDefinition?.code ?? component.assembly}</strong>
                 {sourceLabel ? <em>{sourceLabel}</em> : null}
