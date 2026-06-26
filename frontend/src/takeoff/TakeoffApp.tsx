@@ -1518,9 +1518,15 @@ function adjacentSpaceCeilingHeight(space: TakeoffAdjacentSpace, defaultCeilingH
   return space.ceilingHeight ?? verticalProfileRange(space.verticalProfile)?.zMin ?? defaultCeilingHeight;
 }
 
+function adjacentSpaceCanCreateKneeWall(space: TakeoffAdjacentSpace) {
+  return Boolean(space.closedCeilingBelow) && ["covered_porch", "garage", "attic"].includes(space.kind);
+}
+
 function adjacentSpaceAsRoom(space: TakeoffAdjacentSpace, defaultCeilingHeight = 9): TakeoffRectRoom {
   const profileRange = verticalProfileRange(space.verticalProfile);
   const ceilingHeight = adjacentSpaceCeilingHeight(space, defaultCeilingHeight);
+  const lowHeight = ceilingHeight;
+  const peakHeight = Math.max(lowHeight, space.ceilingPeakHeight ?? profileRange?.zMax ?? ceilingHeight);
   return {
     id: space.id,
     name: space.name,
@@ -1531,8 +1537,8 @@ function adjacentSpaceAsRoom(space: TakeoffAdjacentSpace, defaultCeilingHeight =
     polygon: space.polygon,
     ceilingHeight,
     ceilingType: space.ceilingType ?? (space.verticalProfile?.kind === "gable" ? "vaulted" : "flat"),
-    ceilingLowHeight: space.ceilingLowHeight ?? ceilingHeight,
-    ceilingPeakHeight: space.ceilingPeakHeight ?? profileRange?.zMax ?? ceilingHeight,
+    ceilingLowHeight: lowHeight,
+    ceilingPeakHeight: peakHeight,
     ceilingRidgeDirection: space.ceilingRidgeDirection ?? (space.verticalProfile?.kind === "gable" ? space.verticalProfile.ridgeDirection : "E-W"),
     ceilingRidgeOffset: space.ceilingRidgeOffset ?? (space.verticalProfile?.kind === "gable" ? space.verticalProfile.ridgeOffset ?? 0 : 0),
     floorType: "none",
@@ -1545,11 +1551,13 @@ function verticalProfileForAdjacentSpace(space: TakeoffAdjacentSpace, defaultCei
   if (ceilingType === "none") return { kind: "none" };
   const ceilingHeight = adjacentSpaceCeilingHeight(space, defaultCeilingHeight);
   if (ceilingType === "vaulted") {
+    const lowHeight = ceilingHeight;
+    const peakHeight = Math.max(lowHeight, space.ceilingPeakHeight ?? Math.max(lowHeight, lowHeight + 1));
     return {
       kind: "gable",
-      zMin: space.ceilingLowHeight ?? ceilingHeight,
-      lowHeight: space.ceilingLowHeight ?? ceilingHeight,
-      peakHeight: space.ceilingPeakHeight ?? Math.max(ceilingHeight, ceilingHeight + 1),
+      zMin: lowHeight,
+      lowHeight,
+      peakHeight,
       ridgeDirection: space.ceilingRidgeDirection ?? "E-W",
       ridgeOffset: space.ceilingRidgeOffset ?? 0,
     };
@@ -1585,7 +1593,7 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
   for (const room of floor.rooms) {
     for (const segment of roomExteriorSegments(floor, room)) {
       for (const space of floor.adjacentSpaces ?? []) {
-        if (space.kind !== "covered_porch" || !space.closedCeilingBelow) continue;
+        if (!adjacentSpaceCanCreateKneeWall(space)) continue;
         const profileRange = verticalProfileRange(space.verticalProfile);
         if (!profileRange) continue;
         const span = adjacentSpaceContactSpan(space, segment, tolerance);
@@ -1629,7 +1637,7 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
           recommendedAdjacency: "attic",
           recommendedAssembly: "W3",
           recommendedBoundary: "attic_knee_wall",
-          reason: `${space.name || "Covered porch"} closed ceiling/roof profile overlaps the conditioned wall from ${Number(exposedZMin.toFixed(1))} ft to ${Number(exposedZMax.toFixed(1))} ft over ${Number(span.length.toFixed(1))} lf.`,
+          reason: `${space.name || adjacentSpaceLabel(space.kind)} closed ceiling/roof profile overlaps the conditioned wall from ${Number(exposedZMin.toFixed(1))} ft to ${Number(exposedZMax.toFixed(1))} ft over ${Number(span.length.toFixed(1))} lf.`,
         });
       }
     }
@@ -2850,6 +2858,8 @@ function TakeoffModelPreview({
       const points = roomCorners(room);
       const selected = room.id === selectedRoomId;
       const area = Number(rectArea(room).toFixed(3));
+      const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
+      const adjacentWallHeight = ceilingInfo.ceilingType === "vaulted" ? ceilingInfo.lowHeight : room.ceilingHeight;
 
       if (visibleLayers.floors) {
         const floorMesh = createHorizontalShapeMesh(points, center, -0.01, selected ? adjacentSelectedMaterial : adjacentFloorMaterial);
@@ -2867,7 +2877,7 @@ function TakeoffModelPreview({
 
       if (visibleLayers.walls) {
         for (const edge of pointsToEdges(points)) {
-          const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), selected ? adjacentSelectedMaterial : adjacentWallMaterial);
+          const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(adjacentWallHeight, 0.1), selected ? adjacentSelectedMaterial : adjacentWallMaterial);
           wallMesh.userData.roomId = room.id;
           wallMesh.userData.modelSurface = {
             roomId: room.id,
@@ -2880,7 +2890,6 @@ function TakeoffModelPreview({
       }
 
       if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
-        const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
         if (ceilingInfo.ceilingType === "vaulted") {
           for (const part of slopedCeilingMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, adjacentCeilingMaterial)) {
             part.mesh.userData.roomId = room.id;
@@ -5602,7 +5611,20 @@ export function TakeoffApp() {
       ...current,
       adjacentSpaces: (current.adjacentSpaces ?? []).map((space) => {
         if (space.id !== id) return space;
-        const next = { ...space, ...patch };
+        const next: TakeoffAdjacentSpace = { ...space, ...patch };
+        if ((next.ceilingType ?? "flat") === "vaulted") {
+          if (patch.ceilingLowHeight != null) next.ceilingHeight = patch.ceilingLowHeight;
+          if (patch.ceilingHeight != null && patch.ceilingLowHeight == null) next.ceilingLowHeight = patch.ceilingHeight;
+          const lowHeight = next.ceilingLowHeight ?? next.ceilingHeight ?? current.defaultCeilingHeight ?? 9;
+          next.ceilingHeight = lowHeight;
+          next.ceilingLowHeight = lowHeight;
+          next.ceilingPeakHeight = Math.max(lowHeight, next.ceilingPeakHeight ?? lowHeight + 1);
+        } else if (next.ceilingType === "flat") {
+          next.ceilingLowHeight = undefined;
+          next.ceilingPeakHeight = undefined;
+          next.ceilingRidgeDirection = undefined;
+          next.ceilingRidgeOffset = undefined;
+        }
         return {
           ...next,
           verticalProfile: verticalProfileForAdjacentSpace(next, current.defaultCeilingHeight ?? 9),
