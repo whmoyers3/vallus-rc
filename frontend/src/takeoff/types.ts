@@ -117,7 +117,7 @@ export type TakeoffRectRoom = {
 export type TakeoffVerticalSpaceLink = {
   id: string;
   type: "open_to_above";
-  targetFloorId: string;
+  targetFloorId?: string;
   previousCeilingHeight?: number;
 };
 
