@@ -129,6 +129,7 @@ export type TakeoffFloor = {
   coordinateSpace?: "world_feet";
   elevation?: number;
   floorToFloorHeight?: number;
+  bandJoistHeight?: number;
   alignment?: {
     referenceFloorId?: string;
     transform?: {
