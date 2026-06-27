@@ -1779,6 +1779,26 @@ function nearestFloorByElevation(floor: TakeoffFloor, floors: TakeoffFloor[], di
   )[0];
 }
 
+function openToAboveLinkForRoom(room: TakeoffRectRoom) {
+  return room.verticalLinks?.find((link) => link.type === "open_to_above");
+}
+
+function computedOpenToAboveHeight(sourceFloor: TakeoffFloor, room: TakeoffRectRoom, floors: TakeoffFloor[]) {
+  const link = openToAboveLinkForRoom(room);
+  const targetFloor = link ? floors.find((entry) => entry.id === link.targetFloorId) : undefined;
+  if (!targetFloor) return room.ceilingHeight;
+  const verticalSpan = Math.max(0, (targetFloor.elevation ?? 0) - (sourceFloor.elevation ?? 0));
+  return Math.max(room.ceilingHeight, verticalSpan + (targetFloor.defaultCeilingHeight ?? sourceFloor.defaultCeilingHeight ?? 9));
+}
+
+function openToBelowRoomsForFloor(targetFloor: TakeoffFloor, floors: TakeoffFloor[]) {
+  return floors.flatMap((sourceFloor) =>
+    sourceFloor.rooms
+      .filter((room) => openToAboveLinkForRoom(room)?.targetFloorId === targetFloor.id)
+      .map((room) => ({ sourceFloor, room, link: openToAboveLinkForRoom(room)! }))
+  );
+}
+
 function roomOutsideFootprintArea(room: TakeoffRectRoom, floor: TakeoffFloor) {
   if (floor.exteriorPolygon.length >= 3) {
     const roomArea = rectArea(room);
@@ -2267,19 +2287,22 @@ function buildVrcPayload(project: TakeoffProject) {
   ]));
   const levels = project.floors.map((floor, index) => {
     const zoneId = `zone-${floor.id}`;
-    const rooms = floor.rooms.map((room) => ({
-      name: room.name,
-      floor_area: rectArea(room),
-      lighting_area: rectArea(room),
-      ceiling_height: room.ceilingHeight,
-      volume: rectArea(room) * room.ceilingHeight,
-      lighting_basis: "Floor",
-      room_type: room.roomType ?? "plain",
-      ...(room.peopleOverride != null ? { people_override: room.peopleOverride } : {}),
-      ...(room.applianceWattsOverride != null ? { appliance_watts_override: room.applianceWattsOverride } : {}),
-      unit_id: "unit-whole-house",
-      zone_id: zoneId,
-    }));
+    const rooms = floor.rooms.map((room) => {
+      const effectiveCeilingHeight = computedOpenToAboveHeight(floor, room, project.floors);
+      return {
+        name: room.name,
+        floor_area: rectArea(room),
+        lighting_area: rectArea(room),
+        ceiling_height: effectiveCeilingHeight,
+        volume: rectArea(room) * effectiveCeilingHeight,
+        lighting_basis: "Floor",
+        room_type: room.roomType ?? "plain",
+        ...(room.peopleOverride != null ? { people_override: room.peopleOverride } : {}),
+        ...(room.applianceWattsOverride != null ? { appliance_watts_override: room.applianceWattsOverride } : {}),
+        unit_id: "unit-whole-house",
+        zone_id: zoneId,
+      };
+    });
     const lineItems = floor.rooms.flatMap((room) => {
       return payloadComponentsForRoom(room).map((component) => ({
         name: `${room.name} ${component.label || component.assembly}`,
@@ -2514,6 +2537,13 @@ function createHorizontalShapeMesh(points: TakeoffPoint[], center: TakeoffPoint,
   geometry.rotateX(Math.PI / 2);
   geometry.translate(0, height, 0);
   return new THREE.Mesh(geometry, material);
+}
+
+function createHorizontalOutline(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.LineBasicMaterial) {
+  const cleanPoints = cleanPolygonPointsForRender(points);
+  const vertices = cleanPoints.map((point) => modelPoint(point, center, height));
+  if (vertices[0]) vertices.push(vertices[0].clone());
+  return new THREE.Line(new THREE.BufferGeometry().setFromPoints(vertices), material);
 }
 
 function modelPoint(point: TakeoffPoint, center: TakeoffPoint, height: number) {
@@ -3021,6 +3051,26 @@ function TakeoffModelPreview({
     const passiveGlassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
     const passiveDoorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.36, side: THREE.DoubleSide });
     const bandJoistMaterial = new THREE.MeshPhongMaterial({ color: 0x587082, depthWrite: false, transparent: true, opacity: 0.34, side: THREE.DoubleSide });
+    const openVoidMaterial = new THREE.MeshBasicMaterial({ color: 0x2d78ad, depthWrite: false, transparent: true, opacity: 0.22, side: THREE.DoubleSide });
+    const openVoidOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x0f5fa8, depthTest: false, transparent: true, opacity: 0.88 });
+    const renderOpenToBelowMarkers = (targetFloor: TakeoffFloor, yOffset: number) => {
+      if (!visibleLayers.floors) return;
+      for (const { room } of openToBelowRoomsForFloor(targetFloor, floors)) {
+        const points = cleanPolygonPointsForRender(roomCorners(room));
+        if (points.length < 3) continue;
+        const marker = createHorizontalShapeMesh(points, center, yOffset + 0.08, openVoidMaterial);
+        marker.userData.modelSurface = {
+          roomId: room.id,
+          roomName: room.name,
+          kind: "floor",
+          label: `Open to below - ${room.name || "room"}`,
+          surface: "floor",
+          area: Number(polygonArea(points).toFixed(3)),
+        } satisfies ModelSurfaceSelection;
+        scene.add(marker);
+        scene.add(createHorizontalOutline(points, center, yOffset + 0.105, openVoidOutlineMaterial));
+      }
+    };
     if (visibleLayers.bandJoists) {
       for (const sourceFloor of floors) {
         const options = floorViewOptions[sourceFloor.id] ?? defaultFloorViewOptions();
@@ -3050,6 +3100,7 @@ function TakeoffModelPreview({
         mesh.position.set(display.x + display.width / 2 - center.x, yOffset - 0.08, display.y + display.depth / 2 - center.y);
         scene.add(mesh);
       }
+      renderOpenToBelowMarkers(otherFloor, yOffset);
       if (visibleLayers.floors) {
         const otherExteriorPoints = exteriorRingPoints(otherFloor);
         if (otherExteriorPoints.length >= 3) {
@@ -3057,7 +3108,8 @@ function TakeoffModelPreview({
           scene.add(mesh);
         }
       }
-      for (const room of otherFloor.rooms) {
+      for (const sourceRoom of otherFloor.rooms) {
+        const room = { ...sourceRoom, ceilingHeight: computedOpenToAboveHeight(otherFloor, sourceRoom, floors) };
         const points = cleanPolygonPointsForRender(roomCorners(room));
         if (points.length < 3) continue;
         if (visibleLayers.floors) scene.add(createHorizontalShapeMesh(points, center, yOffset + 0.025, ghostRoomMaterial));
@@ -3163,13 +3215,15 @@ function TakeoffModelPreview({
 
     const exteriorPoints = exteriorRingPoints(floor);
     if (activeOptions.visible && exteriorPoints.length >= 3) scene.add(createHorizontalShapeMesh(exteriorPoints, center, activeFloorYOffset - 0.02, exteriorMaterial));
+    if (activeOptions.visible) renderOpenToBelowMarkers(floor, activeFloorYOffset);
 
     for (const [index, sourceRoom] of (activeOptions.visible ? floor.rooms : []).entries()) {
       const rawPoints = roomCorners(sourceRoom);
       const renderPoints = cleanPolygonPointsForRender(rawPoints);
+      const modelCeilingHeight = computedOpenToAboveHeight(floor, sourceRoom, floors);
       const room = renderPoints.length >= 3 && renderPoints.length !== rawPoints.length
-        ? { ...sourceRoom, polygon: renderPoints }
-        : sourceRoom;
+        ? { ...sourceRoom, polygon: renderPoints, ceilingHeight: modelCeilingHeight }
+        : { ...sourceRoom, ceilingHeight: modelCeilingHeight };
       const points = roomCorners(room);
       const color = new THREE.Color(roomColor(index));
       const roomFloorMaterial = floorMaterial.clone();
@@ -4353,11 +4407,14 @@ export function TakeoffApp() {
     if (referenceUrls[target.id]) revokeReferenceUrl(referenceUrls[target.id]);
     const remainingFloors = floors
       .filter((entry) => entry.id !== target.id)
-      .map((entry) => (
-        entry.alignment?.referenceFloorId === target.id
-          ? { ...entry, alignment: undefined }
-          : entry
-      ));
+      .map((entry) => ({
+        ...entry,
+        alignment: entry.alignment?.referenceFloorId === target.id ? undefined : entry.alignment,
+        rooms: entry.rooms.map((room) => ({
+          ...room,
+          verticalLinks: room.verticalLinks?.filter((link) => link.targetFloorId !== target.id),
+        })),
+      }));
     const nextActiveFloor = remainingFloors[0] ?? makeInitialFloor();
     setFloors(remainingFloors.length ? remainingFloors : [nextActiveFloor]);
     setFloorViewOptions((current) => {
@@ -6822,6 +6879,58 @@ export function TakeoffApp() {
     setMessage(`${selectedRoom.name} merged into ${targetRoom.name}.`);
   }
 
+  function toggleRoomOpenToAbove(roomId: string) {
+    const sourceFloor = floor;
+    const targetFloor = nearestFloorByElevation(sourceFloor, floors, "above");
+    const room = sourceFloor.rooms.find((candidate) => candidate.id === roomId);
+    if (!room) return;
+    const existingLink = openToAboveLinkForRoom(room);
+    if (existingLink) {
+      const restoredHeight = existingLink.previousCeilingHeight ?? sourceFloor.defaultCeilingHeight ?? 9;
+      setFloor((current) => ({
+        ...current,
+        rooms: current.rooms.map((candidate) => candidate.id === roomId
+          ? {
+              ...candidate,
+              ceilingHeight: restoredHeight,
+              verticalLinks: (candidate.verticalLinks ?? []).filter((link) => link.id !== existingLink.id),
+            }
+          : candidate),
+      }));
+      setMessage(`${room.name || "Room"} is no longer marked open to above.`);
+      return;
+    }
+    if (!targetFloor) {
+      setMessage("Add or select a floor above before marking this room open to above.");
+      return;
+    }
+    const linkedHeight = computedOpenToAboveHeight(
+      sourceFloor,
+      {
+        ...room,
+        verticalLinks: [{ id: "preview", type: "open_to_above", targetFloorId: targetFloor.id }],
+      },
+      floors,
+    );
+    const link = {
+      id: nextId("vertical-link"),
+      type: "open_to_above" as const,
+      targetFloorId: targetFloor.id,
+      previousCeilingHeight: room.ceilingHeight,
+    };
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((candidate) => candidate.id === roomId
+        ? {
+            ...candidate,
+            ceilingHeight: Number(linkedHeight.toFixed(3)),
+            verticalLinks: [...(candidate.verticalLinks ?? []).filter((entry) => entry.type !== "open_to_above"), link],
+          }
+        : candidate),
+    }));
+    setMessage(`${room.name || "Room"} marked open to ${targetFloor.name || "the floor above"} and raised to ${Number(linkedHeight.toFixed(1))} ft.`);
+  }
+
   function focusValidationIssue(issue: TakeoffValidationIssue, key = validationIssueKey(issue)) {
     const section = validationSectionForIssue(issue);
     setActiveValidationTarget({
@@ -8719,6 +8828,8 @@ export function TakeoffApp() {
                   const ceilingSurfaceArea = expectedSurfaceArea(selectedRoom, "ceiling");
                   const suggestions = roomExteriorWallSuggestions(floor, selectedRoom);
                   const reconciliation = roomWallReconciliation(floor, selectedRoom);
+                  const openToAboveLink = openToAboveLinkForRoom(selectedRoom);
+                  const floorAboveForRoom = nearestFloorByElevation(floor, floors, "above");
                   const totals = reconciliation.reduce(
                     (sum, entry) => ({
                       grossArea: sum.grossArea + entry.grossArea,
@@ -8757,9 +8868,18 @@ export function TakeoffApp() {
                           />
                           <p className="takeoff-muted">
                             {Math.round(roomArea)} sf · {roomTypeLabel(selectedRoom.roomType ?? "plain")} · {selectedRoom.ceilingHeight} ft ceiling
+                            {openToAboveLink ? ` · open to ${floors.find((entry) => entry.id === openToAboveLink.targetFloorId)?.name || "floor above"}` : ""}
                           </p>
                         </div>
                         <div className="takeoff-workbench-actions">
+                          <button
+                            type="button"
+                            disabled={!openToAboveLink && !floorAboveForRoom}
+                            onClick={() => toggleRoomOpenToAbove(selectedRoom.id)}
+                            title={openToAboveLink ? "Remove the vertical open-to-above link" : floorAboveForRoom ? `Mark this room open to ${floorAboveForRoom.name || "the floor above"}` : "Add a floor above before creating an open-to-above link"}
+                          >
+                            {openToAboveLink ? "Clear Open Above" : "Open Above"}
+                          </button>
                           {floor.rooms.length > 1 && (
                             <div ref={roomMergeMenuRef} id={validationTargetId("merge")} className={`takeoff-popout ${validationSectionClass("merge")}`}>
                               <button onClick={() => setRoomMergeMenuOpen((open) => !open)}>Merge</button>

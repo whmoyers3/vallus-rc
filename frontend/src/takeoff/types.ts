@@ -109,8 +109,16 @@ export type TakeoffRectRoom = {
   peopleOverride?: number;
   applianceWattsOverride?: number;
   components?: TakeoffRoomComponent[];
+  verticalLinks?: TakeoffVerticalSpaceLink[];
   polygon?: TakeoffPoint[];
   areaAdjustment?: number;
+};
+
+export type TakeoffVerticalSpaceLink = {
+  id: string;
+  type: "open_to_above";
+  targetFloorId: string;
+  previousCeilingHeight?: number;
 };
 
 export type TakeoffScaleLine = {
