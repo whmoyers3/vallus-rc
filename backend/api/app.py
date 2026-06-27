@@ -345,6 +345,7 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
             "storage_path": asset["storage_path"],
             "download_url": asset["download_url"],
             "signed_url": asset.get("signed_url", ""),
+            "page_number": asset.get("page_number", page_number),
         }
 
     @api.get("/api/takeoff-assets/{asset_id}/download")

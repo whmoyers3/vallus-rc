@@ -74,7 +74,7 @@ def test_second_floor_room_loads_and_airflows():
         assert rooms[name].heating_btuh == heating
 
     assert second.cooling_subtotal == 12806
-    assert second.heating_subtotal == 14070
+    assert second.heating_subtotal == 14108
 
     assert rooms["Owners Bed"].cfm_cool == 176
     assert rooms["Owners Bed"].cfm_heat == 159

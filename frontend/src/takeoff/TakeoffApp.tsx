@@ -31,6 +31,9 @@ const { difference, intersection, union } = polygonClipping;
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
 const takeoffReferenceMaxBytes = 7 * 1024 * 1024;
+const pdfPreviewTargetScale = 2;
+const pdfPreviewMaxPixels = 8_000_000;
+const pdfPreviewMaxDimension = 2800;
 const minPlanZoom = 0.5;
 const maxPlanZoom = 8;
 const planZoomStep = 0.25;
@@ -58,7 +61,7 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
 ];
 type WorkflowStep = "crop" | "calibrate" | "trace";
 type RoomTileMetric = "floor" | "ceiling" | "wall" | "glass";
-type PlanReviewMode = "plan" | "floor" | "ceiling" | "walls" | "elevation";
+type PlanReviewMode = "plan" | "alignment" | "floor" | "ceiling" | "walls" | "elevation";
 type MovablePointTarget = { type: "exterior"; index: number } | { type: "room"; roomId: string; index: number };
 type OpeningMoveTarget = { roomId: string; componentId: string };
 type DragState = {
@@ -89,6 +92,12 @@ type UnassignedCell = { x: number; y: number; width: number; depth: number; poly
 type ModelViewPreset = "iso" | "front" | "rear" | "left" | "right";
 type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "interiorWalls";
 type ModelSurfaceKind = "floor" | "ceiling" | "load-wall" | "interior-wall" | "knee-wall" | "window" | "door";
+type FloorViewOptions = {
+  visible: boolean;
+  reference: boolean;
+  exterior: boolean;
+  rooms: boolean;
+};
 type ModelMeshPart = {
   mesh: THREE.Mesh;
   kind: ModelSurfaceKind;
@@ -208,6 +217,7 @@ const roomTypeOptions: Array<{ id: TakeoffRoomType; label: string; shortLabel: s
 ];
 const planReviewModes: Array<{ id: PlanReviewMode; label: string; tooltip: string }> = [
   { id: "plan", label: "Plan", tooltip: "Show the editable plan-tracing view." },
+  { id: "alignment", label: "Align", tooltip: "Show only floor plan references for multi-floor alignment." },
   { id: "floor", label: "Floor", tooltip: "Review floor load areas by room." },
   { id: "ceiling", label: "Ceiling", tooltip: "Review ceiling surfaces and height changes." },
   { id: "walls", label: "Walls", tooltip: "Review wall exposure and opening assignments." },
@@ -231,7 +241,21 @@ type UploadedTakeoffAsset = {
   storage_path: string;
   download_url: string;
   signed_url?: string;
+  page_number?: number;
 };
+
+type PdfPreviewResult = {
+  url: string;
+  pageNumber: number;
+  pageCount: number;
+  scale: number;
+  widthPx: number;
+  heightPx: number;
+};
+
+function defaultFloorViewOptions(): FloorViewOptions {
+  return { visible: true, reference: true, exterior: true, rooms: true };
+}
 
 function makeInitialFloor(): TakeoffFloor {
   return {
@@ -261,9 +285,10 @@ function makeTakeoffProject(
   mechanicalVentilation: boolean,
   ventilationCfm: number,
   frontDoorFaces: TakeoffProject["frontDoorFaces"],
-  floor: TakeoffFloor,
+  floors: TakeoffFloor | TakeoffFloor[],
   componentSchedule: TakeoffComponentDefinition[],
 ): TakeoffProject {
+  const projectFloors = Array.isArray(floors) ? floors : [floors];
   return {
     schemaVersion: "takeoff.v1",
     name,
@@ -272,7 +297,7 @@ function makeTakeoffProject(
     ventilationCfm,
     frontDoorFaces,
     componentSchedule,
-    floors: [floor],
+    floors: projectFloors.length ? projectFloors : [makeInitialFloor()],
   };
 }
 
@@ -2000,7 +2025,6 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
 }
 
 function buildVrcPayload(project: TakeoffProject) {
-  const floor = project.floors[0];
   const schedule = project.componentSchedule?.length ? project.componentSchedule : defaultComponentSchedule;
   const assemblyMap = Object.fromEntries(schedule.map((component) => [
     component.code,
@@ -2011,37 +2035,54 @@ function buildVrcPayload(project: TakeoffProject) {
       description: component.description,
     },
   ]));
-  const rooms = floor.rooms.map((room) => ({
-    name: room.name,
-    floor_area: rectArea(room),
-    lighting_area: rectArea(room),
-    ceiling_height: room.ceilingHeight,
-    volume: rectArea(room) * room.ceilingHeight,
-    lighting_basis: "Floor",
-    room_type: room.roomType ?? "plain",
-    ...(room.peopleOverride != null ? { people_override: room.peopleOverride } : {}),
-    ...(room.applianceWattsOverride != null ? { appliance_watts_override: room.applianceWattsOverride } : {}),
-    unit_id: "unit-whole-house",
-    zone_id: "zone-default",
-  }));
-  const bedroomCount = floor.rooms.filter((room) => room.roomType === "bedroom").length;
+  const levels = project.floors.map((floor, index) => {
+    const zoneId = `zone-${floor.id}`;
+    const rooms = floor.rooms.map((room) => ({
+      name: room.name,
+      floor_area: rectArea(room),
+      lighting_area: rectArea(room),
+      ceiling_height: room.ceilingHeight,
+      volume: rectArea(room) * room.ceilingHeight,
+      lighting_basis: "Floor",
+      room_type: room.roomType ?? "plain",
+      ...(room.peopleOverride != null ? { people_override: room.peopleOverride } : {}),
+      ...(room.applianceWattsOverride != null ? { appliance_watts_override: room.applianceWattsOverride } : {}),
+      unit_id: "unit-whole-house",
+      zone_id: zoneId,
+    }));
+    const lineItems = floor.rooms.flatMap((room) => {
+      return payloadComponentsForRoom(room).map((component) => ({
+        name: `${room.name} ${component.label || component.assembly}`,
+        kind: componentPayloadKind(component.surface),
+        room_name: room.name,
+        assembly: component.assembly,
+        direction: payloadDirectionForComponent(component),
+        area: component.area,
+        ...(componentBoundaryForSurface(component) ? { boundary: componentBoundaryForSurface(component) } : {}),
+        ...(component.source ? { source: component.source } : {}),
+        ...(component.adjacency ? { adjacency: component.adjacency } : {}),
+        ...(component.geometryLabel ? { geometry_label: component.geometryLabel } : {}),
+        ...(component.solarDirection ? { solar_direction: component.solarDirection, wall_direction: component.direction } : {}),
+      }));
+    });
+    return {
+      name: floor.name || `Floor ${index + 1}`,
+      floor_area: rooms.reduce((sum, room) => sum + room.floor_area, 0),
+      volume: rooms.reduce((sum, room) => sum + room.volume, 0),
+      selected_tons: 1,
+      selected_kw: 5,
+      cooling_cfm_divisor: 18.1,
+      heating_cfm_divisor: 20.2,
+      auto_lighting_w_per_sf: defaultLightingWPerSf,
+      auto_infiltration: true,
+      auto_internal_gains: true,
+      rooms,
+      line_items: lineItems,
+    };
+  });
+  const bedroomCount = project.floors.reduce((sum, floor) => sum + floor.rooms.filter((room) => room.roomType === "bedroom").length, 0);
   const resolvedBedroomCount = Math.max(bedroomCount, 1);
   const resolvedVentilationCfm = project.ventilationCfm || ventilationCfmForBedrooms(resolvedBedroomCount);
-  const lineItems = floor.rooms.flatMap((room) => {
-    return payloadComponentsForRoom(room).map((component) => ({
-      name: `${room.name} ${component.label || component.assembly}`,
-      kind: componentPayloadKind(component.surface),
-      room_name: room.name,
-      assembly: component.assembly,
-      direction: payloadDirectionForComponent(component),
-      area: component.area,
-      ...(componentBoundaryForSurface(component) ? { boundary: componentBoundaryForSurface(component) } : {}),
-      ...(component.source ? { source: component.source } : {}),
-      ...(component.adjacency ? { adjacency: component.adjacency } : {}),
-      ...(component.geometryLabel ? { geometry_label: component.geometryLabel } : {}),
-      ...(component.solarDirection ? { solar_direction: component.solarDirection, wall_direction: component.direction } : {}),
-    }));
-  });
 
   return {
     project: {
@@ -2068,28 +2109,13 @@ function buildVrcPayload(project: TakeoffProject) {
         front_door_faces: project.frontDoorFaces,
         ...(project.mechanicalVentilation ? { mechanical_ventilation: true, outside_air_cfm: resolvedVentilationCfm } : {}),
         units: [{ id: "unit-whole-house", name: "Whole House", selected_tons: 1, selected_kw: 5 }],
-        zones: [{ id: "zone-default", name: floor.name, unit_id: "unit-whole-house" }],
+        zones: project.floors.map((floor, index) => ({ id: `zone-${floor.id}`, name: floor.name || `Floor ${index + 1}`, unit_id: "unit-whole-house" })),
         takeoff_schema_version: project.schemaVersion,
       },
       selected_system_tons: 1,
       selected_system_kw: 5,
       assemblies: assemblyMap,
-      levels: [
-        {
-          name: floor.name,
-          floor_area: rooms.reduce((sum, room) => sum + room.floor_area, 0),
-          volume: rooms.reduce((sum, room) => sum + room.volume, 0),
-          selected_tons: 1,
-          selected_kw: 5,
-          cooling_cfm_divisor: 18.1,
-          heating_cfm_divisor: 20.2,
-          auto_lighting_w_per_sf: defaultLightingWPerSf,
-          auto_infiltration: true,
-          auto_internal_gains: true,
-          rooms,
-          line_items: lineItems,
-        },
-      ],
+      levels,
     },
   };
 }
@@ -2155,13 +2181,16 @@ function normalizeTakeoffProject(rawProject: Partial<TakeoffProject>): TakeoffPr
   const frontDoorFaces = directionOptions.includes(rawProject.frontDoorFaces as TakeoffProject["frontDoorFaces"])
     ? rawProject.frontDoorFaces as TakeoffProject["frontDoorFaces"]
     : "S";
+  const floors = rawProject.floors?.length
+    ? rawProject.floors.map((floor) => normalizeFloor(floor))
+    : [normalizeFloor(undefined)];
   return makeTakeoffProject(
     rawProject.name || "Takeoff V1 Draft",
     rawProject.location ?? "",
     Boolean(rawProject.mechanicalVentilation),
     Number(rawProject.ventilationCfm ?? 0),
     frontDoorFaces,
-    normalizeFloor(rawProject.floors?.[0]),
+    floors,
     rawProject.componentSchedule?.length ? rawProject.componentSchedule : defaultComponentSchedule,
   );
 }
@@ -2564,14 +2593,22 @@ function modelScheduleCategory(surface: TakeoffRoomComponent["surface"]) {
 
 function TakeoffModelPreview({
   floor,
+  floors,
+  activeFloorId,
   referenceUrl,
+  referenceUrls,
+  floorViewOptions,
   componentSchedule,
   selectedRoomId,
   onSelectRoom,
   onAssignSurfaceComponent,
 }: {
   floor: TakeoffFloor;
+  floors: TakeoffFloor[];
+  activeFloorId: string;
   referenceUrl: string;
+  referenceUrls: Record<string, string>;
+  floorViewOptions: Record<string, FloorViewOptions>;
   componentSchedule: TakeoffComponentDefinition[];
   selectedRoomId: string | null;
   onSelectRoom: (roomId: string) => void;
@@ -2674,9 +2711,10 @@ function TakeoffModelPreview({
     scene.add(grid);
 
     const loadedTextures: THREE.Texture[] = [];
-    if (visibleLayers.reference && referenceUrl) {
-      const loader = new THREE.TextureLoader();
-      loader.setCrossOrigin("anonymous");
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin("anonymous");
+    const activeOptions = floorViewOptions[activeFloorId] ?? defaultFloorViewOptions();
+    if (activeOptions.visible && activeOptions.reference && visibleLayers.reference && referenceUrl) {
       const texture = loader.load(referenceUrl);
       loadedTextures.push(texture);
       scene.add(referencePlaneForFloor(floor, center, texture));
@@ -2698,11 +2736,49 @@ function TakeoffModelPreview({
     const openingFrameMaterial = new THREE.MeshBasicMaterial({ color: 0x2f3b1f, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
     const lineMaterial = new THREE.LineBasicMaterial({ color: 0xb35b2f });
     const hoverOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x0f5fa8, depthTest: false, transparent: true, opacity: 0.95 });
+    const ghostReferenceMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6070, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
+    const ghostRoomMaterial = new THREE.MeshPhongMaterial({ color: 0x8799a8, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
+    const ghostExteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x5f7f9b, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
+
+    for (const otherFloor of floors) {
+      if (otherFloor.id === activeFloorId) continue;
+      const options = floorViewOptions[otherFloor.id] ?? defaultFloorViewOptions();
+      if (!options.visible) continue;
+      const yOffset = (otherFloor.elevation ?? 0) - (floor.elevation ?? 0);
+      if (visibleLayers.reference && options.reference && referenceUrls[otherFloor.id]) {
+        const texture = loader.load(referenceUrls[otherFloor.id]);
+        loadedTextures.push(texture);
+        const plane = referencePlaneForFloor(otherFloor, center, texture);
+        plane.position.y += yOffset;
+        scene.add(plane);
+      } else if (options.reference) {
+        const display = referenceDisplayRectForFloor(otherFloor);
+        const geometry = new THREE.PlaneGeometry(Math.max(display.width, 1), Math.max(display.depth, 1));
+        geometry.rotateX(-Math.PI / 2);
+        const mesh = new THREE.Mesh(geometry, ghostReferenceMaterial);
+        mesh.position.set(display.x + display.width / 2 - center.x, yOffset - 0.08, display.y + display.depth / 2 - center.y);
+        scene.add(mesh);
+      }
+      if (options.exterior) {
+        const otherExteriorPoints = exteriorRingPoints(otherFloor);
+        if (otherExteriorPoints.length >= 3) {
+          const mesh = createHorizontalShapeMesh(otherExteriorPoints, center, yOffset - 0.015, ghostExteriorMaterial);
+          scene.add(mesh);
+        }
+      }
+      if (options.rooms) {
+        for (const room of otherFloor.rooms) {
+          const points = cleanPolygonPointsForRender(roomCorners(room));
+          if (points.length < 3) continue;
+          scene.add(createHorizontalShapeMesh(points, center, yOffset + 0.025, ghostRoomMaterial));
+        }
+      }
+    }
 
     const exteriorPoints = exteriorRingPoints(floor);
-    if (exteriorPoints.length >= 3) scene.add(createHorizontalShapeMesh(exteriorPoints, center, -0.02, exteriorMaterial));
+    if (activeOptions.visible && activeOptions.exterior && exteriorPoints.length >= 3) scene.add(createHorizontalShapeMesh(exteriorPoints, center, -0.02, exteriorMaterial));
 
-    for (const [index, sourceRoom] of floor.rooms.entries()) {
+    for (const [index, sourceRoom] of (activeOptions.visible && activeOptions.rooms ? floor.rooms : []).entries()) {
       const rawPoints = roomCorners(sourceRoom);
       const renderPoints = cleanPolygonPointsForRender(rawPoints);
       const room = renderPoints.length >= 3 && renderPoints.length !== rawPoints.length
@@ -2849,7 +2925,7 @@ function TakeoffModelPreview({
       }
     }
 
-    for (const space of floor.adjacentSpaces ?? []) {
+    for (const space of activeOptions.visible && activeOptions.rooms ? floor.adjacentSpaces ?? [] : []) {
       const sourceRoom = adjacentSpaceAsRoom(space, floor.defaultCeilingHeight ?? 9);
       const rawPoints = roomCorners(sourceRoom);
       const renderPoints = cleanPolygonPointsForRender(rawPoints);
@@ -3038,7 +3114,7 @@ function TakeoffModelPreview({
       hoverOutlineMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [floor, onSelectRoom, referenceUrl, selectedRoomId, visibleLayers]);
+  }, [activeFloorId, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, visibleLayers]);
 
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
@@ -3319,7 +3395,9 @@ export function TakeoffApp() {
   const [calcLoading, setCalcLoading] = useState(false);
   const [calcResult, setCalcResult] = useState<TakeoffCalcResult | null>(null);
   const [componentSchedule, setComponentSchedule] = useState<TakeoffComponentDefinition[]>(() => defaultComponentSchedule);
-  const [floor, setFloor] = useState<TakeoffFloor>(() => makeInitialFloor());
+  const [floors, setFloors] = useState<TakeoffFloor[]>(() => [makeInitialFloor()]);
+  const [activeFloorId, setActiveFloorId] = useState("floor-1");
+  const [floorViewOptions, setFloorViewOptions] = useState<Record<string, FloorViewOptions>>(() => ({ "floor-1": defaultFloorViewOptions() }));
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
   const [activeValidationTarget, setActiveValidationTarget] = useState<ActiveValidationTarget | null>(null);
@@ -3362,7 +3440,7 @@ export function TakeoffApp() {
   const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("trace");
   const [calibrationOrientation, setCalibrationOrientation] = useState<TakeoffScaleLine["orientation"]>("horizontal");
   const [calibrationStart, setCalibrationStart] = useState<TakeoffPoint | null>(null);
-  const [referenceUrl, setReferenceUrl] = useState("");
+  const [referenceUrls, setReferenceUrls] = useState<Record<string, string>>({});
   const [referenceRenderStatus, setReferenceRenderStatus] = useState("");
   const [dragState, setDragState] = useState<DragState>(null);
   const [roomDrawMode, setRoomDrawMode] = useState(false);
@@ -3410,11 +3488,66 @@ export function TakeoffApp() {
     setPlanReviewMode(mode);
   }
 
+  const floor = floors.find((candidate) => candidate.id === activeFloorId) ?? floors[0] ?? makeInitialFloor();
+  const referenceUrl = referenceUrls[floor.id] ?? "";
+  const activeFloorViewOptions = floorViewOptions[floor.id] ?? defaultFloorViewOptions();
+
+  function setFloor(update: React.SetStateAction<TakeoffFloor>) {
+    setFloors((currentFloors) => {
+      const targetId = currentFloors.some((candidate) => candidate.id === activeFloorId)
+        ? activeFloorId
+        : currentFloors[0]?.id;
+      if (!targetId) {
+        const fallback = makeInitialFloor();
+        return [typeof update === "function" ? update(fallback) : update];
+      }
+      return currentFloors.map((candidate) => {
+        if (candidate.id !== targetId) return candidate;
+        return typeof update === "function" ? update(candidate) : update;
+      });
+    });
+  }
+
+  function setReferenceUrl(value: React.SetStateAction<string>) {
+    const targetFloorId = floor.id;
+    setReferenceUrls((current) => {
+      const nextValue = typeof value === "function" ? value(current[targetFloorId] ?? "") : value;
+      return { ...current, [targetFloorId]: nextValue };
+    });
+  }
+
   useEffect(() => {
     return () => {
-      if (referenceUrl) revokeReferenceUrl(referenceUrl);
+      for (const url of Object.values(referenceUrls)) {
+        if (url) revokeReferenceUrl(url);
+      }
     };
-  }, [referenceUrl]);
+  }, []);
+
+  useEffect(() => {
+    const downloadUrl = floor.reference?.downloadUrl;
+    if (referenceUrl || !downloadUrl) return;
+    const sourceUrl: string = downloadUrl;
+    const sourceKind = floor.reference?.kind;
+    const sourceFilename = floor.reference?.filename;
+    const sourceFloorId = floor.id;
+    let cancelled = false;
+    async function restoreActiveReference() {
+      try {
+        const restoredPreview = sourceKind === "pdf" ? await renderPdfPreview(sourceUrl, floor.reference?.sourcePageNumber ?? 1) : null;
+        const restoredUrl = restoredPreview?.url ?? sourceUrl;
+        if (cancelled || !restoredUrl) return;
+        setReferenceUrls((current) => ({ ...current, [sourceFloorId]: restoredUrl }));
+        setReferenceRenderStatus(`Reference restored: ${sourceFilename}`);
+      } catch {
+        if (!cancelled) setReferenceRenderStatus("Reference metadata reopened, but the stored file was not available.");
+      }
+    }
+    void restoreActiveReference();
+    return () => {
+      cancelled = true;
+    };
+  }, [floor.id, floor.reference?.downloadUrl, floor.reference?.filename, floor.reference?.kind, referenceUrl]);
 
   useEffect(() => {
     setRoomWorkbenchSections({ floor: false, ceiling: false, reconciliation: false });
@@ -3443,10 +3576,10 @@ export function TakeoffApp() {
   }, [roomMergeMenuOpen, roomTypeMenuOpen]);
 
   const takeoffProject = useMemo<TakeoffProject>(
-    () => makeTakeoffProject(projectName, location, mechanicalVentilation, ventilationCfm, frontDoorFaces, floor, componentSchedule),
-    [componentSchedule, floor, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
+    () => makeTakeoffProject(projectName, location, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule),
+    [componentSchedule, floors, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
   );
-  const taggedBedroomCount = Math.max(floor.rooms.filter((room) => room.roomType === "bedroom").length, 1);
+  const taggedBedroomCount = Math.max(floors.reduce((sum, entry) => sum + entry.rooms.filter((room) => room.roomType === "bedroom").length, 0), 1);
   const suggestedVentilationCfm = ventilationCfmForBedrooms(taggedBedroomCount);
   const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
   const serializedTakeoff = useMemo(() => takeoffSnapshot(persistableTakeoff), [persistableTakeoff]);
@@ -3519,6 +3652,12 @@ export function TakeoffApp() {
   const activeDragRect = dragState ? rectFromPoints(dragState.start, dragState.current) : null;
   const visibleCrop = floor.reference?.crop ?? { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
   const referenceDisplay = referenceDisplayRectForFloor(floor);
+  const alignmentReferenceFloor = (floor.alignment?.referenceFloorId
+    ? floors.find((entry) => entry.id === floor.alignment?.referenceFloorId)
+    : floors.find((entry) => entry.id !== floor.id)) ?? null;
+  const alignmentReferenceUrl = alignmentReferenceFloor ? referenceUrls[alignmentReferenceFloor.id] ?? "" : "";
+  const alignmentReferenceDisplay = alignmentReferenceFloor ? referenceDisplayRectForFloor(alignmentReferenceFloor) : null;
+  const alignmentPointPairs = floor.alignment?.pointPairs ?? [];
   const unassignedCells = useMemo(() => {
     if (floor.exteriorPolygon.length < 3 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
@@ -3624,6 +3763,98 @@ export function TakeoffApp() {
 
   function updateFloor(patch: Partial<TakeoffFloor>) {
     setFloor((current) => ({ ...current, ...patch }));
+  }
+
+  function resetTransientFloorTools() {
+    setSelectedRoomId(null);
+    setSelectedUnassignedRegionId(null);
+    setCalibrationStart(null);
+    setRoomPolygonDraft([]);
+    setAdjacentDrawMode(false);
+    setOpeningModeActive(false);
+    setOpeningPlacement(null);
+    setPendingOpeningTarget(null);
+    setEditingOpeningTarget(null);
+    setSelectedOpening(null);
+    setDragState(null);
+    setWorkflowStep("trace");
+    setTraceTool("select");
+    setZoom(1);
+  }
+
+  function switchActiveFloor(floorId: string) {
+    if (floorId === activeFloorId) return;
+    setActiveFloorId(floorId);
+    resetTransientFloorTools();
+  }
+
+  function updateFloorViewOptions(floorId: string, patch: Partial<FloorViewOptions>) {
+    setFloorViewOptions((current) => ({
+      ...current,
+      [floorId]: { ...(current[floorId] ?? defaultFloorViewOptions()), ...patch },
+    }));
+  }
+
+  function addFloor() {
+    const floorNumber = floors.length + 1;
+    const previousTop = floors.reduce((maxElevation, entry) => Math.max(maxElevation, (entry.elevation ?? 0) + (entry.floorToFloorHeight ?? 10)), 0);
+    const base = floor;
+    const nextFloor: TakeoffFloor = {
+      ...makeInitialFloor(),
+      id: nextId("floor"),
+      name: floorNumber === 2 ? "Second Floor" : floorNumber === 3 ? "Third Floor" : `Floor ${floorNumber}`,
+      designGrid: { ...base.designGrid },
+      scale: { ...base.scale },
+      defaultCeilingHeight: base.defaultCeilingHeight,
+      elevation: previousTop,
+      floorToFloorHeight: base.floorToFloorHeight ?? 10,
+      alignment: floors.length ? { referenceFloorId: base.id, pointPairs: [] } : undefined,
+    };
+    setFloors((current) => [...current, nextFloor]);
+    setFloorViewOptions((current) => ({ ...current, [nextFloor.id]: defaultFloorViewOptions() }));
+    setActiveFloorId(nextFloor.id);
+    resetTransientFloorTools();
+    setMessage(`${nextFloor.name} added. Upload its plan reference, then align it to an existing floor.`);
+  }
+
+  function setAlignmentReferenceFloor(referenceFloorId: string) {
+    updateFloor({
+      alignment: {
+        ...(floor.alignment ?? {}),
+        referenceFloorId,
+        pointPairs: floor.alignment?.pointPairs ?? [],
+      },
+    });
+  }
+
+  function addSameScreenAlignmentPair(point: TakeoffPoint) {
+    if (!alignmentReferenceFloor) {
+      setMessage("Add another floor before recording alignment points.");
+      return;
+    }
+    const pair = { id: nextId("align-pair"), reference: point, local: point };
+    setFloor((current) => ({
+      ...current,
+      alignment: {
+        ...(current.alignment ?? {}),
+        referenceFloorId: current.alignment?.referenceFloorId ?? alignmentReferenceFloor.id,
+        pointPairs: [...(current.alignment?.pointPairs ?? []), pair],
+      },
+    }));
+    setMessage(`Alignment pair ${(floor.alignment?.pointPairs?.length ?? 0) + 1} recorded from the current overlay.`);
+  }
+
+  function clearAlignmentPairs() {
+    setFloor((current) => ({
+      ...current,
+      alignment: {
+        ...(current.alignment ?? {}),
+        pointPairs: [],
+        residualFt: undefined,
+        transform: undefined,
+      },
+    }));
+    setMessage("Alignment point pairs cleared.");
   }
 
   function startInlineRoomRename(roomId: string) {
@@ -5139,7 +5370,7 @@ export function TakeoffApp() {
     }));
   }
 
-  async function renderPdfPreview(source: File | string) {
+  async function renderPdfPreview(source: File | string, pageNumber = 1): Promise<PdfPreviewResult> {
     setReferenceRenderStatus("Rendering PDF preview...");
     const arrayBuffer = typeof source === "string"
       ? await fetch(source).then((response) => {
@@ -5149,16 +5380,36 @@ export function TakeoffApp() {
       : await source.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-    const page = await pdf.getPage(1);
-    const viewport = page.getViewport({ scale: 2 });
+    const resolvedPageNumber = Math.min(Math.max(1, Math.round(pageNumber)), pdf.numPages);
+    const page = await pdf.getPage(resolvedPageNumber);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const pixelLimitedScale = Math.sqrt(pdfPreviewMaxPixels / Math.max(1, baseViewport.width * baseViewport.height));
+    const dimensionLimitedScale = Math.min(
+      pdfPreviewMaxDimension / Math.max(1, baseViewport.width),
+      pdfPreviewMaxDimension / Math.max(1, baseViewport.height),
+    );
+    const scale = Math.max(0.25, Math.min(pdfPreviewTargetScale, pixelLimitedScale, dimensionLimitedScale));
+    const viewport = page.getViewport({ scale });
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Could not create PDF preview canvas.");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
     await page.render({ canvas, canvasContext: context, viewport }).promise;
-    setReferenceRenderStatus(`Rendered page 1 of ${pdf.numPages}.`);
-    return canvas.toDataURL("image/png");
+    const downscaled = scale < pdfPreviewTargetScale;
+    setReferenceRenderStatus(
+      downscaled
+        ? `Rendered page ${resolvedPageNumber} of ${pdf.numPages} at ${Math.round(scale * 100)}% for preview.`
+        : `Rendered page ${resolvedPageNumber} of ${pdf.numPages}.`,
+    );
+    return {
+      url: canvas.toDataURL("image/png"),
+      pageNumber: resolvedPageNumber,
+      pageCount: pdf.numPages,
+      scale,
+      widthPx: canvas.width,
+      heightPx: canvas.height,
+    };
   }
 
   function pointFromCanvasEvent(event: React.MouseEvent<SVGSVGElement>) {
@@ -6076,6 +6327,17 @@ export function TakeoffApp() {
     if (workflowStep === "trace" && (openingModeActive || roomPolygonMode || (traceTool === "exterior" && !floor.perimeterLocked))) return;
   }
 
+  function handleAlignmentPointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    const point = pointFromCanvasEvent(event);
+    if (!point) return;
+    if (event.shiftKey) {
+      event.preventDefault();
+      addSameScreenAlignmentPair(point);
+      return;
+    }
+    setMessage("Hold Shift and click a matching overlaid point to record an alignment pair.");
+  }
+
   function addRoom() {
     let room: TakeoffRectRoom = { id: nextId("room"), ...draftRoom };
     const hasConflict = !insidePerimeter(room, floor) || floor.rooms.some((existing) => overlaps(existing, room));
@@ -6142,11 +6404,18 @@ export function TakeoffApp() {
         return;
       }
     }
-    const blockingIssueIndex = validation.findIndex((issue) => issue.severity === "error");
-    const blockingIssue = blockingIssueIndex >= 0 ? validation[blockingIssueIndex] : null;
+    const allFloorValidation = floors.flatMap((entry) =>
+      buildValidation(entry, entry.id === floor.id ? unassignedRegions : []).map((issue, index) => ({ floor: entry, issue, index }))
+    );
+    const blockingEntry = allFloorValidation.find((entry) => entry.issue.severity === "error") ?? null;
+    const blockingIssue = blockingEntry?.issue ?? null;
     if (blockingIssue) {
       setMessage(blockingIssue.message);
-      focusValidationIssue(blockingIssue, validationIssueKey(blockingIssue, blockingIssueIndex));
+      if (blockingEntry && blockingEntry.floor.id !== floor.id) {
+        switchActiveFloor(blockingEntry.floor.id);
+      } else {
+        focusValidationIssue(blockingIssue, validationIssueKey(blockingIssue, blockingEntry?.index));
+      }
       return;
     }
     setCalcLoading(true);
@@ -6159,8 +6428,10 @@ export function TakeoffApp() {
       // Worst-case orientation: rotate every surface direction through all 8 facings, keep the max.
       for (let steps = 0; steps < COMPASS_ORDER.length; steps += 1) {
         const rotated = JSON.parse(JSON.stringify(basePayload));
-        for (const item of rotated.project.levels[0].line_items) {
-          if (item.direction) item.direction = rotateCompass(item.direction, steps);
+        for (const level of rotated.project.levels ?? []) {
+          for (const item of level.line_items ?? []) {
+            if (item.direction) item.direction = rotateCompass(item.direction, steps);
+          }
         }
         const response = await fetch("/api/calculate", {
           method: "POST",
@@ -6235,39 +6506,24 @@ export function TakeoffApp() {
       const response = await fetch(`/api/takeoffs/${id}`);
       if (!response.ok) throw new Error(await response.text());
       const loadedProject = normalizeTakeoffProject(await response.json());
-      if (referenceUrl) revokeReferenceUrl(referenceUrl);
-      const loadedReference = loadedProject.floors[0].reference;
-      if (loadedReference?.downloadUrl) {
-        const restoredUrl = loadedReference.kind === "pdf"
-          ? await renderPdfPreview(loadedReference.downloadUrl)
-          : loadedReference.downloadUrl;
-        setReferenceUrl(restoredUrl);
-        setReferenceRenderStatus(`Reference restored: ${loadedReference.filename}`);
-      } else {
-        setReferenceUrl("");
-      setReferenceRenderStatus(loadedReference ? "Reference metadata reopened, but the stored file was not available." : "");
+      for (const url of Object.values(referenceUrls)) {
+        if (url) revokeReferenceUrl(url);
       }
+      setReferenceUrls({});
+      const firstLoadedFloor = loadedProject.floors[0] ?? makeInitialFloor();
       setProjectName(loadedProject.name);
       setLocation(loadedProject.location ?? "");
       setMechanicalVentilation(Boolean(loadedProject.mechanicalVentilation));
       setVentilationCfm(Number(loadedProject.ventilationCfm ?? 0));
       setFrontDoorFaces(loadedProject.frontDoorFaces);
       setComponentSchedule(loadedProject.componentSchedule?.length ? loadedProject.componentSchedule : defaultComponentSchedule);
-      setFloor(loadedProject.floors[0]);
+      setFloors(loadedProject.floors.length ? loadedProject.floors : [firstLoadedFloor]);
+      setFloorViewOptions(Object.fromEntries((loadedProject.floors.length ? loadedProject.floors : [firstLoadedFloor]).map((entry) => [entry.id, defaultFloorViewOptions()])));
+      setActiveFloorId(firstLoadedFloor.id);
       setTakeoffId(id);
       setSavedSnapshot(takeoffSnapshot(persistableTakeoffProject(loadedProject)));
       setOpenDialog(false);
-      setCalibrationStart(null);
-      setRoomPolygonDraft([]);
-      setAdjacentDrawMode(false);
-      setOpeningModeActive(false);
-      setOpeningPlacement(null);
-      setPendingOpeningTarget(null);
-      setEditingOpeningTarget(null);
-      setSelectedOpening(null);
-      setDragState(null);
-      setWorkflowStep("trace");
-      setTraceTool("select");
+      resetTransientFloorTools();
       setMessage("Takeoff reopened.");
     } catch (error) {
       setOpenDialogError(error instanceof Error ? error.message : "Could not open takeoff.");
@@ -6289,7 +6545,8 @@ export function TakeoffApp() {
     }
     if (referenceUrl) revokeReferenceUrl(referenceUrl);
     try {
-      const nextReferenceUrl = kind === "pdf" ? await renderPdfPreview(file) : URL.createObjectURL(file);
+      const pdfPreview = kind === "pdf" ? await renderPdfPreview(file) : null;
+      const nextReferenceUrl = pdfPreview?.url ?? URL.createObjectURL(file);
       setReferenceRenderStatus("Uploading plan reference...");
       const asset = await uploadReferenceAsset(file, floor.id);
       setReferenceUrl(nextReferenceUrl);
@@ -6307,6 +6564,10 @@ export function TakeoffApp() {
           sizeBytes: asset.size_bytes,
           downloadUrl: asset.download_url,
           signedUrl: asset.signed_url,
+          sourcePageNumber: asset.page_number ?? pdfPreview?.pageNumber ?? 1,
+          renderScale: pdfPreview?.scale,
+          previewWidthPx: pdfPreview?.widthPx,
+          previewHeightPx: pdfPreview?.heightPx,
           crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth },
         },
         calibration: { lines: [], linesVisible: true, confirmed: false, appliedFactor: 1, areaConfirmed: false },
@@ -6393,6 +6654,13 @@ export function TakeoffApp() {
         body: "Location is required before calculation. Most Atlanta-area plans can start with Atlanta, GA.",
         actionLabel: "Use Atlanta, GA",
         action: () => setLocation("Atlanta, GA"),
+      };
+    }
+    if (planReviewMode === "alignment") {
+      return {
+        tone: "neutral" as const,
+        title: "Alignment overlay",
+        body: "Only plan references are shown here. Hold Shift and click a matching overlaid point to record a point pair.",
       };
     }
     if (!floor.reference) {
@@ -6535,8 +6803,27 @@ export function TakeoffApp() {
               Location <span className="required-star">*</span>
               <input value={location} placeholder="City, ST (e.g. Atlanta, GA)" onChange={(event) => setLocation(event.target.value)} />
             </label>
+            <div className="takeoff-floor-manager">
+              <div className="takeoff-floor-manager-head">
+                <span>Floors</span>
+                <button type="button" onClick={addFloor}>Add Floor</button>
+              </div>
+              <div className="takeoff-floor-tabs" aria-label="Takeoff floors">
+                {floors.map((entry, index) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className={entry.id === floor.id ? "active" : ""}
+                    onClick={() => switchActiveFloor(entry.id)}
+                  >
+                    <strong>{entry.name || `Floor ${index + 1}`}</strong>
+                    <span>{entry.rooms.length} rooms</span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <label>
-              Floor
+              Active floor name
               <input value={floor.name} onChange={(event) => updateFloor({ name: event.target.value })} />
             </label>
             <label>
@@ -6815,6 +7102,55 @@ export function TakeoffApp() {
                     </button>
                   ))}
                 </div>
+                <details className="takeoff-floor-visibility">
+                  <summary>Floors</summary>
+                  <div className="takeoff-floor-visibility-list">
+                    {floors.map((entry) => {
+                      const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
+                      return (
+                        <fieldset key={entry.id}>
+                          <legend>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={options.visible}
+                                onChange={(event) => updateFloorViewOptions(entry.id, { visible: event.target.checked })}
+                              />
+                              {entry.name}
+                            </label>
+                          </legend>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={options.reference}
+                              disabled={!options.visible}
+                              onChange={(event) => updateFloorViewOptions(entry.id, { reference: event.target.checked })}
+                            />
+                            PDF
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={options.exterior}
+                              disabled={!options.visible}
+                              onChange={(event) => updateFloorViewOptions(entry.id, { exterior: event.target.checked })}
+                            />
+                            Exterior
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={options.rooms}
+                              disabled={!options.visible}
+                              onChange={(event) => updateFloorViewOptions(entry.id, { rooms: event.target.checked })}
+                            />
+                            Rooms
+                          </label>
+                        </fieldset>
+                      );
+                    })}
+                  </div>
+                </details>
               </div>
             </div>
           </div>
@@ -6834,15 +7170,137 @@ export function TakeoffApp() {
               <TakeoffModelPreview
                 key={`takeoff-model-preview-${modelPreviewRevision}`}
                 floor={floor}
+                floors={floors}
+                activeFloorId={floor.id}
                 referenceUrl={referenceUrl}
+                referenceUrls={referenceUrls}
+                floorViewOptions={floorViewOptions}
                 componentSchedule={componentSchedule}
                 selectedRoomId={selectedRoomId}
                 onSelectRoom={setSelectedRoomId}
                 onAssignSurfaceComponent={assignModelSurfaceComponent}
               />
+            ) : planReviewMode === "alignment" ? (
+              <div className="takeoff-drawing-layer takeoff-alignment-layer" style={{ width: drawingWidth, height: drawingHeight }}>
+                <div className="takeoff-alignment-toolbar">
+                  <label>
+                    Reference floor
+                    <select
+                      value={alignmentReferenceFloor?.id ?? ""}
+                      onChange={(event) => setAlignmentReferenceFloor(event.target.value)}
+                      disabled={floors.length <= 1}
+                    >
+                      {floors.filter((entry) => entry.id !== floor.id).map((entry) => (
+                        <option key={entry.id} value={entry.id}>{entry.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <span>{alignmentPointPairs.length} point pair{alignmentPointPairs.length === 1 ? "" : "s"}</span>
+                  <button type="button" onClick={clearAlignmentPairs} disabled={alignmentPointPairs.length === 0}>Clear Pairs</button>
+                </div>
+                {alignmentReferenceFloor && alignmentReferenceUrl && alignmentReferenceDisplay && alignmentReferenceFloor.reference && (
+                  <div
+                    className="takeoff-reference-layer takeoff-reference-layer--alignment-base"
+                    style={{
+                      left: offsetX + alignmentReferenceDisplay.x * scale,
+                      top: offsetY + alignmentReferenceDisplay.y * scale,
+                      width: alignmentReferenceDisplay.width * scale,
+                      height: alignmentReferenceDisplay.depth * scale,
+                    }}
+                  >
+                    <img
+                      src={alignmentReferenceUrl}
+                      alt={`${alignmentReferenceFloor.name} reference`}
+                      style={{
+                        left: `${-((alignmentReferenceFloor.reference.crop?.x ?? 0) / Math.max(alignmentReferenceFloor.reference.crop?.width ?? alignmentReferenceFloor.designGrid.width, 1)) * 100}%`,
+                        top: `${-((alignmentReferenceFloor.reference.crop?.y ?? 0) / Math.max(alignmentReferenceFloor.reference.crop?.depth ?? alignmentReferenceFloor.designGrid.depth, 1)) * 100}%`,
+                        width: `${(alignmentReferenceFloor.designGrid.width / Math.max(alignmentReferenceFloor.reference.crop?.width ?? alignmentReferenceFloor.designGrid.width, 1)) * 100}%`,
+                        height: `${(alignmentReferenceFloor.designGrid.depth / Math.max(alignmentReferenceFloor.reference.crop?.depth ?? alignmentReferenceFloor.designGrid.depth, 1)) * 100}%`,
+                      }}
+                    />
+                  </div>
+                )}
+                {referenceUrl && floor.reference && (
+                  <div
+                    className="takeoff-reference-layer takeoff-reference-layer--alignment-active"
+                    style={{
+                      left: offsetX + referenceDisplay.x * scale,
+                      top: offsetY + referenceDisplay.y * scale,
+                      width: referenceDisplay.width * scale,
+                      height: referenceDisplay.depth * scale,
+                    }}
+                  >
+                    <img
+                      src={referenceUrl}
+                      alt={`${floor.name} reference`}
+                      style={{
+                        left: `${-(visibleCrop.x / Math.max(visibleCrop.width, 1)) * 100}%`,
+                        top: `${-(visibleCrop.y / Math.max(visibleCrop.depth, 1)) * 100}%`,
+                        width: `${(floor.designGrid.width / Math.max(visibleCrop.width, 1)) * 100}%`,
+                        height: `${(floor.designGrid.depth / Math.max(visibleCrop.depth, 1)) * 100}%`,
+                      }}
+                    />
+                  </div>
+                )}
+                <svg
+                  className="takeoff-canvas takeoff-alignment-canvas"
+                  viewBox={`0 0 ${drawingWidth} ${drawingHeight}`}
+                  width={drawingWidth}
+                  height={drawingHeight}
+                  role="img"
+                  aria-label="Floor alignment reference overlay"
+                  onPointerDown={handleAlignmentPointerDown}
+                >
+                  <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill="transparent" />
+                  <rect x={offsetX} y={offsetY} width={floor.designGrid.width * scale} height={floor.designGrid.depth * scale} fill="none" stroke="#9aa8b4" strokeDasharray="5 5" strokeWidth="1.5" />
+                  {alignmentPointPairs.map((pair, index) => (
+                    <g key={pair.id}>
+                      <circle cx={offsetX + pair.local.x * scale} cy={offsetY + pair.local.y * scale} r="7" fill="#ffffff" stroke="#2f7a4f" strokeWidth="2" />
+                      <text x={offsetX + pair.local.x * scale + 10} y={offsetY + pair.local.y * scale - 10} fontSize="12" fill="#204b2b">{index + 1}</text>
+                    </g>
+                  ))}
+                </svg>
+                <div className="takeoff-alignment-empty">
+                  {floors.length <= 1
+                    ? "Add a second floor to use the alignment overlay."
+                    : !alignmentReferenceUrl || !referenceUrl
+                      ? "Open or upload references for both floors before recording point pairs."
+                      : "Hold Shift and click a matching overlaid point to record one pair."}
+                </div>
+              </div>
             ) : (
             <div className="takeoff-drawing-layer" style={{ width: drawingWidth, height: drawingHeight }}>
-              {referenceUrl && floor.reference && (
+              {floors.filter((entry) => entry.id !== floor.id).map((entry) => {
+                const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
+                if (!options.visible) return null;
+                const otherReferenceUrl = referenceUrls[entry.id] ?? "";
+                const otherReferenceDisplay = referenceDisplayRectForFloor(entry);
+                const otherCrop = entry.reference?.crop ?? { x: 0, y: 0, width: entry.designGrid.width, depth: entry.designGrid.depth };
+                return options.reference && otherReferenceUrl && entry.reference ? (
+                  <div
+                    key={`reference-${entry.id}`}
+                    className="takeoff-reference-layer takeoff-reference-layer--floor-ghost"
+                    style={{
+                      left: offsetX + otherReferenceDisplay.x * scale,
+                      top: offsetY + otherReferenceDisplay.y * scale,
+                      width: otherReferenceDisplay.width * scale,
+                      height: otherReferenceDisplay.depth * scale,
+                    }}
+                  >
+                    <img
+                      src={otherReferenceUrl}
+                      alt={`${entry.name} reference`}
+                      style={{
+                        left: `${-(otherCrop.x / Math.max(otherCrop.width, 1)) * 100}%`,
+                        top: `${-(otherCrop.y / Math.max(otherCrop.depth, 1)) * 100}%`,
+                        width: `${(entry.designGrid.width / Math.max(otherCrop.width, 1)) * 100}%`,
+                        height: `${(entry.designGrid.depth / Math.max(otherCrop.depth, 1)) * 100}%`,
+                      }}
+                    />
+                  </div>
+                ) : null;
+              })}
+              {activeFloorViewOptions.visible && activeFloorViewOptions.reference && referenceUrl && floor.reference && (
                 <div
                   className="takeoff-reference-layer"
                   style={{
@@ -6896,20 +7354,51 @@ export function TakeoffApp() {
                   <path d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`} fill="none" stroke="#dce4ea" strokeWidth="1" />
                 </pattern>
               </defs>
-              <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill={referenceUrl ? "transparent" : "#f8fafb"} />
+              <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill={referenceUrl && activeFloorViewOptions.visible && activeFloorViewOptions.reference ? "transparent" : "#f8fafb"} />
               <rect x={offsetX} y={offsetY} width={floor.designGrid.width * scale} height={floor.designGrid.depth * scale} fill="url(#takeoff-grid-small)" stroke="#b7c4cf" strokeWidth="1.5" />
-              {floor.exteriorPolygon.length >= 3 ? (
+              {floors.filter((entry) => entry.id !== floor.id).flatMap((entry) => {
+                const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
+                if (!options.visible) return [];
+                const overlays: React.ReactNode[] = [];
+                if (options.exterior && entry.exteriorPolygon.length >= 3) {
+                  overlays.push(
+                    <polygon
+                      key={`${entry.id}-exterior`}
+                      points={entry.exteriorPolygon.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
+                      fill="rgba(92, 117, 138, 0.08)"
+                      stroke="#5c758a"
+                      strokeDasharray="6 5"
+                      strokeWidth="2"
+                    />
+                  );
+                }
+                if (options.rooms) {
+                  for (const room of entry.rooms) {
+                    overlays.push(
+                      <polygon
+                        key={`${entry.id}-${room.id}`}
+                        points={roomCorners(room).map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
+                        fill="rgba(92, 117, 138, 0.07)"
+                        stroke="rgba(92, 117, 138, 0.45)"
+                        strokeWidth="1"
+                      />
+                    );
+                  }
+                }
+                return overlays;
+              })}
+              {activeFloorViewOptions.visible && activeFloorViewOptions.exterior && (floor.exteriorPolygon.length >= 3 ? (
                 <polygon points={exteriorPath} fill="rgba(31, 111, 178, 0.08)" stroke="#1f6fb2" strokeWidth="2.5" />
               ) : (
                 <rect x={offsetX} y={offsetY} width={floor.conditionedPerimeter.width * scale} height={floor.conditionedPerimeter.depth * scale} fill="rgba(31, 111, 178, 0.07)" stroke="#1f6fb2" strokeDasharray="6 5" strokeWidth="2" />
-              )}
-              {!polygonDraftActive && floor.exteriorPolygon.map((point, index) => (
+              ))}
+              {activeFloorViewOptions.visible && activeFloorViewOptions.exterior && !polygonDraftActive && floor.exteriorPolygon.map((point, index) => (
                 <g key={`${point.x}-${point.y}-${index}`}>
                   <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="4" fill="#1f6fb2" stroke="#ffffff" strokeWidth="1.5" />
                   <text x={offsetX + point.x * scale + 6} y={offsetY + point.y * scale - 6} fontSize="10" fill="#1f2933">{index + 1}</text>
                 </g>
               ))}
-              {unassignedRegions.flatMap((region) => region.cells.map((cell, index) => {
+              {activeFloorViewOptions.visible && activeFloorViewOptions.rooms && unassignedRegions.flatMap((region) => region.cells.map((cell, index) => {
                 const isSelected = !selectedUnassignedRegionId || selectedUnassignedRegionId === region.id;
                 const points = unassignedCellPoints(cell).map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ");
                 return (
@@ -6957,7 +7446,7 @@ export function TakeoffApp() {
                   <text x={offsetX + calibrationStart.x * scale + 7} y={offsetY + calibrationStart.y * scale - 7} fontSize="11" fill="#7f2d20">start</text>
                 </g>
               )}
-              {(floor.adjacentSpaces ?? []).map((space) => {
+              {activeFloorViewOptions.visible && activeFloorViewOptions.rooms && (floor.adjacentSpaces ?? []).map((space) => {
                 const color = adjacentSpaceColor(space.kind);
                 const points = adjacentSpaceCorners(space);
                 const labelPoint = polygonLabelPoint(points);
@@ -6993,7 +7482,7 @@ export function TakeoffApp() {
                   </g>
                 );
               })}
-              {floor.rooms.map((room, index) => {
+              {activeFloorViewOptions.visible && activeFloorViewOptions.rooms && floor.rooms.map((room, index) => {
                 const points = roomCorners(room);
                 const labelPoint = polygonLabelPoint(points);
                 const bounds = polygonBounds(points);

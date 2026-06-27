@@ -138,6 +138,11 @@ export type TakeoffFloor = {
       scale: number;
     };
     residualFt?: number;
+    pointPairs?: Array<{
+      id: string;
+      reference: TakeoffPoint;
+      local: TakeoffPoint;
+    }>;
   };
   referencePoints?: Array<{
     id: string;
@@ -163,6 +168,12 @@ export type TakeoffFloor = {
     sizeBytes?: number;
     downloadUrl?: string;
     signedUrl?: string;
+    sourcePlanDocumentId?: string | number;
+    sourcePageNumber?: number;
+    optimizedFromCrop?: boolean;
+    renderScale?: number;
+    previewWidthPx?: number;
+    previewHeightPx?: number;
     crop?: {
       x: number;
       y: number;
