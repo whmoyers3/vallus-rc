@@ -4364,15 +4364,6 @@ export function TakeoffApp() {
     }));
   }
 
-  function setAllFloorViewOptions(patch: Partial<FloorViewOptions>) {
-    setFloorViewOptions((current) =>
-      Object.fromEntries(floors.map((entry) => [
-        entry.id,
-        { ...(current[entry.id] ?? defaultFloorViewOptions()), ...patch },
-      ]))
-    );
-  }
-
   function addFloor() {
     const floorNumber = floors.length + 1;
     const previousTop = floors.reduce((maxElevation, entry) => Math.max(maxElevation, (entry.elevation ?? 0) + (entry.floorToFloorHeight ?? 10)), 0);
@@ -7578,6 +7569,17 @@ export function TakeoffApp() {
     };
   }
 
+  const stageTitle = (() => {
+    if (planReviewMode === "alignment") return "Align Floor References";
+    if (workflowStep === "crop") return "Crop Plan Reference";
+    if (workflowStep === "calibrate") return "Import Scale Setup";
+    if (planReviewMode === "elevation") return "3D QA View";
+    if (planReviewMode === "floor") return "Floor Review";
+    if (planReviewMode === "ceiling") return "Ceiling Review";
+    if (planReviewMode === "walls") return "Wall Review";
+    return "Plan Grid";
+  })();
+
   const modeGuidance = (() => {
     if (!projectName.trim()) {
       return {
@@ -7654,6 +7656,34 @@ export function TakeoffApp() {
           setWorkflowStep("calibrate");
           setCalibrationOrientation("horizontal");
         },
+      };
+    }
+    if (planReviewMode === "elevation") {
+      return {
+        tone: "neutral" as const,
+        title: "3D QA view",
+        body: "Review the modeled home, floor filters, plan PDF visibility, surfaces, openings, and band joists in the floating controls.",
+      };
+    }
+    if (planReviewMode === "floor") {
+      return {
+        tone: "neutral" as const,
+        title: "Floor review",
+        body: "Review room floor areas and component assignments before sending the takeoff to the calculator.",
+      };
+    }
+    if (planReviewMode === "ceiling") {
+      return {
+        tone: "neutral" as const,
+        title: "Ceiling review",
+        body: "Review ceiling panels, vaulted surfaces, open-to-above rooms, and any validation suggestions for split ceiling loads.",
+      };
+    }
+    if (planReviewMode === "walls") {
+      return {
+        tone: "neutral" as const,
+        title: "Wall review",
+        body: "Review exterior exposure, wall components, windows, doors, and no-load boundaries created by conditioned adjacent space.",
       };
     }
     return {
@@ -8049,7 +8079,7 @@ export function TakeoffApp() {
         <section className="takeoff-stage-panel">
           <div className="takeoff-stage-head">
             <div>
-              <h2>{planReviewMode === "alignment" ? "Align Floor References" : workflowStep === "crop" ? "Crop Plan Reference" : workflowStep === "calibrate" ? "Import Scale Setup" : "Plan Grid"}</h2>
+              <h2>{stageTitle}</h2>
               <p>
                 {Math.round(computedFootprintArea)} sf conditioned footprint · {floor.designGrid.width} x {floor.designGrid.depth} ft design grid
                 {scaleApplied ? ` · scale ${floor.calibration.appliedFactor}x` : ""}
@@ -8085,59 +8115,6 @@ export function TakeoffApp() {
                     </button>
                   ))}
                 </div>
-                <details className="takeoff-floor-visibility">
-                  <summary>Floor filters</summary>
-                  <div className="takeoff-floor-visibility-list">
-                    <div className="takeoff-floor-visibility-actions">
-                      <button type="button" onClick={() => setAllFloorViewOptions({ visible: true })}>Show all floors</button>
-                      <button type="button" onClick={() => setAllFloorViewOptions({ visible: false })}>Hide all floors</button>
-                    </div>
-                    {orderedFloors.map((entry) => {
-                      const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
-                      return (
-                        <fieldset key={entry.id}>
-                          <legend>
-                            <label>
-                              <input
-                                type="checkbox"
-                                checked={options.visible}
-                                onChange={(event) => updateFloorViewOptions(entry.id, { visible: event.target.checked })}
-                              />
-                              {entry.name}
-                            </label>
-                          </legend>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={options.reference}
-                              disabled={!options.visible}
-                              onChange={(event) => updateFloorViewOptions(entry.id, { reference: event.target.checked })}
-                            />
-                            PDF
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={options.exterior}
-                              disabled={!options.visible}
-                              onChange={(event) => updateFloorViewOptions(entry.id, { exterior: event.target.checked })}
-                            />
-                            Exterior
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={options.rooms}
-                              disabled={!options.visible}
-                              onChange={(event) => updateFloorViewOptions(entry.id, { rooms: event.target.checked })}
-                            />
-                            Rooms
-                          </label>
-                        </fieldset>
-                      );
-                    })}
-                  </div>
-                </details>
               </div>
             </div>
           </div>
