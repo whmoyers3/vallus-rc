@@ -5119,7 +5119,7 @@ export function TakeoffApp() {
     setMessage(`${floorName} default ceiling height (${formatDimensionValue(appliedHeight, dimensionInputMode)}) applied to ${roomCount} room${roomCount === 1 ? "" : "s"}.`);
   }
 
-  function resetTransientFloorTools() {
+  function resetTransientFloorTools(options: { preserveZoom?: boolean } = {}) {
     setSelectedRoomId(null);
     setSelectedUnassignedRegionId(null);
     setCalibrationStart(null);
@@ -5134,13 +5134,26 @@ export function TakeoffApp() {
     setAlignmentDrag(null);
     setWorkflowStep("trace");
     setTraceTool("select");
-    setZoom(1);
+    if (!options.preserveZoom) setZoom(1);
   }
 
   function switchActiveFloor(floorId: string) {
     if (floorId === activeFloorId) return;
+    const currentViewport = canvasScrollRef.current
+      ? {
+          left: canvasScrollRef.current.scrollLeft,
+          top: canvasScrollRef.current.scrollTop,
+        }
+      : null;
     setActiveFloorId(floorId);
-    resetTransientFloorTools();
+    resetTransientFloorTools({ preserveZoom: true });
+    if (currentViewport) {
+      requestAnimationFrame(() => {
+        if (!canvasScrollRef.current) return;
+        canvasScrollRef.current.scrollLeft = currentViewport.left;
+        canvasScrollRef.current.scrollTop = currentViewport.top;
+      });
+    }
   }
 
   function updateFloorViewOptions(floorId: string, patch: Partial<FloorViewOptions>) {
