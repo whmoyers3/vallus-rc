@@ -1364,6 +1364,62 @@ button.toolbar-primary:hover {
   line-height: 1;
 }
 
+.takeoff-model-floor-filter {
+  display: grid;
+  gap: 6px;
+  min-width: 190px;
+  width: 100%;
+}
+
+.takeoff-model-floor-filter-row {
+  align-items: center;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: minmax(58px, 1fr) auto auto;
+}
+
+.takeoff-model-floor-filter-row span {
+  color: #1f2933;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.takeoff-model-floor-filter-row button {
+  background: #f6f9fb;
+  border: 1px solid #d4dee6;
+  border-radius: 5px;
+  color: #405060;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  min-height: 26px;
+  padding: 4px 7px;
+}
+
+.takeoff-model-floor-filter-row button.is-active {
+  background: #1f6fb2;
+  border-color: #1f6fb2;
+  color: #ffffff;
+}
+
+.takeoff-model-floor-filter-row button:hover {
+  background: #ffffff;
+  border-color: #9cafbf;
+  color: #24384a;
+}
+
+.takeoff-model-floor-filter-row button.is-active:hover {
+  background: #185d96;
+  border-color: #185d96;
+  color: #ffffff;
+}
+
+.takeoff-model-layer-divider {
+  border-top: 1px solid #d9e0e6;
+  margin: 3px 0;
+  width: 100%;
+}
+
 .takeoff-model-layer-all {
   background: #f6f9fb;
   border: 1px solid #d4dee6;
@@ -1381,92 +1437,6 @@ button.toolbar-primary:hover {
 .takeoff-model-layer-all:hover {
   background: #ffffff;
   border-color: #9cafbf;
-}
-
-.takeoff-model-floor-controls {
-  align-items: stretch;
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid #d9e0e6;
-  border-radius: 6px;
-  color: #304252;
-  display: grid;
-  font-size: 12px;
-  gap: 8px;
-  max-width: min(360px, calc(100% - 24px));
-  padding: 9px 10px;
-  position: absolute;
-  right: 12px;
-  top: 56px;
-  z-index: 1;
-}
-
-.takeoff-model-control-title {
-  color: #1f2933;
-  font-size: 12px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.takeoff-model-floor-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.takeoff-model-floor-actions button {
-  background: #f6f9fb;
-  border: 1px solid #d4dee6;
-  border-radius: 5px;
-  color: #34495e;
-  cursor: pointer;
-  flex: 1;
-  font-size: 12px;
-  font-weight: 700;
-  min-height: 28px;
-  padding: 5px 8px;
-}
-
-.takeoff-model-floor-actions button:hover {
-  background: #ffffff;
-  border-color: #9cafbf;
-}
-
-.takeoff-model-floor-list {
-  display: grid;
-  gap: 7px;
-}
-
-.takeoff-model-floor-list fieldset {
-  border: 1px solid #e1e8ed;
-  border-radius: 5px;
-  display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(4, minmax(0, auto));
-  margin: 0;
-  padding: 8px;
-}
-
-.takeoff-model-floor-list legend {
-  color: #1f2933;
-  font-size: 12px;
-  font-weight: 800;
-  padding: 0 4px;
-}
-
-.takeoff-model-floor-list label {
-  align-items: center;
-  color: #405060;
-  cursor: pointer;
-  display: flex;
-  gap: 5px;
-  line-height: 1.1;
-}
-
-.takeoff-model-floor-list input {
-  margin: 0;
-}
-
-.takeoff-model-floor-list input:disabled + span {
-  color: #9aa8b4;
 }
 
 .takeoff-model-surface-panel {

@@ -2619,7 +2619,6 @@ function TakeoffModelPreview({
   selectedRoomId,
   onSelectRoom,
   onUpdateFloorViewOptions,
-  onSetAllFloorViewOptions,
   onAssignSurfaceComponent,
 }: {
   floor: TakeoffFloor;
@@ -2632,7 +2631,6 @@ function TakeoffModelPreview({
   selectedRoomId: string | null;
   onSelectRoom: (roomId: string) => void;
   onUpdateFloorViewOptions: (floorId: string, patch: Partial<FloorViewOptions>) => void;
-  onSetAllFloorViewOptions: (patch: Partial<FloorViewOptions>) => void;
   onAssignSurfaceComponent: (selection: ModelSurfaceSelection, assembly: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -3243,6 +3241,33 @@ function TakeoffModelPreview({
         </div>
       )}
       <div className="takeoff-model-layer-controls" aria-label="3D layer controls">
+        <div className="takeoff-model-floor-filter" aria-label="3D floor filters">
+          {floors.map((entry, index) => {
+            const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
+            return (
+              <div className="takeoff-model-floor-filter-row" key={entry.id}>
+                <span>{entry.name || `Floor ${index + 1}`}</span>
+                <button
+                  type="button"
+                  className={options.visible ? "is-active" : ""}
+                  aria-pressed={options.visible}
+                  onClick={() => onUpdateFloorViewOptions(entry.id, { visible: !options.visible })}
+                >
+                  Enable
+                </button>
+                <button
+                  type="button"
+                  className={options.reference ? "is-active" : ""}
+                  aria-pressed={options.reference}
+                  onClick={() => onUpdateFloorViewOptions(entry.id, { reference: !options.reference })}
+                >
+                  PDF
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <div className="takeoff-model-layer-divider" />
         {([
           ["floors", "Floor plates"],
           ["ceilings", "Ceilings"],
@@ -3279,59 +3304,6 @@ function TakeoffModelPreview({
         >
           All layers
         </button>
-      </div>
-      <div className="takeoff-model-floor-controls" aria-label="3D floor visibility controls">
-        <div className="takeoff-model-control-title">Floor Visibility</div>
-        <div className="takeoff-model-floor-actions">
-          <button type="button" onClick={() => onSetAllFloorViewOptions({ visible: true })}>Show all</button>
-          <button type="button" onClick={() => onSetAllFloorViewOptions({ visible: false })}>Hide all</button>
-          <button type="button" onClick={() => onSetAllFloorViewOptions({ reference: false })}>Hide PDFs</button>
-        </div>
-        <div className="takeoff-model-floor-list">
-          {floors.map((entry) => {
-            const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
-            return (
-              <fieldset key={entry.id}>
-                <legend>{entry.name}{entry.id === activeFloorId ? " · active" : ""}</legend>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={options.visible}
-                    onChange={(event) => onUpdateFloorViewOptions(entry.id, { visible: event.target.checked })}
-                  />
-                  <span>Floor</span>
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={options.reference}
-                    disabled={!options.visible}
-                    onChange={(event) => onUpdateFloorViewOptions(entry.id, { reference: event.target.checked })}
-                  />
-                  <span>PDF</span>
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={options.exterior}
-                    disabled={!options.visible}
-                    onChange={(event) => onUpdateFloorViewOptions(entry.id, { exterior: event.target.checked })}
-                  />
-                  <span>Exterior</span>
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={options.rooms}
-                    disabled={!options.visible}
-                    onChange={(event) => onUpdateFloorViewOptions(entry.id, { rooms: event.target.checked })}
-                  />
-                  <span>Rooms</span>
-                </label>
-              </fieldset>
-            );
-          })}
-        </div>
       </div>
       {selectedSurface && (
         <div className="takeoff-model-surface-panel">
@@ -7649,7 +7621,6 @@ export function TakeoffApp() {
                 selectedRoomId={selectedRoomId}
                 onSelectRoom={setSelectedRoomId}
                 onUpdateFloorViewOptions={updateFloorViewOptions}
-                onSetAllFloorViewOptions={setAllFloorViewOptions}
                 onAssignSurfaceComponent={assignModelSurfaceComponent}
               />
             ) : planReviewMode === "alignment" ? (
