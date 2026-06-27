@@ -1107,6 +1107,13 @@ button.toolbar-primary:hover {
   position: relative;
 }
 
+.takeoff-stage-tools button:disabled {
+  background: #f3f6f8;
+  border-color: #d5dde5;
+  color: #8a98a6;
+  cursor: not-allowed;
+}
+
 .takeoff-review-mode-group button.toolbar-primary {
   background: #e8f2fb;
   border-color: #8eb8dc;

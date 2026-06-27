@@ -3082,6 +3082,13 @@ function floorHasRenderableBandJoist(floor: TakeoffFloor) {
   return cleanPolygonPointsForRender(exteriorRingPoints(floor)).length >= 3;
 }
 
+function floorHasRenderable3DGeometry(floor: TakeoffFloor) {
+  if (floor.exteriorPolygon.length >= 3) return true;
+  if (floor.conditionedPerimeter.width > 0 && floor.conditionedPerimeter.depth > 0) return true;
+  if (floor.rooms.some((room) => cleanPolygonPointsForRender(roomCorners(room)).length >= 3 && rectArea(room) > 0.5)) return true;
+  return (floor.adjacentSpaces ?? []).some((space) => cleanPolygonPointsForRender(adjacentSpaceCorners(space)).length >= 3 && rectArea(space) > 0.5);
+}
+
 function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number) {
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
   if (ceilingInfo.ceilingType !== "vaulted") return null;
@@ -4323,6 +4330,10 @@ export function TakeoffApp() {
 
   function openPlanReviewMode(mode: PlanReviewMode) {
     if (mode === "elevation") {
+      if (!floors.some(floorHasRenderable3DGeometry)) {
+        setMessage("Trace an exterior footprint or add at least one room before opening 3D QA.");
+        return;
+      }
       setModelPreviewRevision((current) => current + 1);
     }
     setPlanReviewMode(mode);
@@ -4343,6 +4354,13 @@ export function TakeoffApp() {
   const referenceUrl = referenceUrls[floor.id] ?? "";
   const activeFloorViewOptions = floorViewOptions[floor.id] ?? defaultFloorViewOptions();
   const orderedFloors = useMemo(() => floorsByElevation(floors), [floors]);
+  const canOpen3DView = floors.some(floorHasRenderable3DGeometry);
+
+  useEffect(() => {
+    if (planReviewMode !== "elevation" || canOpen3DView) return;
+    setPlanReviewMode("plan");
+    setMessage("3D QA is available after an exterior footprint, floor area, room, or adjacent space exists.");
+  }, [canOpen3DView, planReviewMode]);
 
   function setFloor(update: React.SetStateAction<TakeoffFloor>) {
     setFloors((currentFloors) => {
@@ -8663,8 +8681,9 @@ export function TakeoffApp() {
                   </button>
                   <button
                     className={planReviewMode === "elevation" ? "toolbar-primary" : ""}
-                    data-tooltip="Show the 3D quality-assurance model."
-                    aria-label="Show the 3D quality-assurance model"
+                    data-tooltip={canOpen3DView ? "Show the 3D quality-assurance model." : "Trace an exterior footprint or add a room before opening 3D QA."}
+                    aria-label={canOpen3DView ? "Show the 3D quality-assurance model" : "3D QA unavailable until the plan has renderable geometry"}
+                    disabled={!canOpen3DView}
                     onClick={() => openPlanReviewMode("elevation")}
                   >
                     3D
