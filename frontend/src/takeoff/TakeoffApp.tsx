@@ -214,6 +214,7 @@ const adjacentSpaceKinds: Array<{ id: TakeoffAdjacentSpaceKind; label: string }>
   { id: "attic", label: "Attic" },
   { id: "crawl", label: "Crawl space" },
   { id: "covered_porch", label: "Covered porch" },
+  { id: "conditioned_addition", label: "Conditioned addition" },
   { id: "exterior", label: "Exterior" },
 ];
 const roomTileMetrics: Array<{ id: RoomTileMetric; label: string }> = [
@@ -587,6 +588,7 @@ function wallAdjacencyFromAdjacentKinds(kinds: TakeoffAdjacentSpaceKind[]): Take
   if (kinds.includes("garage")) return "garage";
   if (kinds.includes("attic")) return "attic";
   if (kinds.includes("crawl")) return "crawlspace";
+  if (kinds.includes("conditioned_addition")) return "conditioned";
   return "outside";
 }
 
@@ -2422,6 +2424,7 @@ function adjacentSpaceColor(kind: TakeoffAdjacentSpaceKind) {
     attic: { fill: "rgba(117, 91, 145, 0.18)", stroke: "#755b91" },
     crawl: { fill: "rgba(73, 119, 117, 0.18)", stroke: "#497775" },
     covered_porch: { fill: "rgba(53, 121, 107, 0.16)", stroke: "#35796b" },
+    conditioned_addition: { fill: "rgba(75, 137, 98, 0.2)", stroke: "#4b8962" },
     exterior: { fill: "rgba(93, 106, 118, 0.14)", stroke: "#5d6a76" },
   };
   return colors[kind];
@@ -4813,6 +4816,7 @@ export function TakeoffApp() {
         const adjacencyKey = String(adjacency);
         if (adjacencyKey === "outside" || adjacencyKey === "exterior") return Boolean(context.exteriorSegment) && context.adjacentKinds.length === 0;
         if (adjacency === "unknown") return context.isLoadEdge;
+        if (adjacency === "conditioned") return context.adjacentKinds.includes("conditioned_addition");
         return context.adjacentKinds.includes(adjacency as TakeoffAdjacentSpaceKind);
       }) ?? null;
     };
@@ -6762,8 +6766,72 @@ export function TakeoffApp() {
     setFloor((current) => ({ ...current, adjacentSpaces: [...(current.adjacentSpaces ?? []), space] }));
     setSelectedRoomId(space.id);
     setMessage(touchesExterior
-      ? `${space.name} added. Shared walls will be tagged in room reconciliation.`
+      ? space.kind === "conditioned_addition"
+        ? `${space.name} added. Convert it to a conditioned room when the addition shape looks right.`
+        : `${space.name} added. Shared walls will be tagged in room reconciliation.`
       : `${space.name} added. It does not appear to touch a conditioned exterior wall yet.`);
+  }
+
+  function convertAdjacentSpaceToConditionedRoom(id: string) {
+    const space = (floor.adjacentSpaces ?? []).find((entry) => entry.id === id);
+    if (!space) return;
+    const additionPoints = simplifiedRoomPolygon(adjacentSpaceCorners(space));
+    if (additionPoints.length < 3 || rectArea({ ...space, polygon: additionPoints }) <= 0.5) {
+      setMessage("Draw a larger adjacent addition before converting it to a room.");
+      return;
+    }
+
+    const exteriorPoints = exteriorRingPoints(floor);
+    if (exteriorPoints.length < 3) {
+      setMessage("Trace or define the exterior footprint before converting an addition.");
+      return;
+    }
+
+    const additionArea = polygonArea(additionPoints);
+    const existingExteriorArea = polygonArea(exteriorPoints);
+    const mergedExterior = largestClipPolygon(union(pointsToClipPolygon(exteriorPoints), pointsToClipPolygon(additionPoints)));
+    const mergedExteriorArea = mergedExterior ? clipPolygonArea(mergedExterior) : 0;
+    if (!mergedExterior || mergedExteriorArea < existingExteriorArea + additionArea - Math.max(1, additionArea * 0.03)) {
+      setMessage("The addition must touch the exterior footprint before it can be converted to conditioned space.");
+      return;
+    }
+
+    const exteriorPolygon = simplifyPolygonPoints(clipPolygonToPoints(mergedExterior), {
+      duplicateTolerance: 0.02,
+      collinearTolerance: Math.max(0.08, floor.scale.gridSnapInches / 36),
+      shortSegmentTolerance: 0,
+    });
+    const bounds = polygonBounds(additionPoints);
+    const roomName = space.kind === "conditioned_addition" ? space.name.replace(/conditioned addition/i, "Addition") : space.name;
+    const room: TakeoffRectRoom = {
+      id: nextId("room"),
+      name: roomName || `Room ${floor.rooms.length + 1}`,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      depth: bounds.depth,
+      polygon: additionPoints,
+      ceilingHeight: space.ceilingHeight ?? floor.defaultCeilingHeight ?? draftRoom.ceilingHeight,
+      ceilingType: space.ceilingType === "none" ? "flat" : (space.ceilingType ?? "flat"),
+      ceilingLowHeight: space.ceilingLowHeight,
+      ceilingPeakHeight: space.ceilingPeakHeight,
+      ceilingRidgeDirection: space.ceilingRidgeDirection,
+    };
+    const roomWithComponents = { ...room, components: defaultRoomComponents(rectArea(room)) };
+    const exteriorBounds = polygonBounds(exteriorPolygon);
+
+    setFloor((current) => ({
+      ...current,
+      rooms: [...current.rooms, roomWithComponents],
+      adjacentSpaces: (current.adjacentSpaces ?? []).filter((entry) => entry.id !== id),
+      exteriorPolygon,
+      conditionedPerimeter: {
+        width: Number(Math.max(current.conditionedPerimeter.width, exteriorBounds.x + exteriorBounds.width).toFixed(3)),
+        depth: Number(Math.max(current.conditionedPerimeter.depth, exteriorBounds.y + exteriorBounds.depth).toFixed(3)),
+      },
+    }));
+    setSelectedRoomId(roomWithComponents.id);
+    setMessage(`${roomWithComponents.name} converted to conditioned space. Review the new wall, floor, and ceiling suggestions.`);
   }
 
   function removeAdjacentSpace(id: string) {
@@ -9433,6 +9501,7 @@ export function TakeoffApp() {
                   const spaceArea = rectArea(selectedAdjacentRoom);
                   const ceilingInfo = ceilingGeometryInfo(selectedAdjacentRoom, floor.defaultCeilingHeight ?? 9);
                   const roomBounds = polygonBounds(roomCorners(selectedAdjacentRoom));
+                  const isConditionedAddition = selectedAdjacentSpace.kind === "conditioned_addition";
                   return (
                     <>
                       <div className="takeoff-workbench-head takeoff-workbench-head--adjacent">
@@ -9444,10 +9513,13 @@ export function TakeoffApp() {
                             aria-label="Adjacent space name"
                           />
                           <p className="takeoff-muted">
-                            {Math.round(spaceArea)} sf · {adjacentSpaceLabel(selectedAdjacentSpace.kind)} · unconditioned
+                            {Math.round(spaceArea)} sf · {adjacentSpaceLabel(selectedAdjacentSpace.kind)} · {isConditionedAddition ? "planned conditioned space" : "unconditioned"}
                           </p>
                         </div>
                         <div className="takeoff-workbench-actions">
+                          {isConditionedAddition && (
+                            <button className="toolbar-primary" onClick={() => convertAdjacentSpaceToConditionedRoom(selectedAdjacentSpace.id)}>Convert to Room</button>
+                          )}
                           <button onClick={() => removeAdjacentSpace(selectedAdjacentSpace.id)}>Remove Space</button>
                         </div>
                       </div>

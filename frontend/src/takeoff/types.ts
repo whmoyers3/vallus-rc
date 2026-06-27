@@ -46,7 +46,7 @@ export type TakeoffRoomComponent = {
   solarDirection?: "Shaded" | "Skylight";
 };
 
-export type TakeoffAdjacentSpaceKind = "garage" | "attic" | "crawl" | "covered_porch" | "exterior";
+export type TakeoffAdjacentSpaceKind = "garage" | "attic" | "crawl" | "covered_porch" | "conditioned_addition" | "exterior";
 export type TakeoffVerticalProfile =
   | { kind: "none" }
   | { kind: "flat"; zMin: number; zMax: number }
