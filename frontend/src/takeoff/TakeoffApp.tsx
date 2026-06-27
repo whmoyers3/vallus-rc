@@ -5,6 +5,7 @@ import polygonClipping, { type MultiPolygon, type Polygon, type Ring } from "pol
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ventilationCfmForBedrooms } from "../loadRules";
+import { allowNextUnsavedNavigation, registerUnsavedNavigationGuard } from "../navigationGuard";
 import type {
   TakeoffAdjacentSpace,
   TakeoffAdjacentSpaceKind,
@@ -350,6 +351,11 @@ type UndoSnapshot = {
   label: string;
   snapshot: string;
   activeFloorId: string;
+};
+type PendingSessionExit = {
+  label: string;
+  action: () => void | Promise<void>;
+  navigates?: boolean;
 };
 
 function defaultFloorViewOptions(): FloorViewOptions {
@@ -4577,6 +4583,7 @@ export function TakeoffApp() {
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", "decimal", false, 0, "S", makeInitialFloor(), defaultComponentSchedule)));
   const [saveLoading, setSaveLoading] = useState(false);
+  const [pendingSessionExit, setPendingSessionExit] = useState<PendingSessionExit | null>(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [openDialogLoading, setOpenDialogLoading] = useState(false);
   const [openDialogError, setOpenDialogError] = useState("");
@@ -4824,6 +4831,11 @@ export function TakeoffApp() {
   const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
   const serializedTakeoff = useMemo(() => takeoffSnapshot(persistableTakeoff), [persistableTakeoff]);
   const isDirty = takeoffId === null || serializedTakeoff !== savedSnapshot;
+  useEffect(() => registerUnsavedNavigationGuard({
+    id: "takeoff",
+    hasUnsavedChanges: () => isDirty,
+    message: "This takeoff has unsaved changes. Select OK to leave without saving, or Cancel to stay and save your work.",
+  }), [isDirty]);
   const computedFootprintArea = footprintArea(floor);
   const assignedArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
   const unassignedArea = computedFootprintArea - assignedArea;
@@ -8371,7 +8383,7 @@ export function TakeoffApp() {
     }
   }
 
-  async function saveTakeoff() {
+  async function saveTakeoff(): Promise<boolean> {
     setSaveLoading(true);
     setMessage("");
     try {
@@ -8385,11 +8397,82 @@ export function TakeoffApp() {
       setTakeoffId(data.id);
       setSavedSnapshot(serializedTakeoff);
       setMessage("Takeoff saved.");
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? `Could not save takeoff: ${error.message}` : "Could not save takeoff.");
+      return false;
     } finally {
       setSaveLoading(false);
     }
+  }
+
+  function navigateToHash(hash: string) {
+    if (hash) {
+      window.location.hash = hash;
+      return;
+    }
+    window.history.pushState(null, "", `${window.location.pathname}${window.location.search}`);
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  }
+
+  function resetToNewTakeoff() {
+    for (const url of Object.values(referenceUrls)) {
+      if (url) revokeReferenceUrl(url);
+    }
+    const initialFloor = makeInitialFloor();
+    const nextProjectName = "Takeoff V1 Draft";
+    const nextSnapshot = takeoffSnapshot(
+      makeTakeoffProject(nextProjectName, "", "decimal", false, 0, "S", initialFloor, defaultComponentSchedule),
+    );
+
+    setProjectName(nextProjectName);
+    setLocation("");
+    setMechanicalVentilation(false);
+    setVentilationCfm(0);
+    setFrontDoorFaces("S");
+    setCalcResult(null);
+    setComponentSchedule(defaultComponentSchedule);
+    setDimensionInputMode("decimal");
+    setFloors([initialFloor]);
+    setActiveFloorId(initialFloor.id);
+    setFloorViewOptions({ [initialFloor.id]: defaultFloorViewOptions() });
+    setDraftRoom({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
+    setMessage("Started a new takeoff draft.");
+    setActiveValidationTarget(null);
+    setDismissedValidationKeys(new Set());
+    setActiveSketchTarget(null);
+    setUndoStack([]);
+    setTakeoffId(null);
+    setSavedSnapshot(nextSnapshot);
+    setPendingSessionExit(null);
+    setOpenDialog(false);
+    setOpenDialogError("");
+    setComponentScheduleOpen(false);
+    setReferenceUrls({});
+    setReferenceRenderStatus("");
+    setPlanReviewMode("plan");
+    setModelPreviewRevision((current) => current + 1);
+    resetTransientFloorTools();
+  }
+
+  function requestTakeoffSessionExit(label: string, action: PendingSessionExit["action"], navigates = false) {
+    if (!isDirty) {
+      void action();
+      return;
+    }
+    setPendingSessionExit({ label, action, navigates });
+  }
+
+  async function continuePendingSessionExit(saveFirst: boolean) {
+    const pending = pendingSessionExit;
+    if (!pending) return;
+    if (saveFirst) {
+      const saved = await saveTakeoff();
+      if (!saved) return;
+    }
+    if (pending.navigates) allowNextUnsavedNavigation();
+    setPendingSessionExit(null);
+    await pending.action();
   }
 
   async function openTakeoffList() {
@@ -8704,6 +8787,7 @@ export function TakeoffApp() {
           </p>
         </div>
         <div className="takeoff-toolbar-actions">
+          <button onClick={() => requestTakeoffSessionExit("start a new takeoff", resetToNewTakeoff)}>New</button>
           <button onClick={openTakeoffList}>Open</button>
           <button onClick={undoLastTakeoffChange} disabled={undoStack.length === 0} title={undoStack[0] ? `Undo ${undoStack[0].label}` : "Nothing to undo"}>
             Undo
@@ -8717,8 +8801,26 @@ export function TakeoffApp() {
           <span className={`takeoff-save-status ${isDirty ? "takeoff-save-status--dirty" : ""}`}>
             {isDirty ? "Unsaved" : "Saved"}
           </span>
-          <a className="button" href="#">Calculator</a>
-          <a className="button" href="/#/projects">Projects</a>
+          <a
+            className="button"
+            href="#"
+            onClick={(event) => {
+              event.preventDefault();
+              requestTakeoffSessionExit("open the calculator", () => navigateToHash(""), true);
+            }}
+          >
+            Calculator
+          </a>
+          <a
+            className="button"
+            href="/#/projects"
+            onClick={(event) => {
+              event.preventDefault();
+              requestTakeoffSessionExit("open saved projects", () => navigateToHash("#/projects"), true);
+            }}
+          >
+            Projects
+          </a>
         </div>
       </header>
 
@@ -11484,6 +11586,30 @@ export function TakeoffApp() {
           </div>
         </div>
       )}
+      {pendingSessionExit && (
+        <div className="modal-backdrop open-dialog-backdrop" onClick={() => setPendingSessionExit(null)}>
+          <div className="modal takeoff-unsaved-exit-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Save before leaving?</h2>
+              <button className="modal-close" onClick={() => setPendingSessionExit(null)}>x</button>
+            </div>
+            <p className="takeoff-muted">
+              This takeoff has unsaved changes. Save before you {pendingSessionExit.label}, continue without saving, or stay on this page.
+            </p>
+            <div className="takeoff-unsaved-exit-actions">
+              <button className="toolbar-primary" onClick={() => void continuePendingSessionExit(true)} disabled={saveLoading}>
+                {saveLoading ? "Saving..." : "Save and Continue"}
+              </button>
+              <button onClick={() => void continuePendingSessionExit(false)} disabled={saveLoading}>
+                Continue Without Saving
+              </button>
+              <button onClick={() => setPendingSessionExit(null)} disabled={saveLoading}>
+                Stay Here
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {openDialog && (
         <div className="modal-backdrop open-dialog-backdrop" onClick={() => setOpenDialog(false)}>
           <div className="modal open-dialog-modal" onClick={(event) => event.stopPropagation()}>
@@ -11515,7 +11641,14 @@ export function TakeoffApp() {
                       </td>
                       <td>{row.description || "-"}</td>
                       <td>{formatTimestamp(row.updated_at) || "-"}</td>
-                      <td><button className="toolbar-primary" onClick={() => loadTakeoff(row.id)}>Open</button></td>
+                      <td>
+                        <button
+                          className="toolbar-primary"
+                          onClick={() => requestTakeoffSessionExit(`open ${row.name || "another takeoff"}`, () => loadTakeoff(row.id))}
+                        >
+                          Open
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

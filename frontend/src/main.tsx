@@ -5,6 +5,7 @@ import { TakeoffApp } from "./takeoff/TakeoffApp";
 import { RoomProfileLayoutPrototype } from "./takeoff/RoomProfileLayoutPrototype";
 import PlanSchematic from "./PlanSchematic";
 import { ventilationCfmForBedrooms } from "./loadRules";
+import { allowNextUnsavedNavigation, confirmUnsavedNavigation, registerUnsavedNavigationGuard, shouldBlockUnsavedUnload } from "./navigationGuard";
 
 type AssemblyRow = { code: string; u_value?: number | null; shgc?: number | null; label: string };
 type TypeCategory = "Wall" | "Glass" | "Ceiling" | "Floor" | "Door";
@@ -148,6 +149,11 @@ type SaveConflict = {
   conflictProject: SavedProject;   // the existing project that shares this name+description
   payload: Record<string, unknown>; // fully built payload, ready to POST/PUT
   nextVersionDescription: string;  // pre-computed "Description v.2" (or v.3, etc.)
+};
+type PendingAppSessionExit = {
+  label: string;
+  action: () => void | Promise<void>;
+  navigates?: boolean;
 };
 
 type AuthConfig = {
@@ -720,6 +726,7 @@ function App() {
   const [schematicPayload, setSchematicPayload] = useState<any | null>(null);
   const [schematicTitle, setSchematicTitle] = useState<string>("");
   const [saveLoading, setSaveLoading] = useState(false);
+  const [pendingSessionExit, setPendingSessionExit] = useState<PendingAppSessionExit | null>(null);
   const [importFidelity, setImportFidelity] = useState<{ passed: boolean | null; details: Record<string, unknown> | null } | null>(null);
   const [batteryStatus, setBatteryStatus] = useState<"none" | "eligible" | "added" | "loading">("none");
   const [showOpenMenu, setShowOpenMenu] = useState(false);
@@ -748,6 +755,35 @@ function App() {
     window.addEventListener("hashchange", handler);
     return () => window.removeEventListener("hashchange", handler);
   }, []);
+
+  useEffect(() => registerUnsavedNavigationGuard({
+    id: "calculator",
+    hasUnsavedChanges: () => isDirty,
+    message: "This calculator project has unsaved changes. Select OK to leave without saving, or Cancel to stay and save your work.",
+  }), [isDirty]);
+
+  function requestCalculatorSessionExit(label: string, action: PendingAppSessionExit["action"], navigates = false) {
+    if (!isDirty) {
+      action();
+      return;
+    }
+    setPendingSessionExit({ label, action, navigates });
+  }
+
+  async function continuePendingCalculatorSessionExit(saveFirst: boolean) {
+    const pending = pendingSessionExit;
+    if (!pending) return;
+    if (saveFirst) {
+      const saved = await handleSaveDraft();
+      if (!saved) {
+        setPendingSessionExit(null);
+        return;
+      }
+    }
+    if (pending.navigates) allowNextUnsavedNavigation();
+    setPendingSessionExit(null);
+    await pending.action();
+  }
 
   const directionOptions = useMemo(() => facingDirectionOptions(project.front_door_faces), [project.front_door_faces]);
   const calculatedLevelVolume = useMemo(() => project.rooms.reduce((sum, room) => sum + roomVolume(room), 0), [project.rooms]);
@@ -1436,6 +1472,17 @@ function App() {
   }
 
   async function loadSavedProject(id: number, row?: SavedProject) {
+    if (isDirty) {
+      setPendingSessionExit({
+        label: `open ${row?.name || row?.project_name || "a saved project"}`,
+        action: () => performLoadSavedProject(id, row),
+      });
+      return;
+    }
+    await performLoadSavedProject(id, row);
+  }
+
+  async function performLoadSavedProject(id: number, row?: SavedProject) {
     try {
       const payload: FixturePayload = await fetch(`/api/projects/${id}`).then((r) => r.json());
       const loadedDraft = draftFromPayload(payload);
@@ -1454,6 +1501,7 @@ function App() {
         setImportFidelity({ passed: resolvedRow.import_fidelity_passed, details: resolvedRow.import_fidelity_details ?? null });
       }
       checkBatteryStatus(id, resolvedRow);
+      if (window.location.hash) allowNextUnsavedNavigation();
       window.location.hash = "";
     } catch {
       setOpenDialogError("Could not load that project.");
@@ -1851,7 +1899,7 @@ function App() {
     }
   }
 
-  async function handleSaveDraft() {
+  async function handleSaveDraft(): Promise<boolean> {
     setSaveLoading(true);
     const payload = buildPayload(project, assemblies) as Record<string, unknown>;
     try {
@@ -1865,11 +1913,13 @@ function App() {
           payload,
           nextVersionDescription: computeNextVersion(project.description, allProjects),
         });
-        return;
+        return false;
       }
       await commitSave(payload, projectId);
+      return true;
     } catch (error) {
       setValidationMessage(error instanceof Error ? error.message : "Could not save draft.");
+      return false;
     } finally {
       setSaveLoading(false);
     }
@@ -2011,7 +2061,10 @@ function App() {
 
       {appHash === "#/projects" && (
         <div style={{ position: "fixed", inset: 0, zIndex: 200, overflowY: "auto", background: "#f7f8fa" }}>
-          <ProjectLibrary onOpen={(id, row) => loadSavedProject(id, row)} />
+          <ProjectLibrary
+            onOpen={(id, row) => loadSavedProject(id, row)}
+            onBack={() => requestCalculatorSessionExit("return to the editor", () => { window.location.hash = ""; }, true)}
+          />
         </div>
       )}
 
@@ -2027,8 +2080,8 @@ function App() {
               <button onClick={() => { setShowOpenMenu((v) => !v); setShowSaveMenu(false); setShowExportMenu(false); }}>Open ▾</button>
               {showOpenMenu && (
                 <div className="toolbar-menu-popover" onMouseLeave={() => setShowOpenMenu(false)}>
-                  <button onClick={() => { setShowOpenMenu(false); resetToNew(); }}>New</button>
-                  <button onClick={() => { setShowOpenMenu(false); window.location.hash = "#/projects"; }}>Open Saved…</button>
+                  <button onClick={() => { setShowOpenMenu(false); requestCalculatorSessionExit("start a new project", resetToNew); }}>New</button>
+                  <button onClick={() => { setShowOpenMenu(false); requestCalculatorSessionExit("open saved projects", () => { window.location.hash = "#/projects"; }, true); }}>Open Saved…</button>
                   <div className="toolbar-menu-divider" />
                   <button onClick={() => { setShowOpenMenu(false); setShowImportMenu(false); pdfFileInput.current?.click(); }}>Import Salas PDF</button>
                 </div>
@@ -2075,14 +2128,34 @@ function App() {
                       {exportLoading ? "Preparing…" : "Airflow Wizard…"}
                     </button>
                     {projectId ? (
-                      <a className="button" href={`/api/projects/${projectId}/airflow`} onClick={() => setShowExportMenu(false)}>Airflow Sheet (direct)</a>
+                      <a
+                        className="button"
+                        href={`/api/projects/${projectId}/airflow`}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          setShowExportMenu(false);
+                          requestCalculatorSessionExit("open the airflow sheet", () => { window.location.href = `/api/projects/${projectId}/airflow`; }, true);
+                        }}
+                      >
+                        Airflow Sheet (direct)
+                      </a>
                     ) : (
                       <button onClick={() => { setShowExportMenu(false); exportAirflowSheet(); }}>
                         {exportLoading ? "Exporting…" : "Airflow Sheet (direct)"}
                       </button>
                     )}
                     {projectId && (
-                      <a className="button" href={`/api/projects/${projectId}/report`} onClick={() => setShowExportMenu(false)}>PDF Report</a>
+                      <a
+                        className="button"
+                        href={`/api/projects/${projectId}/report`}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          setShowExportMenu(false);
+                          requestCalculatorSessionExit("open the PDF report", () => { window.location.href = `/api/projects/${projectId}/report`; }, true);
+                        }}
+                      >
+                        PDF Report
+                      </a>
                     )}
                     <button onClick={() => { setShowExportMenu(false); exportDiagnosticReport(); }}>
                       {exportLoading ? "Exporting…" : "Diagnostic Report JSON"}
@@ -2131,8 +2204,26 @@ function App() {
             {batteryStatus === "added" && (
               <button className="button battery-btn battery-btn-added" onClick={refreshBatteryCopy} title="Refresh the test battery copy from this project">↻ Battery</button>
             )}
-            <a className="button" href="/#/takeoff">Takeoff</a>
-            <a className="button" href="/#/admin">Admin</a>
+            <a
+              className="button"
+              href="/#/takeoff"
+              onClick={(event) => {
+                event.preventDefault();
+                requestCalculatorSessionExit("open takeoff", () => { window.location.hash = "#/takeoff"; }, true);
+              }}
+            >
+              Takeoff
+            </a>
+            <a
+              className="button"
+              href="/#/admin"
+              onClick={(event) => {
+                event.preventDefault();
+                requestCalculatorSessionExit("open admin", () => { window.location.hash = "#/admin"; }, true);
+              }}
+            >
+              Admin
+            </a>
           </div>
         </header>
 
@@ -2161,9 +2252,19 @@ function App() {
           <div className="mobile-action-backdrop" onClick={() => setShowMobileMenu(false)}>
             <div className="mobile-action-sheet" onClick={(e) => e.stopPropagation()}>
               <div className="mobile-action-sheet-handle" />
-              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); resetToNew(); }}>New</button>
-              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); window.location.hash = "#/projects"; }}>Open Saved…</button>
-              <a className="mobile-action-item" href="/#/takeoff" onClick={() => setShowMobileMenu(false)}>Takeoff</a>
+              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); requestCalculatorSessionExit("start a new project", resetToNew); }}>New</button>
+              <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); requestCalculatorSessionExit("open saved projects", () => { window.location.hash = "#/projects"; }, true); }}>Open Saved…</button>
+              <a
+                className="mobile-action-item"
+                href="/#/takeoff"
+                onClick={(event) => {
+                  event.preventDefault();
+                  setShowMobileMenu(false);
+                  requestCalculatorSessionExit("open takeoff", () => { window.location.hash = "#/takeoff"; }, true);
+                }}
+              >
+                Takeoff
+              </a>
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); pdfFileInput.current?.click(); }}>Import Salas PDF</button>
               <div className="mobile-action-divider" />
               <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); handleSaveDraft(); }} disabled={saveLoading}>
@@ -2175,10 +2276,34 @@ function App() {
                 <div className="mobile-action-divider" />
                 <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); startAirflowWizard(); }} disabled={exportLoading}>Airflow Wizard…</button>
                 {projectId
-                  ? <a className="mobile-action-item" href={`/api/projects/${projectId}/airflow`} onClick={() => setShowMobileMenu(false)}>Airflow Sheet</a>
+                  ? (
+                    <a
+                      className="mobile-action-item"
+                      href={`/api/projects/${projectId}/airflow`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setShowMobileMenu(false);
+                        requestCalculatorSessionExit("open the airflow sheet", () => { window.location.href = `/api/projects/${projectId}/airflow`; }, true);
+                      }}
+                    >
+                      Airflow Sheet
+                    </a>
+                  )
                   : <button className="mobile-action-item" onClick={() => { setShowMobileMenu(false); exportAirflowSheet(); }}>Airflow Sheet</button>
                 }
-                {projectId && <a className="mobile-action-item" href={`/api/projects/${projectId}/report`} onClick={() => setShowMobileMenu(false)}>PDF Report</a>}
+                {projectId && (
+                  <a
+                    className="mobile-action-item"
+                    href={`/api/projects/${projectId}/report`}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      setShowMobileMenu(false);
+                      requestCalculatorSessionExit("open the PDF report", () => { window.location.href = `/api/projects/${projectId}/report`; }, true);
+                    }}
+                  >
+                    PDF Report
+                  </a>
+                )}
               </>}
             </div>
           </div>
@@ -3059,6 +3184,31 @@ function App() {
         </div>
       )}
 
+      {pendingSessionExit && (
+        <div className="modal-backdrop" onClick={() => setPendingSessionExit(null)}>
+          <div className="modal takeoff-unsaved-exit-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Save before leaving?</h2>
+              <button className="modal-close" onClick={() => setPendingSessionExit(null)}>x</button>
+            </div>
+            <p className="takeoff-muted">
+              This calculator project has unsaved changes. Save before you {pendingSessionExit.label}, continue without saving, or stay on this page.
+            </p>
+            <div className="takeoff-unsaved-exit-actions">
+              <button className="toolbar-primary" onClick={() => void continuePendingCalculatorSessionExit(true)} disabled={saveLoading}>
+                {saveLoading ? "Saving..." : "Save and Continue"}
+              </button>
+              <button onClick={() => void continuePendingCalculatorSessionExit(false)} disabled={saveLoading}>
+                Continue Without Saving
+              </button>
+              <button onClick={() => setPendingSessionExit(null)} disabled={saveLoading}>
+                Stay Here
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Confirm modal ───────────────────────────────────────────────────── */}
       {confirmModal && (
         <div className="modal-backdrop" onClick={() => setConfirmModal(null)}>
@@ -3180,7 +3330,7 @@ function App() {
 
 const PAGE_SIZE = 50;
 
-function ProjectLibrary({ onOpen }: { onOpen: (id: number, row: SavedProject) => void }) {
+function ProjectLibrary({ onOpen, onBack }: { onOpen: (id: number, row: SavedProject) => void; onBack?: () => void }) {
   const [rows, setRows] = useState<SavedProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -3266,7 +3416,18 @@ function ProjectLibrary({ onOpen }: { onOpen: (id: number, row: SavedProject) =>
       <div className="admin-topbar">
         <div className="admin-topbar-row">
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <a href="#" className="admin-btn admin-btn-outline" style={{ textDecoration: "none" }}>← Back</a>
+            <a
+              href="#"
+              className="admin-btn admin-btn-outline"
+              style={{ textDecoration: "none" }}
+              onClick={(event) => {
+                event.preventDefault();
+                if (onBack) onBack();
+                else window.location.hash = "";
+              }}
+            >
+              ← Back
+            </a>
             <h1 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Projects</h1>
           </div>
         </div>
@@ -3677,6 +3838,7 @@ function AdminPanel() {
   const [exportLoading, setExportLoading] = useState(false);
   const [exportLabel, setExportLabel] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [pendingAdminExit, setPendingAdminExit] = useState<PendingAppSessionExit | null>(null);
 
   // Bulk import state
   const [showBulkModal, setShowBulkModal] = useState(false);
@@ -3705,6 +3867,13 @@ function AdminPanel() {
   }
 
   useEffect(() => { loadBattery(); }, []);
+
+  const adminHasUnsavedSnapshots = recomputed.size > 0;
+  useEffect(() => registerUnsavedNavigationGuard({
+    id: "admin",
+    hasUnsavedChanges: () => adminHasUnsavedSnapshots,
+    message: "Admin has recomputed snapshots that have not been saved. Select OK to leave without saving them, or Cancel to stay and save snapshots.",
+  }), [adminHasUnsavedSnapshots]);
 
   async function recomputeAll() {
     setRecomputeLoading(true);
@@ -3767,7 +3936,7 @@ function AdminPanel() {
     }
   }
 
-  async function saveSnapshots() {
+  async function saveSnapshots(): Promise<boolean> {
     setSaveLoading(true);
     const updates = Array.from(recomputed.entries())
       .filter(([, v]) => v != null)
@@ -3783,11 +3952,33 @@ function AdminPanel() {
       setRecomputed(new Map());
       setRecomputeTime(null);
       loadBattery();
+      return true;
     } catch (e) {
       setStatusMsg(e instanceof Error ? e.message : "Save failed");
+      return false;
     } finally {
       setSaveLoading(false);
     }
+  }
+
+  function requestAdminSessionExit(label: string, action: PendingAppSessionExit["action"], navigates = false) {
+    if (!adminHasUnsavedSnapshots) {
+      void action();
+      return;
+    }
+    setPendingAdminExit({ label, action, navigates });
+  }
+
+  async function continuePendingAdminExit(saveFirst: boolean) {
+    const pending = pendingAdminExit;
+    if (!pending) return;
+    if (saveFirst) {
+      const saved = await saveSnapshots();
+      if (!saved) return;
+    }
+    if (pending.navigates) allowNextUnsavedNavigation();
+    setPendingAdminExit(null);
+    await pending.action();
   }
 
   async function exportSnapshot() {
@@ -4138,7 +4329,16 @@ function AdminPanel() {
       {/* Top bar */}
       <div className="admin-topbar">
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-          <a href="/" style={{ fontSize: 13, color: "#666", textDecoration: "none" }}>← Back to editor</a>
+          <a
+            href="/"
+            style={{ fontSize: 13, color: "#666", textDecoration: "none" }}
+            onClick={(event) => {
+              event.preventDefault();
+              requestAdminSessionExit("return to the editor", () => { window.location.href = "/"; }, true);
+            }}
+          >
+            ← Back to editor
+          </a>
           <span style={{ color: "#ccc" }}>|</span>
           <span style={{ fontWeight: 700, fontSize: 16 }}>Admin — Model Diagnostics</span>
         </div>
@@ -4536,6 +4736,31 @@ function AdminPanel() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {pendingAdminExit && (
+        <div className="modal-backdrop" onClick={() => setPendingAdminExit(null)}>
+          <div className="modal takeoff-unsaved-exit-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Save before leaving?</h2>
+              <button className="modal-close" onClick={() => setPendingAdminExit(null)}>x</button>
+            </div>
+            <p className="takeoff-muted">
+              Admin has recomputed snapshots that have not been saved. Save before you {pendingAdminExit.label}, continue without saving, or stay on this page.
+            </p>
+            <div className="takeoff-unsaved-exit-actions">
+              <button className="toolbar-primary" onClick={() => void continuePendingAdminExit(true)} disabled={saveLoading}>
+                {saveLoading ? "Saving..." : "Save Snapshots and Continue"}
+              </button>
+              <button onClick={() => void continuePendingAdminExit(false)} disabled={saveLoading}>
+                Continue Without Saving
+              </button>
+              <button onClick={() => setPendingAdminExit(null)} disabled={saveLoading}>
+                Stay Here
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -5859,10 +6084,39 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
 function Root() {
   const [hash, setHash] = useState(window.location.hash);
+  const hashRef = useRef(window.location.hash);
+  const revertingHashRef = useRef(false);
   useEffect(() => {
-    const handler = () => setHash(window.location.hash);
+    const routeUrl = (hashValue: string) => `${window.location.pathname}${window.location.search}${hashValue || ""}`;
+    const handler = () => {
+      const nextHash = window.location.hash;
+      if (revertingHashRef.current) {
+        revertingHashRef.current = false;
+        hashRef.current = nextHash;
+        setHash(nextHash);
+        return;
+      }
+      if (!confirmUnsavedNavigation()) {
+        const previousHash = hashRef.current;
+        revertingHashRef.current = true;
+        window.history.pushState(null, "", routeUrl(previousHash));
+        window.dispatchEvent(new HashChangeEvent("hashchange"));
+        return;
+      }
+      hashRef.current = nextHash;
+      setHash(nextHash);
+    };
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!shouldBlockUnsavedUnload()) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
     window.addEventListener("hashchange", handler);
-    return () => window.removeEventListener("hashchange", handler);
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => {
+      window.removeEventListener("hashchange", handler);
+      window.removeEventListener("beforeunload", beforeUnload);
+    };
   }, []);
   let routed = <App />;
   if (hash === "#/admin") routed = <AdminPanel />;

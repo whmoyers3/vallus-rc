@@ -4414,6 +4414,22 @@ label {
   color: #374151;
 }
 
+.takeoff-unsaved-exit-modal {
+  max-width: 480px;
+  min-width: 420px;
+}
+
+.takeoff-unsaved-exit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.takeoff-unsaved-exit-actions button {
+  flex: 1 1 140px;
+}
+
 /* ── Responsive ───────────────────────────────────────────────── */
 @media (max-width: 1520px) {
   .room-list {
