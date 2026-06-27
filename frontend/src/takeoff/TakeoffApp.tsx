@@ -6614,7 +6614,7 @@ export function TakeoffApp() {
     return { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
   }
 
-  function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean } = {}) {
+  function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean } = {}) {
     const localThreshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
     const floorAlignmentThreshold = Math.max(3, floor.scale.gridSnapInches / 12);
     let best = { point, distance: Number.POSITIVE_INFINITY };
@@ -6631,7 +6631,7 @@ export function TakeoffApp() {
       }
     };
     const segmentSets = [
-      floor.exteriorPolygon,
+      ...(options.excludeActiveExterior ? [] : [floor.exteriorPolygon]),
       ...floor.rooms.map((room) => roomCorners(room)),
     ].filter((points) => points.length >= 2);
 
@@ -6664,8 +6664,8 @@ export function TakeoffApp() {
     };
   }
 
-  function prepareCornerPoint(point: TakeoffPoint, previous: TakeoffPoint | undefined, constrainAngle: boolean, includeFloorAlignment = false) {
-    const snapped = snapToExistingGeometry(point, { includeFloorAlignment });
+  function prepareCornerPoint(point: TakeoffPoint, previous: TakeoffPoint | undefined, constrainAngle: boolean, includeFloorAlignment = false, excludeActiveExterior = false) {
+    const snapped = snapToExistingGeometry(point, { includeFloorAlignment, excludeActiveExterior });
     return constrainAngle ? constrainPointToAngle(previous, snapped) : snapped;
   }
 
@@ -7589,7 +7589,7 @@ export function TakeoffApp() {
     }
     if (traceTool === "exterior" && !floor.perimeterLocked) {
       event.preventDefault();
-      addExteriorPoint(prepareCornerPoint(point, floor.exteriorPolygon[floor.exteriorPolygon.length - 1], event.shiftKey, true));
+      addExteriorPoint(prepareCornerPoint(point, floor.exteriorPolygon[floor.exteriorPolygon.length - 1], event.shiftKey, true, true));
       suppressNextCanvasClickRef.current = true;
     }
   }
