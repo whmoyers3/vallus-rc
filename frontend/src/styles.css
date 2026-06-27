@@ -706,6 +706,13 @@ button.toolbar-primary:hover {
   text-transform: uppercase;
 }
 
+.takeoff-floor-manager-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .takeoff-floor-tabs {
   display: grid;
   gap: 6px;

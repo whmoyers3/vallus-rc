@@ -270,6 +270,13 @@ function defaultFloorViewOptions(): FloorViewOptions {
   return { visible: true, reference: true, exterior: true, rooms: true };
 }
 
+function floorsByElevation(floors: TakeoffFloor[]) {
+  return floors
+    .map((entry, index) => ({ entry, index }))
+    .sort((first, second) => ((first.entry.elevation ?? 0) - (second.entry.elevation ?? 0)) || first.index - second.index)
+    .map(({ entry }) => entry);
+}
+
 function defaultAlignmentTransform(scale = 1): AlignmentTransform {
   return { translateX: 0, translateY: 0, rotationDeg: 0, scale };
 }
@@ -1712,6 +1719,35 @@ function overlaps(a: TakeoffRectRoom, b: TakeoffRectRoom) {
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.depth && a.y + a.depth > b.y;
 }
 
+function roomOverlapArea(a: TakeoffRectRoom, b: TakeoffRectRoom) {
+  if (a.polygon || b.polygon) {
+    return intersection(roomToClipPolygon(a), roomToClipPolygon(b))
+      .reduce((sum, polygon) => sum + polygonArea(clipPolygonToPoints(polygon)), 0);
+  }
+  const width = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+  const depth = Math.max(0, Math.min(a.y + a.depth, b.y + b.depth) - Math.max(a.y, b.y));
+  return width * depth;
+}
+
+function conditionedOverlapRatio(room: TakeoffRectRoom, otherFloor: TakeoffFloor | undefined) {
+  const roomArea = rectArea(room);
+  if (!otherFloor || roomArea <= 0.25) return 0;
+  const overlapArea = otherFloor.rooms.reduce((sum, otherRoom) => sum + roomOverlapArea(room, otherRoom), 0);
+  return clamp(overlapArea / roomArea, 0, 1);
+}
+
+function nearestFloorByElevation(floor: TakeoffFloor, floors: TakeoffFloor[], direction: "above" | "below") {
+  const currentElevation = floor.elevation ?? 0;
+  return floorsByElevation(floors).filter((entry) =>
+    entry.id !== floor.id &&
+    (direction === "above" ? (entry.elevation ?? 0) > currentElevation + 0.01 : (entry.elevation ?? 0) < currentElevation - 0.01)
+  ).sort((first, second) =>
+    direction === "above"
+      ? (first.elevation ?? 0) - (second.elevation ?? 0)
+      : (second.elevation ?? 0) - (first.elevation ?? 0)
+  )[0];
+}
+
 function roomOutsideFootprintArea(room: TakeoffRectRoom, floor: TakeoffFloor) {
   if (floor.exteriorPolygon.length >= 3) {
     const roomArea = rectArea(room);
@@ -1840,11 +1876,13 @@ function buildUnassignedRegions(floor: TakeoffFloor, cells: UnassignedCell[]): U
   return regions.sort((a, b) => b.area - a.area);
 }
 
-function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegion[] = []): TakeoffValidationIssue[] {
+function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegion[] = [], floors: TakeoffFloor[] = [floor]): TakeoffValidationIssue[] {
   const issues: TakeoffValidationIssue[] = [];
   const area = footprintArea(floor);
   const roomArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
   const defaultCeilingHeight = floor.defaultCeilingHeight ?? 9;
+  const floorBelow = nearestFloorByElevation(floor, floors, "below");
+  const floorAbove = nearestFloorByElevation(floor, floors, "above");
 
   if (floor.designGrid.width <= 0 || floor.designGrid.depth <= 0) {
     issues.push({ severity: "error", message: "Design grid dimensions are required." });
@@ -1910,6 +1948,52 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const ceilingArea = componentAreaTotal(room, "ceiling");
     const noFloorLoad = roomSurfaceNoLoad(room, "floor");
     const noCeilingLoad = roomSurfaceNoLoad(room, "ceiling");
+    const conditionedBelowRatio = conditionedOverlapRatio(room, floorBelow);
+    const conditionedAboveRatio = conditionedOverlapRatio(room, floorAbove);
+    const hasConditionedBelow = conditionedBelowRatio >= 0.5;
+    const hasConditionedAbove = conditionedAboveRatio >= 0.5;
+    if (hasConditionedBelow && room.floorType !== "none") {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} overlaps conditioned space below on ${floorBelow?.name || "the floor below"}. Review floor treatment; it likely should be no floor load instead of ${room.floorType === "framed" ? "framed/exposed floor" : "slab"}.`,
+        target: roomTarget,
+      });
+    }
+    if (!hasConditionedBelow && floorBelow && room.floorType === "none") {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} does not overlap conditioned space below on ${floorBelow.name || "the floor below"}. Review floor treatment; choose slab or framed/exposed floor as appropriate.`,
+        target: roomTarget,
+      });
+    }
+    if (!floorBelow && room.floorType === "none") {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} is on the lowest modeled floor with no floor treatment. Review floor treatment; choose slab or framed/exposed floor as appropriate.`,
+        target: roomTarget,
+      });
+    }
+    if (hasConditionedAbove && (room.ceilingType ?? "flat") !== "none") {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} overlaps conditioned space above on ${floorAbove?.name || "the floor above"}. Review ceiling treatment; it likely should be no ceiling load instead of ${(room.ceilingType ?? "flat") === "vaulted" ? "vaulted" : "flat"} ceiling.`,
+        target: roomTarget,
+      });
+    }
+    if (!hasConditionedAbove && floorAbove && (room.ceilingType ?? "flat") === "none") {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} does not overlap conditioned space above on ${floorAbove.name || "the floor above"}. Review ceiling treatment; choose flat/vaulted ceiling or attic/roof treatment as appropriate.`,
+        target: roomTarget,
+      });
+    }
+    if (!floorAbove && (room.ceilingType ?? "flat") === "none") {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} is on the highest modeled floor with no ceiling treatment. Review ceiling treatment; choose flat/vaulted ceiling or attic/roof treatment as appropriate.`,
+        target: roomTarget,
+      });
+    }
     const exteriorDirections = roomExteriorDirections(floor, room);
     const openingAreas = openingAreaByDirection(room);
     const wallAreas = wallAreaByDirection(room);
@@ -3537,9 +3621,9 @@ function validationSectionForIssue(issue: TakeoffValidationIssue): ValidationSec
   if (message.includes("glass") || message.includes("window") || message.includes("opening")) return "glass-components";
   if (message.includes("door")) return "door-components";
   if (message.includes("wall component") || message.includes("wall components") || message.includes("garage-adjacent") || message.includes("adjacent space")) return "wall-components";
-  if (message.includes("floor component") || message.includes("floor components") || message.includes("floor area")) return "floor-components";
+  if (message.includes("floor component") || message.includes("floor components") || message.includes("floor area") || message.includes("floor treatment")) return "floor-components";
   if (message.includes("ceiling geometry") || message.includes("ceiling shape") || message.includes("generated ceiling-wall") || message.includes("raised wall") || message.includes("gable")) return "ceiling-geometry";
-  if (message.includes("ceiling component") || message.includes("ceiling components") || message.includes("ceiling area")) return "ceiling-components";
+  if (message.includes("ceiling component") || message.includes("ceiling components") || message.includes("ceiling area") || message.includes("ceiling treatment")) return "ceiling-components";
   if (message.includes("merge") || message.includes("unassigned")) return "merge";
   return "room-profile";
 }
@@ -3722,6 +3806,7 @@ export function TakeoffApp() {
   const floor = floors.find((candidate) => candidate.id === activeFloorId) ?? floors[0] ?? makeInitialFloor();
   const referenceUrl = referenceUrls[floor.id] ?? "";
   const activeFloorViewOptions = floorViewOptions[floor.id] ?? defaultFloorViewOptions();
+  const orderedFloors = useMemo(() => floorsByElevation(floors), [floors]);
 
   function setFloor(update: React.SetStateAction<TakeoffFloor>) {
     setFloors((currentFloors) => {
@@ -3955,7 +4040,7 @@ export function TakeoffApp() {
   const selectedSliceRoomId = sliceRoomId && sliceRoomOptions.some((room) => room.id === sliceRoomId)
     ? sliceRoomId
     : sliceRoomOptions[0]?.id ?? "";
-  const validation = useMemo(() => buildValidation(floor, unassignedRegions), [floor, unassignedRegions]);
+  const validation = useMemo(() => buildValidation(floor, unassignedRegions, floors), [floor, floors, unassignedRegions]);
   const polygonDraftActive = roomPolygonMode && roomPolygonDraft.length > 0;
 
   useEffect(() => {
@@ -4058,11 +4143,38 @@ export function TakeoffApp() {
       bandJoistHeight: base.bandJoistHeight ?? 1,
       alignment: floors.length ? { referenceFloorId: base.id, pointPairs: [] } : undefined,
     };
-    setFloors((current) => [...current, nextFloor]);
+    setFloors((current) => floorsByElevation([...current, nextFloor]));
     setFloorViewOptions((current) => ({ ...current, [nextFloor.id]: defaultFloorViewOptions() }));
     setActiveFloorId(nextFloor.id);
     resetTransientFloorTools();
     setMessage(`${nextFloor.name} added. Upload its plan reference, then align it to an existing floor.`);
+  }
+
+  function addFloorBelow() {
+    const floorNumber = floors.length + 1;
+    const base = floor;
+    const existingNames = new Set(floors.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean));
+    const nextElevation = (base.elevation ?? 0) - (base.floorToFloorHeight ?? 10);
+    const lowestElevation = floors.reduce((minElevation, entry) => Math.min(minElevation, entry.elevation ?? 0), base.elevation ?? 0);
+    const preferredName = nextElevation < lowestElevation - 0.01 ? "Basement" : "Lower Floor";
+    const nextName = existingNames.has(preferredName.toLowerCase()) ? `${preferredName} ${floorNumber}` : preferredName;
+    const nextFloor: TakeoffFloor = {
+      ...makeInitialFloor(),
+      id: nextId("floor"),
+      name: nextName,
+      designGrid: { ...base.designGrid },
+      scale: { ...base.scale },
+      defaultCeilingHeight: base.defaultCeilingHeight,
+      elevation: nextElevation,
+      floorToFloorHeight: base.floorToFloorHeight ?? 10,
+      bandJoistHeight: base.bandJoistHeight ?? 1,
+      alignment: { referenceFloorId: base.id, pointPairs: [] },
+    };
+    setFloors((current) => floorsByElevation([...current, nextFloor]));
+    setFloorViewOptions((current) => ({ ...current, [nextFloor.id]: defaultFloorViewOptions() }));
+    setActiveFloorId(nextFloor.id);
+    resetTransientFloorTools();
+    setMessage(`${nextFloor.name} added below ${base.name || "the active floor"}. Upload its plan reference, then align it to the floor above.`);
   }
 
   function removeActiveFloor() {
@@ -7250,10 +7362,13 @@ export function TakeoffApp() {
             <div className="takeoff-floor-manager">
               <div className="takeoff-floor-manager-head">
                 <span>Floors</span>
-                <button type="button" onClick={addFloor}>Add Floor</button>
+                <div className="takeoff-floor-manager-actions">
+                  <button type="button" onClick={addFloorBelow}>Add Floor Below</button>
+                  <button type="button" onClick={addFloor}>Add Floor</button>
+                </div>
               </div>
               <div className="takeoff-floor-tabs" aria-label="Takeoff floors">
-                {floors.map((entry, index) => (
+                {orderedFloors.map((entry, index) => (
                   <button
                     key={entry.id}
                     type="button"
@@ -7592,7 +7707,7 @@ export function TakeoffApp() {
                       <button type="button" onClick={() => setAllFloorViewOptions({ visible: true })}>Show all floors</button>
                       <button type="button" onClick={() => setAllFloorViewOptions({ visible: false })}>Hide all floors</button>
                     </div>
-                    {floors.map((entry) => {
+                    {orderedFloors.map((entry) => {
                       const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
                       return (
                         <fieldset key={entry.id}>
@@ -7668,7 +7783,7 @@ export function TakeoffApp() {
                     onChange={(event) => setAlignmentReferenceFloor(event.target.value)}
                     disabled={floors.length <= 1}
                   >
-                    {floors.filter((entry) => entry.id !== floor.id).map((entry) => (
+                    {orderedFloors.filter((entry) => entry.id !== floor.id).map((entry) => (
                       <option key={entry.id} value={entry.id}>{entry.name}</option>
                     ))}
                   </select>
@@ -7698,7 +7813,7 @@ export function TakeoffApp() {
               <TakeoffModelPreview
                 key={`takeoff-model-preview-${modelPreviewRevision}`}
                 floor={floor}
-                floors={floors}
+                floors={orderedFloors}
                 activeFloorId={floor.id}
                 referenceUrl={referenceUrl}
                 referenceUrls={referenceUrls}
@@ -7790,7 +7905,7 @@ export function TakeoffApp() {
               </div>
             ) : (
             <div className="takeoff-drawing-layer" style={{ width: drawingWidth, height: drawingHeight }}>
-              {floors.filter((entry) => entry.id !== floor.id).map((entry) => {
+              {orderedFloors.filter((entry) => entry.id !== floor.id).map((entry) => {
                 const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
                 if (!options.visible) return null;
                 const otherReferenceUrl = referenceUrls[entry.id] ?? "";
@@ -7882,7 +7997,7 @@ export function TakeoffApp() {
               </defs>
               <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill={referenceUrl && activeFloorViewOptions.visible && activeFloorViewOptions.reference ? "transparent" : "#f8fafb"} />
               <rect x={offsetX} y={offsetY} width={floor.designGrid.width * scale} height={floor.designGrid.depth * scale} fill="url(#takeoff-grid-small)" stroke="#b7c4cf" strokeWidth="1.5" />
-              {floors.filter((entry) => entry.id !== floor.id).flatMap((entry) => {
+              {orderedFloors.filter((entry) => entry.id !== floor.id).flatMap((entry) => {
                 const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
                 if (!options.visible) return [];
                 const overlays: React.ReactNode[] = [];
