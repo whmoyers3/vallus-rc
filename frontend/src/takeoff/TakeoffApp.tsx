@@ -71,6 +71,12 @@ type DragState = {
   target?: MovablePointTarget;
   openingTarget?: OpeningMoveTarget;
 } | null;
+type AlignmentDragState = {
+  pointerId: number;
+  start: TakeoffPoint;
+  current: TakeoffPoint;
+  initialTransform: AlignmentTransform;
+} | null;
 type OpeningPlacement = {
   surface: "glass" | "door";
   assembly: string;
@@ -264,8 +270,8 @@ function defaultFloorViewOptions(): FloorViewOptions {
   return { visible: true, reference: true, exterior: true, rooms: true };
 }
 
-function defaultAlignmentTransform(): AlignmentTransform {
-  return { translateX: 0, translateY: 0, rotationDeg: 0, scale: 1 };
+function defaultAlignmentTransform(scale = 1): AlignmentTransform {
+  return { translateX: 0, translateY: 0, rotationDeg: 0, scale };
 }
 
 function makeInitialFloor(): TakeoffFloor {
@@ -3454,6 +3460,7 @@ export function TakeoffApp() {
   const [referenceUrls, setReferenceUrls] = useState<Record<string, string>>({});
   const [referenceRenderStatus, setReferenceRenderStatus] = useState("");
   const [dragState, setDragState] = useState<DragState>(null);
+  const [alignmentDrag, setAlignmentDrag] = useState<AlignmentDragState>(null);
   const [roomDrawMode, setRoomDrawMode] = useState(false);
   const [roomPolygonMode, setRoomPolygonMode] = useState(false);
   const [roomPolygonDraft, setRoomPolygonDraft] = useState<TakeoffPoint[]>([]);
@@ -3669,12 +3676,12 @@ export function TakeoffApp() {
   const alignmentReferenceUrl = alignmentReferenceFloor ? referenceUrls[alignmentReferenceFloor.id] ?? "" : "";
   const alignmentReferenceDisplay = alignmentReferenceFloor ? referenceDisplayRectForFloor(alignmentReferenceFloor) : null;
   const alignmentPointPairs = floor.alignment?.pointPairs ?? [];
-  const alignmentTransform = { ...defaultAlignmentTransform(), ...(floor.alignment?.transform ?? {}) };
-  const canAlignCurrentReference = floors.length > 1 && Boolean(floor.alignment?.referenceFloorId && floor.reference && alignmentReferenceFloor?.reference);
-  const alignmentAutoScale = alignmentReferenceDisplay && referenceDisplay.width > 0
-    ? alignmentReferenceDisplay.width / referenceDisplay.width
+  const alignmentInheritedScale = alignmentReferenceFloor
+    ? Math.max(0.25, Math.min(4, (alignmentReferenceFloor.calibration.appliedFactor || 1) / (floor.calibration.appliedFactor || 1)))
     : 1;
-  const alignmentEffectiveScale = alignmentAutoScale * alignmentTransform.scale;
+  const alignmentTransform = { ...defaultAlignmentTransform(alignmentInheritedScale), ...(floor.alignment?.transform ?? {}) };
+  const canAlignCurrentReference = floors.length > 1 && Boolean(floor.alignment?.referenceFloorId && floor.reference && alignmentReferenceFloor?.reference);
+  const alignmentEffectiveScale = alignmentTransform.scale;
   const unassignedCells = useMemo(() => {
     if (floor.exteriorPolygon.length < 3 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
@@ -3794,6 +3801,7 @@ export function TakeoffApp() {
     setEditingOpeningTarget(null);
     setSelectedOpening(null);
     setDragState(null);
+    setAlignmentDrag(null);
     setWorkflowStep("trace");
     setTraceTool("select");
     setZoom(1);
@@ -3834,24 +3842,62 @@ export function TakeoffApp() {
     setMessage(`${nextFloor.name} added. Upload its plan reference, then align it to an existing floor.`);
   }
 
+  function removeActiveFloor() {
+    if (floors.length <= 1) {
+      setMessage("At least one floor must remain in the takeoff.");
+      return;
+    }
+    const target = floor;
+    const confirmed = window.confirm(`Remove ${target.name || "this floor"}? This will delete its PDF reference, rooms, exterior trace, and alignment points. This cannot be undone.`);
+    if (!confirmed) return;
+
+    if (referenceUrls[target.id]) revokeReferenceUrl(referenceUrls[target.id]);
+    const remainingFloors = floors
+      .filter((entry) => entry.id !== target.id)
+      .map((entry) => (
+        entry.alignment?.referenceFloorId === target.id
+          ? { ...entry, alignment: undefined }
+          : entry
+      ));
+    const nextActiveFloor = remainingFloors[0] ?? makeInitialFloor();
+    setFloors(remainingFloors.length ? remainingFloors : [nextActiveFloor]);
+    setFloorViewOptions((current) => {
+      const next = { ...current };
+      delete next[target.id];
+      return next;
+    });
+    setReferenceUrls((current) => {
+      const next = { ...current };
+      delete next[target.id];
+      return next;
+    });
+    setActiveFloorId(nextActiveFloor.id);
+    resetTransientFloorTools();
+    setMessage(`${target.name || "Floor"} removed.`);
+  }
+
   function setAlignmentReferenceFloor(referenceFloorId: string) {
+    const nextReferenceFloor = floors.find((entry) => entry.id === referenceFloorId);
+    const nextInheritedScale = nextReferenceFloor
+      ? Math.max(0.25, Math.min(4, (nextReferenceFloor.calibration.appliedFactor || 1) / (floor.calibration.appliedFactor || 1)))
+      : 1;
     updateFloor({
       alignment: {
         ...(floor.alignment ?? {}),
         referenceFloorId,
         pointPairs: floor.alignment?.pointPairs ?? [],
-        transform: floor.alignment?.transform ?? defaultAlignmentTransform(),
+        transform: defaultAlignmentTransform(nextInheritedScale),
       },
     });
   }
 
   function updateAlignmentTransform(patch: Partial<AlignmentTransform>) {
     setFloor((current) => {
-      const currentTransform = { ...defaultAlignmentTransform(), ...(current.alignment?.transform ?? {}) };
+      const currentTransform = { ...defaultAlignmentTransform(alignmentInheritedScale), ...(current.alignment?.transform ?? {}) };
       const nextTransform = {
         ...currentTransform,
         ...patch,
-        scale: Math.min(1.25, Math.max(0.75, patch.scale ?? currentTransform.scale)),
+        scale: Math.min(4, Math.max(0.25, patch.scale ?? currentTransform.scale)),
       };
       return {
         ...current,
@@ -3877,8 +3923,8 @@ export function TakeoffApp() {
   }
 
   function resetAlignmentTransform() {
-    updateAlignmentTransform(defaultAlignmentTransform());
-    setMessage("Alignment preview reset.");
+    updateAlignmentTransform(defaultAlignmentTransform(alignmentInheritedScale));
+    setMessage("Alignment preview reset to the selected reference floor scale.");
   }
 
   function alignmentLocalToReferencePoint(point: TakeoffPoint) {
@@ -5779,16 +5825,26 @@ export function TakeoffApp() {
       setMessage("Crop area is too small. Drag around the plan area you want to keep.");
       return;
     }
+    if (canAlignCurrentReference) {
+      setFloor((current) => ({
+        ...current,
+        reference: current.reference ? { ...current.reference, crop } : current.reference,
+        alignment: {
+          ...(current.alignment ?? {}),
+          referenceFloorId: current.alignment?.referenceFloorId ?? alignmentReferenceFloor?.id,
+          pointPairs: current.alignment?.pointPairs ?? [],
+          transform: defaultAlignmentTransform(alignmentInheritedScale),
+        },
+      }));
+      setWorkflowStep("trace");
+      setPlanReviewMode("alignment");
+      setMessage("Crop applied. The active floor inherited the selected reference floor scale; use the alignment controls for fine adjustment.");
+      return;
+    }
     setFloor((current) => ({
       ...current,
       reference: current.reference ? { ...current.reference, crop } : current.reference,
     }));
-    if (canAlignCurrentReference) {
-      setWorkflowStep("trace");
-      setPlanReviewMode("alignment");
-      setMessage("Crop applied. Use the alignment controls to slide and scale this floor over the reference floor.");
-      return;
-    }
     setWorkflowStep("calibrate");
     setMessage("Crop applied. Add known dimension lines to set plan scale.");
   }
@@ -5816,7 +5872,7 @@ export function TakeoffApp() {
     }
     setWorkflowStep("trace");
     setPlanReviewMode("alignment");
-    setMessage("Use the alignment controls to slide and scale this floor over the reference floor.");
+    setMessage("Use the alignment controls to slide and scale the active floor over the selected reference floor.");
   }
 
   function availablePolygonFromRect(rect: PlanRect, ignoredRoomId?: string) {
@@ -6442,7 +6498,45 @@ export function TakeoffApp() {
       addSameScreenAlignmentPair(point);
       return;
     }
-    setMessage("Hold Shift and click a matching overlaid point to record an alignment pair.");
+    if (!canAlignCurrentReference) {
+      setMessage("Upload references for the active floor and a reference floor before dragging alignment.");
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setAlignmentDrag({ pointerId: event.pointerId, start: point, current: point, initialTransform: alignmentTransform });
+    setMessage("Drag the active floor plan to align it. Hold Shift and click to record a matched point.");
+  }
+
+  function handleAlignmentPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (!alignmentDrag) return;
+    const point = pointFromCanvasEvent(event);
+    if (!point) return;
+    const nextTransform = {
+      ...alignmentDrag.initialTransform,
+      translateX: Number((alignmentDrag.initialTransform.translateX + point.x - alignmentDrag.start.x).toFixed(3)),
+      translateY: Number((alignmentDrag.initialTransform.translateY + point.y - alignmentDrag.start.y).toFixed(3)),
+    };
+    setAlignmentDrag((current) => current ? { ...current, current: point } : current);
+    setFloor((current) => ({
+      ...current,
+      alignment: {
+        ...(current.alignment ?? {}),
+        referenceFloorId: current.alignment?.referenceFloorId ?? alignmentReferenceFloor?.id,
+        pointPairs: current.alignment?.pointPairs ?? [],
+        transform: nextTransform,
+      },
+    }));
+  }
+
+  function handleAlignmentPointerUp(event: React.PointerEvent<SVGSVGElement>) {
+    if (!alignmentDrag) return;
+    if (event.currentTarget.hasPointerCapture(alignmentDrag.pointerId)) {
+      event.currentTarget.releasePointerCapture(alignmentDrag.pointerId);
+    }
+    const moved = lineLength({ start: alignmentDrag.start, end: alignmentDrag.current }) > 0.05;
+    setAlignmentDrag(null);
+    setMessage(moved ? "Active floor plan moved." : "Hold Shift and click a matching overlaid point to record an alignment pair.");
   }
 
   function addRoom() {
@@ -6781,7 +6875,7 @@ export function TakeoffApp() {
         tone: "active" as const,
         title: "Crop mode enabled",
         body: canAlignCurrentReference
-          ? "Crop to the portion of the page containing the floor plan you wish to align. You do not need sizing markers; scale was set from the first floor plan."
+          ? "Crop to the portion of the page containing the floor plan you wish to align. You do not need sizing markers; scale is inherited from the selected reference floor."
           : "Select the area of the plan you want to focus on. Include the measurement markers you plan to use for scaling, and leave a little space around the floor plan.",
       };
     }
@@ -6936,6 +7030,7 @@ export function TakeoffApp() {
                   </button>
                 ))}
               </div>
+              <button type="button" onClick={removeActiveFloor} disabled={floors.length <= 1}>Remove Active Floor</button>
             </div>
             <label>
               Active floor name
@@ -7331,10 +7426,7 @@ export function TakeoffApp() {
               </div>
               <div className="takeoff-alignment-scale-controls" aria-label="Scale active floor reference">
                 <button type="button" onClick={() => stepAlignmentScale(-0.005)} aria-label="Scale active plan down">-</button>
-                <span>
-                  {Math.round(alignmentTransform.scale * 1000) / 10}%
-                  {Math.abs(alignmentAutoScale - 1) > 0.001 ? ` fit ${Math.round(alignmentAutoScale * 1000) / 10}%` : ""}
-                </span>
+                <span>{Math.round(alignmentTransform.scale * 1000) / 10}%</span>
                 <button type="button" onClick={() => stepAlignmentScale(0.005)} aria-label="Scale active plan up">+</button>
                 <button type="button" onClick={resetAlignmentTransform}>Reset</button>
               </div>
@@ -7412,7 +7504,11 @@ export function TakeoffApp() {
                   height={drawingHeight}
                   role="img"
                   aria-label="Floor alignment reference overlay"
+                  style={{ cursor: alignmentDrag ? "grabbing" : "grab" }}
                   onPointerDown={handleAlignmentPointerDown}
+                  onPointerMove={handleAlignmentPointerMove}
+                  onPointerUp={handleAlignmentPointerUp}
+                  onPointerCancel={handleAlignmentPointerUp}
                 >
                   <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill="transparent" />
                   <rect x={offsetX} y={offsetY} width={floor.designGrid.width * scale} height={floor.designGrid.depth * scale} fill="none" stroke="#9aa8b4" strokeDasharray="5 5" strokeWidth="1.5" />
@@ -7426,7 +7522,7 @@ export function TakeoffApp() {
                 </svg>
                 <div className="takeoff-alignment-empty">
                   {floors.length <= 1
-                    ? "Add a second floor to use the alignment overlay."
+                    ? "Add another floor to use the alignment overlay."
                     : !alignmentReferenceUrl || !referenceUrl
                       ? "Open or upload references for both floors before recording point pairs."
                       : "Move and scale the active floor until corners line up, then hold Shift and click a matched point."}
@@ -7472,6 +7568,12 @@ export function TakeoffApp() {
                     top: offsetY + referenceDisplay.y * scale,
                     width: referenceDisplay.width * scale,
                     height: referenceDisplay.depth * scale,
+                    ...(floor.alignment?.transform
+                      ? {
+                          transform: `translate(${alignmentTransform.translateX * scale}px, ${alignmentTransform.translateY * scale}px) scale(${alignmentEffectiveScale})`,
+                          transformOrigin: "top left",
+                        }
+                      : {}),
                   }}
                 >
                   {floor.reference.kind === "image" ? (
