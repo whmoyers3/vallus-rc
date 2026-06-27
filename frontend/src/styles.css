@@ -1408,6 +1408,7 @@ button.toolbar-primary:hover {
   border: 1px solid #d9e0e6;
   border-radius: 6px;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   left: 40px;
   padding: 8px;
@@ -1430,6 +1431,25 @@ button.toolbar-primary:hover {
   color: #405060;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.takeoff-alignment-adjustments {
+  align-items: center;
+  border-left: 1px solid #d9e0e6;
+  display: flex;
+  gap: 4px;
+  padding-left: 8px;
+}
+
+.takeoff-alignment-adjustments button {
+  font-size: 11px;
+  min-height: 26px;
+  padding: 4px 7px;
+}
+
+.takeoff-alignment-adjustments span {
+  min-width: 44px;
+  text-align: center;
 }
 
 .takeoff-reference-layer--alignment-base {

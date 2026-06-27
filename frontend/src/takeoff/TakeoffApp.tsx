@@ -253,8 +253,19 @@ type PdfPreviewResult = {
   heightPx: number;
 };
 
+type AlignmentTransform = {
+  translateX: number;
+  translateY: number;
+  rotationDeg: number;
+  scale: number;
+};
+
 function defaultFloorViewOptions(): FloorViewOptions {
   return { visible: true, reference: true, exterior: true, rooms: true };
+}
+
+function defaultAlignmentTransform(): AlignmentTransform {
+  return { translateX: 0, translateY: 0, rotationDeg: 0, scale: 1 };
 }
 
 function makeInitialFloor(): TakeoffFloor {
@@ -3658,6 +3669,8 @@ export function TakeoffApp() {
   const alignmentReferenceUrl = alignmentReferenceFloor ? referenceUrls[alignmentReferenceFloor.id] ?? "" : "";
   const alignmentReferenceDisplay = alignmentReferenceFloor ? referenceDisplayRectForFloor(alignmentReferenceFloor) : null;
   const alignmentPointPairs = floor.alignment?.pointPairs ?? [];
+  const alignmentTransform = { ...defaultAlignmentTransform(), ...(floor.alignment?.transform ?? {}) };
+  const canAlignCurrentReference = floors.length > 1 && Boolean(floor.alignment?.referenceFloorId && floor.reference && alignmentReferenceFloor?.reference);
   const unassignedCells = useMemo(() => {
     if (floor.exteriorPolygon.length < 3 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
@@ -3823,8 +3836,62 @@ export function TakeoffApp() {
         ...(floor.alignment ?? {}),
         referenceFloorId,
         pointPairs: floor.alignment?.pointPairs ?? [],
+        transform: floor.alignment?.transform ?? defaultAlignmentTransform(),
       },
     });
+  }
+
+  function updateAlignmentTransform(patch: Partial<AlignmentTransform>) {
+    setFloor((current) => {
+      const currentTransform = { ...defaultAlignmentTransform(), ...(current.alignment?.transform ?? {}) };
+      const nextTransform = {
+        ...currentTransform,
+        ...patch,
+        scale: Math.min(1.25, Math.max(0.75, patch.scale ?? currentTransform.scale)),
+      };
+      return {
+        ...current,
+        alignment: {
+          ...(current.alignment ?? {}),
+          referenceFloorId: current.alignment?.referenceFloorId ?? alignmentReferenceFloor?.id,
+          pointPairs: current.alignment?.pointPairs ?? [],
+          transform: nextTransform,
+        },
+      };
+    });
+  }
+
+  function nudgeAlignment(deltaX: number, deltaY: number) {
+    updateAlignmentTransform({
+      translateX: Number((alignmentTransform.translateX + deltaX).toFixed(3)),
+      translateY: Number((alignmentTransform.translateY + deltaY).toFixed(3)),
+    });
+  }
+
+  function stepAlignmentScale(delta: number) {
+    updateAlignmentTransform({ scale: Number((alignmentTransform.scale + delta).toFixed(4)) });
+  }
+
+  function resetAlignmentTransform() {
+    updateAlignmentTransform(defaultAlignmentTransform());
+    setMessage("Alignment preview reset.");
+  }
+
+  function alignmentLocalToReferencePoint(point: TakeoffPoint) {
+    const display = referenceDisplayRectForFloor(floor);
+    return {
+      x: display.x + alignmentTransform.translateX + (point.x - display.x) * alignmentTransform.scale,
+      y: display.y + alignmentTransform.translateY + (point.y - display.y) * alignmentTransform.scale,
+    };
+  }
+
+  function alignmentReferenceToLocalPoint(point: TakeoffPoint) {
+    const display = referenceDisplayRectForFloor(floor);
+    const nextScale = Math.max(0.0001, alignmentTransform.scale);
+    return {
+      x: Number(Math.min(floor.designGrid.width, Math.max(0, display.x + (point.x - display.x - alignmentTransform.translateX) / nextScale)).toFixed(3)),
+      y: Number(Math.min(floor.designGrid.depth, Math.max(0, display.y + (point.y - display.y - alignmentTransform.translateY) / nextScale)).toFixed(3)),
+    };
   }
 
   function addSameScreenAlignmentPair(point: TakeoffPoint) {
@@ -3832,12 +3899,13 @@ export function TakeoffApp() {
       setMessage("Add another floor before recording alignment points.");
       return;
     }
-    const pair = { id: nextId("align-pair"), reference: point, local: point };
+    const pair = { id: nextId("align-pair"), reference: point, local: alignmentReferenceToLocalPoint(point) };
     setFloor((current) => ({
       ...current,
       alignment: {
         ...(current.alignment ?? {}),
         referenceFloorId: current.alignment?.referenceFloorId ?? alignmentReferenceFloor.id,
+        transform: current.alignment?.transform ?? alignmentTransform,
         pointPairs: [...(current.alignment?.pointPairs ?? []), pair],
       },
     }));
@@ -3851,7 +3919,7 @@ export function TakeoffApp() {
         ...(current.alignment ?? {}),
         pointPairs: [],
         residualFt: undefined,
-        transform: undefined,
+        transform: defaultAlignmentTransform(),
       },
     }));
     setMessage("Alignment point pairs cleared.");
@@ -5697,6 +5765,12 @@ export function TakeoffApp() {
       ...current,
       reference: current.reference ? { ...current.reference, crop } : current.reference,
     }));
+    if (canAlignCurrentReference) {
+      setWorkflowStep("trace");
+      setPlanReviewMode("alignment");
+      setMessage("Crop applied. Use the alignment controls to slide and scale this floor over the reference floor.");
+      return;
+    }
     setWorkflowStep("calibrate");
     setMessage("Crop applied. Add known dimension lines to set plan scale.");
   }
@@ -5710,6 +5784,21 @@ export function TakeoffApp() {
     }));
     setWorkflowStep("crop");
     setMessage("Crop reset. Drag a new crop around the plan area.");
+  }
+
+  function useWholeReference() {
+    const fullCrop = { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
+    applyCrop(fullCrop);
+  }
+
+  function continueToAlignment() {
+    if (!canAlignCurrentReference) {
+      setMessage("Upload references for this floor and another floor before opening alignment.");
+      return;
+    }
+    setWorkflowStep("trace");
+    setPlanReviewMode("alignment");
+    setMessage("Use the alignment controls to slide and scale this floor over the reference floor.");
   }
 
   function availablePolygonFromRect(rect: PlanRect, ignoredRoomId?: string) {
@@ -6535,7 +6624,7 @@ export function TakeoffApp() {
   async function handleReference(file: File | undefined) {
     if (!file) return;
     const kind = file.type.includes("pdf") ? "pdf" : "image";
-    const shouldOpenAlignmentView = floors.length > 1 && Boolean(alignmentReferenceFloor?.reference);
+    const shouldCropForAlignment = floors.length > 1 && Boolean(alignmentReferenceFloor?.reference);
     if (file.size > takeoffReferenceMaxBytes) {
       setMessage("Plan reference files are capped at 7 MB. Please upload a single extracted floor-plan page.");
       return;
@@ -6581,11 +6670,8 @@ export function TakeoffApp() {
       setMessage(error instanceof Error ? error.message : "Could not store the plan reference.");
       return;
     }
-    setWorkflowStep(shouldOpenAlignmentView ? "trace" : "crop");
-    if (shouldOpenAlignmentView) {
-      setPlanReviewMode("alignment");
-      setMessage("Reference uploaded. Use the clean overlay to confirm alignment points between floors.");
-    }
+    setWorkflowStep("crop");
+    setPlanReviewMode("plan");
     setTraceTool("select");
     setRoomDrawMode(false);
     setAdjacentDrawMode(false);
@@ -6598,7 +6684,11 @@ export function TakeoffApp() {
     setDragState(null);
     setRightPanelOpen(false);
     setZoom(1);
-    setMessage("Reference uploaded. Drag a crop around the plan area, then continue to scale setup.");
+    setMessage(
+      shouldCropForAlignment
+        ? "Reference uploaded. Crop this floor plan, or use the whole page, then continue to alignment."
+        : "Reference uploaded. Drag a crop around the plan area, then continue to scale setup.",
+    );
   }
 
   useEffect(() => {
@@ -6652,20 +6742,11 @@ export function TakeoffApp() {
         body: "Start with a recognizable plan name so saved takeoffs and exports are easy to identify.",
       };
     }
-    if (!location.trim()) {
-      return {
-        tone: "warning" as const,
-        title: "Select a location",
-        body: "Location is required before calculation. Most Atlanta-area plans can start with Atlanta, GA.",
-        actionLabel: "Use Atlanta, GA",
-        action: () => setLocation("Atlanta, GA"),
-      };
-    }
     if (planReviewMode === "alignment") {
       return {
         tone: "neutral" as const,
         title: "Alignment overlay",
-        body: "Only plan references are shown here. Hold Shift and click a matching overlaid point to record a point pair.",
+        body: "Only plan references are shown here. Move and scale this floor over the reference floor, then hold Shift and click a matched point.",
       };
     }
     if (!floor.reference) {
@@ -6681,7 +6762,18 @@ export function TakeoffApp() {
       return {
         tone: "active" as const,
         title: "Crop mode enabled",
-        body: "Select the area of the plan you want to focus on. Include the measurement markers you plan to use for scaling, and leave a little space around the floor plan.",
+        body: canAlignCurrentReference
+          ? "Crop to the portion of the page containing the floor plan you wish to align. You do not need sizing markers; scale was set from the first floor plan."
+          : "Select the area of the plan you want to focus on. Include the measurement markers you plan to use for scaling, and leave a little space around the floor plan.",
+      };
+    }
+    if (!location.trim()) {
+      return {
+        tone: "warning" as const,
+        title: "Select a location",
+        body: "Location is required before calculation. Most Atlanta-area plans can start with Atlanta, GA.",
+        actionLabel: "Use Atlanta, GA",
+        action: () => setLocation("Atlanta, GA"),
       };
     }
     if (scaleReady) {
@@ -6942,17 +7034,33 @@ export function TakeoffApp() {
 
           {floor.reference && (
             <details className="takeoff-panel takeoff-left-details" open={leftSectionsOpen.scale} onToggle={(event) => setLeftSectionOpen("scale", event.currentTarget.open)}>
-              <summary>Import Scale</summary>
-              <p className="takeoff-muted">
-                {workflowStep === "calibrate" ? "Click two endpoints for known dimensions on the preview." : "Scale setup complete."}
+            <summary>Import Scale</summary>
+            <p className="takeoff-muted">
+                {canAlignCurrentReference
+                  ? "Crop to the floor plan you wish to align. Sizing markers are not needed for upper-floor alignment."
+                  : workflowStep === "calibrate"
+                    ? "Click two endpoints for known dimensions on the preview."
+                    : "Scale setup complete."}
               </p>
               <div className="takeoff-form-actions">
                 <button className={workflowStep === "crop" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("crop"); setRoomDrawMode(false); }}>Crop</button>
-                <button className={workflowStep === "calibrate" && calibrationOrientation === "horizontal" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("horizontal"); }}>Horizontal</button>
-                <button className={workflowStep === "calibrate" && calibrationOrientation === "vertical" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("vertical"); }}>Vertical</button>
-                <button className={workflowStep === "calibrate" && calibrationOrientation === "any" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("any"); }}>Any</button>
+                <button onClick={useWholeReference}>Use Whole Page</button>
+                {canAlignCurrentReference && <button className="toolbar-primary" onClick={continueToAlignment}>Align Floors</button>}
+                {!canAlignCurrentReference && (
+                  <>
+                    <button className={workflowStep === "calibrate" && calibrationOrientation === "horizontal" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("horizontal"); }}>Horizontal</button>
+                    <button className={workflowStep === "calibrate" && calibrationOrientation === "vertical" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("vertical"); }}>Vertical</button>
+                    <button className={workflowStep === "calibrate" && calibrationOrientation === "any" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("calibrate"); setCalibrationOrientation("any"); }}>Any</button>
+                  </>
+                )}
               </div>
-              {workflowStep === "crop" && <p className="takeoff-note">Drag a rectangle around only the plan and visible dimensions. This removes title blocks and border clutter before scaling.</p>}
+              {workflowStep === "crop" && (
+                <p className="takeoff-note">
+                  {canAlignCurrentReference
+                    ? "Drag a rectangle around only the floor plan you want to align, or use the whole page if the plan is already clean."
+                    : "Drag a rectangle around only the plan and visible dimensions. This removes title blocks and border clutter before scaling."}
+                </p>
+              )}
               {calibrationStart && <p className="takeoff-note">First point is set. Click the other end of the known dimension.</p>}
               {floor.calibration.lines.length > 0 && !scaleLinesVisible && (
                 <p className="takeoff-muted">{floor.calibration.lines.length} scale guide line{floor.calibration.lines.length === 1 ? "" : "s"} hidden but retained.</p>
@@ -7080,7 +7188,7 @@ export function TakeoffApp() {
         <section className="takeoff-stage-panel">
           <div className="takeoff-stage-head">
             <div>
-              <h2>{workflowStep === "crop" ? "Crop Plan Reference" : workflowStep === "calibrate" ? "Import Scale Setup" : "Plan Grid"}</h2>
+              <h2>{planReviewMode === "alignment" ? "Align Floor References" : workflowStep === "crop" ? "Crop Plan Reference" : workflowStep === "calibrate" ? "Import Scale Setup" : "Plan Grid"}</h2>
               <p>
                 {Math.round(computedFootprintArea)} sf conditioned footprint · {floor.designGrid.width} x {floor.designGrid.depth} ft design grid
                 {scaleApplied ? ` · scale ${floor.calibration.appliedFactor}x` : ""}
@@ -7211,6 +7319,16 @@ export function TakeoffApp() {
                   </label>
                   <span>{alignmentPointPairs.length} point pair{alignmentPointPairs.length === 1 ? "" : "s"}</span>
                   <button type="button" onClick={clearAlignmentPairs} disabled={alignmentPointPairs.length === 0}>Clear Pairs</button>
+                  <div className="takeoff-alignment-adjustments" aria-label="Active floor alignment controls">
+                    <button type="button" onClick={() => nudgeAlignment(0, -0.25)}>Up</button>
+                    <button type="button" onClick={() => nudgeAlignment(-0.25, 0)}>Left</button>
+                    <button type="button" onClick={() => nudgeAlignment(0.25, 0)}>Right</button>
+                    <button type="button" onClick={() => nudgeAlignment(0, 0.25)}>Down</button>
+                    <button type="button" onClick={() => stepAlignmentScale(-0.005)}>-</button>
+                    <span>{Math.round(alignmentTransform.scale * 1000) / 10}%</span>
+                    <button type="button" onClick={() => stepAlignmentScale(0.005)}>+</button>
+                    <button type="button" onClick={resetAlignmentTransform}>Reset</button>
+                  </div>
                 </div>
                 {alignmentReferenceFloor && alignmentReferenceUrl && alignmentReferenceDisplay && alignmentReferenceFloor.reference && (
                   <div
@@ -7242,6 +7360,8 @@ export function TakeoffApp() {
                       top: offsetY + referenceDisplay.y * scale,
                       width: referenceDisplay.width * scale,
                       height: referenceDisplay.depth * scale,
+                      transform: `translate(${alignmentTransform.translateX * scale}px, ${alignmentTransform.translateY * scale}px) scale(${alignmentTransform.scale})`,
+                      transformOrigin: "top left",
                     }}
                   >
                     <img
@@ -7269,8 +7389,9 @@ export function TakeoffApp() {
                   <rect x={offsetX} y={offsetY} width={floor.designGrid.width * scale} height={floor.designGrid.depth * scale} fill="none" stroke="#9aa8b4" strokeDasharray="5 5" strokeWidth="1.5" />
                   {alignmentPointPairs.map((pair, index) => (
                     <g key={pair.id}>
-                      <circle cx={offsetX + pair.local.x * scale} cy={offsetY + pair.local.y * scale} r="7" fill="#ffffff" stroke="#2f7a4f" strokeWidth="2" />
-                      <text x={offsetX + pair.local.x * scale + 10} y={offsetY + pair.local.y * scale - 10} fontSize="12" fill="#204b2b">{index + 1}</text>
+                      <circle cx={offsetX + pair.reference.x * scale} cy={offsetY + pair.reference.y * scale} r="7" fill="#ffffff" stroke="#2f7a4f" strokeWidth="2" />
+                      <circle cx={offsetX + alignmentLocalToReferencePoint(pair.local).x * scale} cy={offsetY + alignmentLocalToReferencePoint(pair.local).y * scale} r="4" fill="#2f7a4f" stroke="#ffffff" strokeWidth="1.5" />
+                      <text x={offsetX + pair.reference.x * scale + 10} y={offsetY + pair.reference.y * scale - 10} fontSize="12" fill="#204b2b">{index + 1}</text>
                     </g>
                   ))}
                 </svg>
@@ -7279,7 +7400,7 @@ export function TakeoffApp() {
                     ? "Add a second floor to use the alignment overlay."
                     : !alignmentReferenceUrl || !referenceUrl
                       ? "Open or upload references for both floors before recording point pairs."
-                      : "Hold Shift and click a matching overlaid point to record one pair."}
+                      : "Move and scale the active floor until corners line up, then hold Shift and click a matched point."}
                 </div>
               </div>
             ) : (
