@@ -186,6 +186,8 @@ export type TakeoffFloor = {
     renderScale?: number;
     previewWidthPx?: number;
     previewHeightPx?: number;
+    rotationDeg?: number;
+    mirroredX?: boolean;
     crop?: {
       x: number;
       y: number;

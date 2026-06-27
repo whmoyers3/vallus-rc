@@ -1522,6 +1522,13 @@ button.toolbar-primary:hover {
   width: 100%;
 }
 
+.takeoff-reference-image-viewport {
+  height: 100%;
+  overflow: hidden;
+  position: absolute;
+  width: 100%;
+}
+
 .takeoff-alignment-layer {
   background: #f8fafb;
 }

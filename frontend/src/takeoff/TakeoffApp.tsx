@@ -188,10 +188,26 @@ type UnassignedRegion = {
   adjacentRoomIds: string[];
 };
 
-function referenceDisplayRectForFloor(floor: TakeoffFloor): PlanRect {
+function normalizeReferenceRotation(rotationDeg?: number) {
+  return ((Math.round((rotationDeg ?? 0) / 90) * 90) % 360 + 360) % 360;
+}
+
+function referenceFullCropForFloor(floor: TakeoffFloor, rotationDeg = normalizeReferenceRotation(floor.reference?.rotationDeg)): PlanRect {
   const gridWidth = Math.max(floor.designGrid.width, 1);
   const gridDepth = Math.max(floor.designGrid.depth, 1);
-  const crop = floor.reference?.crop ?? { x: 0, y: 0, width: gridWidth, depth: gridDepth };
+  return rotationDeg === 90 || rotationDeg === 270
+    ? { x: 0, y: 0, width: gridDepth, depth: gridWidth }
+    : { x: 0, y: 0, width: gridWidth, depth: gridDepth };
+}
+
+function referenceCropForFloor(floor: TakeoffFloor) {
+  return floor.reference?.crop ?? referenceFullCropForFloor(floor);
+}
+
+function referenceDisplayRectForFloor(floor: TakeoffFloor, cropOverride?: PlanRect): PlanRect {
+  const gridWidth = Math.max(floor.designGrid.width, 1);
+  const gridDepth = Math.max(floor.designGrid.depth, 1);
+  const crop = cropOverride ?? referenceCropForFloor(floor);
   const cropAspect = Math.max(crop.width, 1) / Math.max(crop.depth, 1);
   const gridAspect = gridWidth / gridDepth;
 
@@ -208,6 +224,39 @@ function referenceDisplayRectForFloor(floor: TakeoffFloor): PlanRect {
         width: gridDepth * cropAspect,
         depth: gridDepth,
       };
+}
+
+function referenceImageStyles(floor: TakeoffFloor, crop = referenceCropForFloor(floor)) {
+  const rotationDeg = normalizeReferenceRotation(floor.reference?.rotationDeg);
+  const mirroredX = Boolean(floor.reference?.mirroredX);
+  const fullCrop = referenceFullCropForFloor(floor, rotationDeg);
+  const sourceWidth = Math.max(floor.designGrid.width, 1);
+  const sourceDepth = Math.max(floor.designGrid.depth, 1);
+  return {
+    viewportStyle: {
+      left: `${-(crop.x / Math.max(crop.width, 1)) * 100}%`,
+      top: `${-(crop.y / Math.max(crop.depth, 1)) * 100}%`,
+      width: `${(fullCrop.width / Math.max(crop.width, 1)) * 100}%`,
+      height: `${(fullCrop.depth / Math.max(crop.depth, 1)) * 100}%`,
+    } satisfies React.CSSProperties,
+    imageStyle: {
+      left: "50%",
+      top: "50%",
+      width: `${(sourceWidth / Math.max(fullCrop.width, 1)) * 100}%`,
+      height: `${(sourceDepth / Math.max(fullCrop.depth, 1)) * 100}%`,
+      transform: `translate(-50%, -50%) rotate(${rotationDeg}deg) scaleX(${mirroredX ? -1 : 1})`,
+      transformOrigin: "center center",
+    } satisfies React.CSSProperties,
+  };
+}
+
+function ReferencePlanImage({ floor, src, alt, crop }: { floor: TakeoffFloor; src: string; alt: string; crop?: PlanRect }) {
+  const { viewportStyle, imageStyle } = referenceImageStyles(floor, crop);
+  return (
+    <div className="takeoff-reference-image-viewport" style={viewportStyle}>
+      <img src={src} alt={alt} style={imageStyle} />
+    </div>
+  );
 }
 
 const adjacentSpaceKinds: Array<{ id: TakeoffAdjacentSpaceKind; label: string }> = [
@@ -335,6 +384,134 @@ function rotateCompass(direction: string | undefined, steps: number): string | u
   const index = COMPASS_ORDER.indexOf(direction as (typeof COMPASS_ORDER)[number]);
   if (index < 0) return direction;
   return COMPASS_ORDER[(index + steps) % COMPASS_ORDER.length];
+}
+
+function mirrorCompassHorizontal(direction: string | undefined): string | undefined {
+  const mirrored: Record<(typeof COMPASS_ORDER)[number], (typeof COMPASS_ORDER)[number]> = {
+    N: "N",
+    NE: "NW",
+    E: "W",
+    SE: "SW",
+    S: "S",
+    SW: "SE",
+    W: "E",
+    NW: "NE",
+  };
+  return mirrored[direction as (typeof COMPASS_ORDER)[number]] ?? direction;
+}
+
+function mirrorPointHorizontal(point: TakeoffPoint | undefined, axisWidth: number): TakeoffPoint | undefined {
+  if (!point) return undefined;
+  return { x: Number((axisWidth - point.x).toFixed(3)), y: point.y };
+}
+
+function mirrorPointsHorizontal(points: TakeoffPoint[] | undefined, axisWidth: number) {
+  return points?.map((point) => mirrorPointHorizontal(point, axisWidth)!).reverse();
+}
+
+function mirrorRectHorizontal<T extends { x: number; width: number }>(rect: T, axisWidth: number): T {
+  return { ...rect, x: Number((axisWidth - rect.x - rect.width).toFixed(3)) };
+}
+
+function mirrorReferenceCropHorizontal(floor: TakeoffFloor, crop: PlanRect | undefined) {
+  if (!crop) return crop;
+  const fullCrop = referenceFullCropForFloor(floor);
+  return {
+    ...crop,
+    x: Number((fullCrop.width - crop.x - crop.width).toFixed(3)),
+  };
+}
+
+function mirrorVerticalProfileHorizontal(profile: TakeoffVerticalProfile | undefined): TakeoffVerticalProfile | undefined {
+  if (!profile || profile.kind !== "shed") return profile;
+  return { ...profile, lowSide: mirrorCompassHorizontal(profile.lowSide) as typeof profile.lowSide };
+}
+
+function mirrorComponentHorizontal(component: TakeoffRoomComponent, axisWidth: number): TakeoffRoomComponent {
+  return {
+    ...component,
+    direction: mirrorCompassHorizontal(component.direction) as TakeoffRoomComponent["direction"],
+    placement: mirrorPointHorizontal(component.placement, axisWidth),
+    panelPolygons: component.panelPolygons?.map((panel) => mirrorPointsHorizontal(panel, axisWidth) ?? panel),
+  };
+}
+
+function mirrorRoomHorizontal(room: TakeoffRectRoom, axisWidth: number): TakeoffRectRoom {
+  const polygon = mirrorPointsHorizontal(room.polygon, axisWidth);
+  const bounds = polygon && polygon.length >= 3 ? polygonBounds(polygon) : mirrorRectHorizontal(room, axisWidth);
+  return {
+    ...room,
+    ...bounds,
+    polygon,
+    ceilingRidgeDirection: room.ceilingRidgeDirection,
+    components: roomComponents(room).map((component) => mirrorComponentHorizontal(component, axisWidth)),
+  };
+}
+
+function mirrorAdjacentSpaceHorizontal(space: TakeoffAdjacentSpace, axisWidth: number): TakeoffAdjacentSpace {
+  const polygon = mirrorPointsHorizontal(space.polygon, axisWidth);
+  const bounds = polygon && polygon.length >= 3 ? polygonBounds(polygon) : mirrorRectHorizontal(space, axisWidth);
+  return {
+    ...space,
+    ...bounds,
+    polygon,
+    verticalProfile: mirrorVerticalProfileHorizontal(space.verticalProfile),
+  };
+}
+
+function mirrorScaleLineHorizontal(line: TakeoffScaleLine, axisWidth: number): TakeoffScaleLine {
+  return {
+    ...line,
+    start: mirrorPointHorizontal(line.start, axisWidth)!,
+    end: mirrorPointHorizontal(line.end, axisWidth)!,
+    sourceStart: mirrorPointHorizontal(line.sourceStart, axisWidth),
+    sourceEnd: mirrorPointHorizontal(line.sourceEnd, axisWidth),
+  };
+}
+
+function mirrorFloorHorizontal(floor: TakeoffFloor): TakeoffFloor {
+  const axisWidth = Math.max(floor.designGrid.width, 1);
+  const mirroredReference = floor.reference
+    ? {
+        ...floor.reference,
+        mirroredX: !floor.reference.mirroredX,
+        crop: mirrorReferenceCropHorizontal(floor, floor.reference.crop),
+      }
+    : floor.reference;
+  return {
+    ...floor,
+    exteriorPolygon: mirrorPointsHorizontal(floor.exteriorPolygon, axisWidth) ?? [],
+    rooms: floor.rooms.map((room) => mirrorRoomHorizontal(room, axisWidth)),
+    adjacentSpaces: floor.adjacentSpaces?.map((space) => mirrorAdjacentSpaceHorizontal(space, axisWidth)),
+    calibration: {
+      ...floor.calibration,
+      lines: floor.calibration.lines.map((line) => mirrorScaleLineHorizontal(line, axisWidth)),
+      areaConfirmed: false,
+    },
+    alignment: floor.alignment
+      ? {
+          ...floor.alignment,
+          transform: floor.alignment.transform
+            ? {
+                ...floor.alignment.transform,
+                translateX: -floor.alignment.transform.translateX,
+                rotationDeg: -floor.alignment.transform.rotationDeg,
+              }
+            : floor.alignment.transform,
+          pointPairs: floor.alignment.pointPairs?.map((pair) => ({
+            ...pair,
+            local: mirrorPointHorizontal(pair.local, axisWidth)!,
+            reference: mirrorPointHorizontal(pair.reference, axisWidth)!,
+          })),
+        }
+      : floor.alignment,
+    reference: mirroredReference,
+    referencePoints: floor.referencePoints?.map((point) => ({
+      ...point,
+      local: mirrorPointHorizontal(point.local, axisWidth)!,
+      world: mirrorPointHorizontal(point.world, axisWidth),
+    })),
+  };
 }
 
 function closeRing(points: TakeoffPoint[]): Ring {
@@ -2809,8 +2986,15 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
   if (crop && crop.width > 0 && crop.depth > 0) {
-    texture.repeat.set(crop.width / width, crop.depth / depth);
-    texture.offset.set(crop.x / width, 1 - (crop.y + crop.depth) / depth);
+    const repeatX = crop.width / width;
+    const repeatY = crop.depth / depth;
+    if (floor.reference?.mirroredX) {
+      texture.repeat.set(-repeatX, repeatY);
+      texture.offset.set((crop.x + crop.width) / width, 1 - (crop.y + crop.depth) / depth);
+    } else {
+      texture.repeat.set(repeatX, repeatY);
+      texture.offset.set(crop.x / width, 1 - (crop.y + crop.depth) / depth);
+    }
   } else {
     texture.repeat.set(1, 1);
     texture.offset.set(0, 0);
@@ -4281,8 +4465,11 @@ export function TakeoffApp() {
     ? ((computedFootprintArea - floor.calibration.expectedArea) / floor.calibration.expectedArea) * 100
     : 0;
   const activeDragRect = dragState ? rectFromPoints(dragState.start, dragState.current) : null;
-  const visibleCrop = floor.reference?.crop ?? { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
-  const referenceDisplay = referenceDisplayRectForFloor(floor);
+  const fullReferenceCrop = referenceFullCropForFloor(floor);
+  const visibleCrop = workflowStep === "crop" ? fullReferenceCrop : referenceCropForFloor(floor);
+  const referenceDisplay = referenceDisplayRectForFloor(floor, visibleCrop);
+  const referenceRotationLocked = floor.rooms.length > 0 || floor.exteriorPolygon.length > 0 || (floor.adjacentSpaces ?? []).length > 0 || Boolean(floor.calibration.confirmed);
+  const canRotateReferenceInCrop = workflowStep === "crop" && Boolean(floor.reference) && !referenceRotationLocked;
   const alignmentReferenceFloor = (floor.alignment?.referenceFloorId
     ? floors.find((entry) => entry.id === floor.alignment?.referenceFloorId)
     : floors.find((entry) => entry.id !== floor.id)) ?? null;
@@ -6647,15 +6834,69 @@ export function TakeoffApp() {
     setMessage("Footprint area confirmed. You can continue assigning rooms.");
   }
 
+  function referenceCropFromDisplayedRect(floorForCrop: TakeoffFloor, displayedRect: PlanRect) {
+    const fullCrop = referenceFullCropForFloor(floorForCrop);
+    const display = referenceDisplayRectForFloor(floorForCrop, fullCrop);
+    const clampToFull = (value: number, max: number) => Math.min(max, Math.max(0, value));
+    const x1 = clampToFull(((displayedRect.x - display.x) / Math.max(display.width, 1)) * fullCrop.width, fullCrop.width);
+    const y1 = clampToFull(((displayedRect.y - display.y) / Math.max(display.depth, 1)) * fullCrop.depth, fullCrop.depth);
+    const x2 = clampToFull(((displayedRect.x + displayedRect.width - display.x) / Math.max(display.width, 1)) * fullCrop.width, fullCrop.width);
+    const y2 = clampToFull(((displayedRect.y + displayedRect.depth - display.y) / Math.max(display.depth, 1)) * fullCrop.depth, fullCrop.depth);
+    return {
+      x: Number(Math.min(x1, x2).toFixed(3)),
+      y: Number(Math.min(y1, y2).toFixed(3)),
+      width: Number(Math.abs(x2 - x1).toFixed(3)),
+      depth: Number(Math.abs(y2 - y1).toFixed(3)),
+    };
+  }
+
+  function rotateReferenceBeforeCrop() {
+    if (!floor.reference) return;
+    if (referenceRotationLocked) {
+      setMessage("Reference rotation is locked after crop/scale, tracing, rooms, or adjacent spaces have been started.");
+      return;
+    }
+    setFloor((current) => {
+      if (!current.reference) return current;
+      const nextRotation = normalizeReferenceRotation((current.reference.rotationDeg ?? 0) + 90);
+      const fullCrop = referenceFullCropForFloor({ ...current, reference: { ...current.reference, rotationDeg: nextRotation } }, nextRotation);
+      return {
+        ...current,
+        reference: {
+          ...current.reference,
+          rotationDeg: nextRotation,
+          crop: fullCrop,
+        },
+        calibration: { ...current.calibration, lines: [], linesVisible: true, confirmed: false, appliedFactor: 1, areaConfirmed: false },
+        alignment: current.alignment
+          ? { ...current.alignment, pointPairs: [], transform: defaultAlignmentTransform() }
+          : current.alignment,
+      };
+    });
+    setWorkflowStep("crop");
+    setMessage("Reference rotated 90 degrees. Review the orientation, then crop or proceed without cropping.");
+  }
+
+  function mirrorModeledPlan() {
+    const ok = window.confirm(
+      "Mirror the modeled plan left/right?\n\nThis mirrors every floor, the imported plan PDFs, rooms, adjacent spaces, openings, and directional load components. Compass directions such as E/W will be remapped. This can be reversed by running Mirror Model again, but review surfaces and validations afterward."
+    );
+    if (!ok) return;
+    setFloors((current) => current.map(mirrorFloorHorizontal));
+    setFrontDoorFaces((current) => mirrorCompassHorizontal(current) as typeof current);
+    setMessage("Modeled plan mirrored left/right. Review validation flags, wall directions, glass exposure, and plan PDF alignment.");
+  }
+
   function applyCrop(crop: { x: number; y: number; width: number; depth: number }) {
-    if (crop.width < 1 || crop.depth < 1) {
+    const referenceCrop = referenceCropFromDisplayedRect(floor, crop);
+    if (referenceCrop.width < 1 || referenceCrop.depth < 1) {
       setMessage("Crop area is too small. Drag around the plan area you want to keep.");
       return;
     }
     if (canAlignCurrentReference) {
       setFloor((current) => ({
         ...current,
-        reference: current.reference ? { ...current.reference, crop } : current.reference,
+        reference: current.reference ? { ...current.reference, crop: referenceCrop } : current.reference,
         calibration: {
           ...current.calibration,
           lines: [],
@@ -6678,7 +6919,7 @@ export function TakeoffApp() {
     }
     setFloor((current) => ({
       ...current,
-      reference: current.reference ? { ...current.reference, crop } : current.reference,
+      reference: current.reference ? { ...current.reference, crop: referenceCrop } : current.reference,
     }));
     setWorkflowStep("calibrate");
     setMessage("Crop applied. Add known dimension lines to set plan scale.");
@@ -6688,7 +6929,7 @@ export function TakeoffApp() {
     setFloor((current) => ({
       ...current,
       reference: current.reference
-        ? { ...current.reference, crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth } }
+        ? { ...current.reference, crop: referenceFullCropForFloor(current) }
         : current.reference,
     }));
     setWorkflowStep("crop");
@@ -6697,7 +6938,7 @@ export function TakeoffApp() {
   }
 
   function proceedWithoutCropping() {
-    const fullCrop = { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
+    const fullCrop = referenceDisplayRectForFloor(floor, referenceFullCropForFloor(floor));
     applyCrop(fullCrop);
   }
 
@@ -7728,6 +7969,8 @@ export function TakeoffApp() {
           renderScale: pdfPreview?.scale,
           previewWidthPx: pdfPreview?.widthPx,
           previewHeightPx: pdfPreview?.heightPx,
+          rotationDeg: 0,
+          mirroredX: false,
           crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth },
         },
         calibration: { lines: [], linesVisible: true, confirmed: false, appliedFactor: 1, areaConfirmed: false },
@@ -7844,8 +8087,8 @@ export function TakeoffApp() {
         tone: "active" as const,
         title: "Crop mode enabled",
         body: canAlignCurrentReference
-          ? "Crop to the portion of the page containing the floor plan you wish to align, or proceed without cropping. You do not need sizing markers; scale is inherited from the selected reference floor."
-          : "Select the area of the plan you want to focus on, or proceed without cropping. Include measurement markers if you crop before scaling.",
+          ? "Rotate the page if needed, then crop to the floor plan you wish to align or proceed without cropping. You do not need sizing markers; scale is inherited from the selected reference floor."
+          : "Rotate the page if needed, then crop to the plan area or proceed without cropping. Include measurement markers if you crop before scaling.",
       };
     }
     if (!location.trim()) {
@@ -8178,6 +8421,7 @@ export function TakeoffApp() {
                       : "Scale setup complete."}
               </p>
               <div className="takeoff-form-actions">
+                {canRotateReferenceInCrop && <button onClick={rotateReferenceBeforeCrop}>Rotate PDF</button>}
                 <button className={workflowStep === "crop" ? "toolbar-primary" : ""} onClick={enterCropMode}>Crop</button>
                 <button onClick={proceedWithoutCropping}>Proceed without cropping</button>
                 <button onClick={clearCrop}>Undo Crop</button>
@@ -8193,8 +8437,8 @@ export function TakeoffApp() {
               {workflowStep === "crop" && (
                 <p className="takeoff-note">
                   {canAlignCurrentReference
-                    ? "Drag a rectangle around only the floor plan you want to align, or use the whole page if the plan is already clean."
-                    : "Drag a rectangle around only the plan and visible dimensions. This removes title blocks and border clutter before scaling."}
+                    ? "Rotate first if needed. Then drag a rectangle around only the floor plan you want to align, or use the whole page if the plan is already clean."
+                    : "Rotate first if needed. Then drag a rectangle around only the plan and visible dimensions. This removes title blocks and border clutter before scaling."}
                 </p>
               )}
               {calibrationStart && <p className="takeoff-note">First point is set. Click the other end of the known dimension.</p>}
@@ -8323,6 +8567,11 @@ export function TakeoffApp() {
               </label>
               <button onClick={seedRectangularExterior}>Copy to Trace</button>
             </div>
+            <div className="takeoff-advanced-subsection">
+              <h3>Advanced model transform</h3>
+              <p className="takeoff-muted">Mirror a completed repeated-builder plan left/right. This remaps E/W directions, openings, surfaces, adjacent spaces, and plan PDFs.</p>
+              <button type="button" onClick={mirrorModeledPlan}>Mirror Model</button>
+            </div>
             <p className="takeoff-muted">Advanced controls for the drafting canvas, snapping, and fallback footprint before an exterior trace exists.</p>
           </details>
           </>
@@ -8403,6 +8652,7 @@ export function TakeoffApp() {
               )}
               {workflowStep === "crop" && floor.reference && (
                 <div className="takeoff-mode-guidance-actions">
+                  {canRotateReferenceInCrop && <button type="button" onClick={rotateReferenceBeforeCrop}>Rotate PDF</button>}
                   <button type="button" className="toolbar-primary" onClick={enterCropMode}>Crop</button>
                   <button type="button" onClick={proceedWithoutCropping}>Proceed without cropping</button>
                 </div>
@@ -8473,16 +8723,7 @@ export function TakeoffApp() {
                       height: alignmentReferenceDisplay.depth * scale,
                     }}
                   >
-                    <img
-                      src={alignmentReferenceUrl}
-                      alt={`${alignmentReferenceFloor.name} reference`}
-                      style={{
-                        left: `${-((alignmentReferenceFloor.reference.crop?.x ?? 0) / Math.max(alignmentReferenceFloor.reference.crop?.width ?? alignmentReferenceFloor.designGrid.width, 1)) * 100}%`,
-                        top: `${-((alignmentReferenceFloor.reference.crop?.y ?? 0) / Math.max(alignmentReferenceFloor.reference.crop?.depth ?? alignmentReferenceFloor.designGrid.depth, 1)) * 100}%`,
-                        width: `${(alignmentReferenceFloor.designGrid.width / Math.max(alignmentReferenceFloor.reference.crop?.width ?? alignmentReferenceFloor.designGrid.width, 1)) * 100}%`,
-                        height: `${(alignmentReferenceFloor.designGrid.depth / Math.max(alignmentReferenceFloor.reference.crop?.depth ?? alignmentReferenceFloor.designGrid.depth, 1)) * 100}%`,
-                      }}
-                    />
+                    <ReferencePlanImage floor={alignmentReferenceFloor} src={alignmentReferenceUrl} alt={`${alignmentReferenceFloor.name} reference`} />
                   </div>
                 )}
                 {referenceUrl && floor.reference && (
@@ -8497,16 +8738,7 @@ export function TakeoffApp() {
                       transformOrigin: "top left",
                     }}
                   >
-                    <img
-                      src={referenceUrl}
-                      alt={`${floor.name} reference`}
-                      style={{
-                        left: `${-(visibleCrop.x / Math.max(visibleCrop.width, 1)) * 100}%`,
-                        top: `${-(visibleCrop.y / Math.max(visibleCrop.depth, 1)) * 100}%`,
-                        width: `${(floor.designGrid.width / Math.max(visibleCrop.width, 1)) * 100}%`,
-                        height: `${(floor.designGrid.depth / Math.max(visibleCrop.depth, 1)) * 100}%`,
-                      }}
-                    />
+                    <ReferencePlanImage floor={floor} src={referenceUrl} alt={`${floor.name} reference`} crop={visibleCrop} />
                   </div>
                 )}
                 <svg
@@ -8547,7 +8779,6 @@ export function TakeoffApp() {
                 if (!options.visible) return null;
                 const otherReferenceUrl = referenceUrls[entry.id] ?? "";
                 const otherReferenceDisplay = referenceDisplayRectForFloor(entry);
-                const otherCrop = entry.reference?.crop ?? { x: 0, y: 0, width: entry.designGrid.width, depth: entry.designGrid.depth };
                 return options.reference && otherReferenceUrl && entry.reference ? (
                   <div
                     key={`reference-${entry.id}`}
@@ -8559,16 +8790,7 @@ export function TakeoffApp() {
                       height: otherReferenceDisplay.depth * scale,
                     }}
                   >
-                    <img
-                      src={otherReferenceUrl}
-                      alt={`${entry.name} reference`}
-                      style={{
-                        left: `${-(otherCrop.x / Math.max(otherCrop.width, 1)) * 100}%`,
-                        top: `${-(otherCrop.y / Math.max(otherCrop.depth, 1)) * 100}%`,
-                        width: `${(entry.designGrid.width / Math.max(otherCrop.width, 1)) * 100}%`,
-                        height: `${(entry.designGrid.depth / Math.max(otherCrop.depth, 1)) * 100}%`,
-                      }}
-                    />
+                    <ReferencePlanImage floor={entry} src={otherReferenceUrl} alt={`${entry.name} reference`} />
                   </div>
                 ) : null;
               })}
@@ -8586,31 +8808,14 @@ export function TakeoffApp() {
                           transformOrigin: "top left",
                         }
                       : {}),
-                  }}
-                >
-                  {floor.reference.kind === "image" ? (
-                    <img
-                      src={referenceUrl}
-                      alt={`${floor.reference.filename} reference`}
-                      style={{
-                        left: `${-(visibleCrop.x / Math.max(visibleCrop.width, 1)) * 100}%`,
-                        top: `${-(visibleCrop.y / Math.max(visibleCrop.depth, 1)) * 100}%`,
-                        width: `${(floor.designGrid.width / Math.max(visibleCrop.width, 1)) * 100}%`,
-                        height: `${(floor.designGrid.depth / Math.max(visibleCrop.depth, 1)) * 100}%`,
-                      }}
-                    />
-                  ) : (
-                    <img
-                      src={referenceUrl}
-                      alt={`${floor.reference.filename} rendered PDF reference`}
-                      style={{
-                        left: `${-(visibleCrop.x / Math.max(visibleCrop.width, 1)) * 100}%`,
-                        top: `${-(visibleCrop.y / Math.max(visibleCrop.depth, 1)) * 100}%`,
-                        width: `${(floor.designGrid.width / Math.max(visibleCrop.width, 1)) * 100}%`,
-                        height: `${(floor.designGrid.depth / Math.max(visibleCrop.depth, 1)) * 100}%`,
-                      }}
-                    />
-                  )}
+                    }}
+                  >
+                  <ReferencePlanImage
+                    floor={floor}
+                    src={referenceUrl}
+                    alt={floor.reference.kind === "image" ? `${floor.reference.filename} reference` : `${floor.reference.filename} rendered PDF reference`}
+                    crop={visibleCrop}
+                  />
                 </div>
               )}
             <svg
