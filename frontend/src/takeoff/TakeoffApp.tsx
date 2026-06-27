@@ -192,12 +192,41 @@ function normalizeReferenceRotation(rotationDeg?: number) {
   return ((Math.round((rotationDeg ?? 0) / 90) * 90) % 360 + 360) % 360;
 }
 
-function referenceFullCropForFloor(floor: TakeoffFloor, rotationDeg = normalizeReferenceRotation(floor.reference?.rotationDeg)): PlanRect {
+function referenceSourceSizeForFloor(floor: TakeoffFloor) {
   const gridWidth = Math.max(floor.designGrid.width, 1);
   const gridDepth = Math.max(floor.designGrid.depth, 1);
+  const previewWidth = Math.max(0, floor.reference?.previewWidthPx ?? 0);
+  const previewHeight = Math.max(0, floor.reference?.previewHeightPx ?? 0);
+  const nativeAspect = previewWidth > 0 && previewHeight > 0
+    ? previewWidth / previewHeight
+    : gridWidth / gridDepth;
+  const aspect = Number.isFinite(nativeAspect) && nativeAspect > 0 ? nativeAspect : gridWidth / gridDepth;
+  const gridAspect = gridWidth / gridDepth;
+  return aspect >= gridAspect
+    ? { width: gridWidth, depth: gridWidth / aspect }
+    : { width: gridDepth * aspect, depth: gridDepth };
+}
+
+function designGridForReferenceUpload(floor: TakeoffFloor, reference: NonNullable<TakeoffFloor["reference"]>) {
+  const currentWidth = Math.max(floor.designGrid.width, 1);
+  const currentDepth = Math.max(floor.designGrid.depth, 1);
+  const previewWidth = Math.max(0, reference.previewWidthPx ?? 0);
+  const previewHeight = Math.max(0, reference.previewHeightPx ?? 0);
+  if (previewWidth <= 0 || previewHeight <= 0) return floor.designGrid;
+  const hasModeledGeometry = floor.exteriorPolygon.length > 0 || floor.rooms.length > 0 || (floor.adjacentSpaces ?? []).length > 0;
+  if (hasModeledGeometry) return floor.designGrid;
+  const aspect = previewWidth / previewHeight;
+  const longSide = Math.max(currentWidth, currentDepth);
+  return aspect >= 1
+    ? { width: Number(longSide.toFixed(3)), depth: Number((longSide / aspect).toFixed(3)) }
+    : { width: Number((longSide * aspect).toFixed(3)), depth: Number(longSide.toFixed(3)) };
+}
+
+function referenceFullCropForFloor(floor: TakeoffFloor, rotationDeg = normalizeReferenceRotation(floor.reference?.rotationDeg)): PlanRect {
+  const source = referenceSourceSizeForFloor(floor);
   return rotationDeg === 90 || rotationDeg === 270
-    ? { x: 0, y: 0, width: gridDepth, depth: gridWidth }
-    : { x: 0, y: 0, width: gridWidth, depth: gridDepth };
+    ? { x: 0, y: 0, width: source.depth, depth: source.width }
+    : { x: 0, y: 0, width: source.width, depth: source.depth };
 }
 
 function referenceCropForFloor(floor: TakeoffFloor) {
@@ -230,8 +259,7 @@ function referenceImageStyles(floor: TakeoffFloor, crop = referenceCropForFloor(
   const rotationDeg = normalizeReferenceRotation(floor.reference?.rotationDeg);
   const mirroredX = Boolean(floor.reference?.mirroredX);
   const fullCrop = referenceFullCropForFloor(floor, rotationDeg);
-  const sourceWidth = Math.max(floor.designGrid.width, 1);
-  const sourceDepth = Math.max(floor.designGrid.depth, 1);
+  const source = referenceSourceSizeForFloor(floor);
   return {
     viewportStyle: {
       left: `${-(crop.x / Math.max(crop.width, 1)) * 100}%`,
@@ -242,8 +270,8 @@ function referenceImageStyles(floor: TakeoffFloor, crop = referenceCropForFloor(
     imageStyle: {
       left: "50%",
       top: "50%",
-      width: `${(sourceWidth / Math.max(fullCrop.width, 1)) * 100}%`,
-      height: `${(sourceDepth / Math.max(fullCrop.depth, 1)) * 100}%`,
+      width: `${(source.width / Math.max(fullCrop.width, 1)) * 100}%`,
+      height: `${(source.depth / Math.max(fullCrop.depth, 1)) * 100}%`,
       transform: `translate(-50%, -50%) rotate(${rotationDeg}deg) scaleX(${mirroredX ? -1 : 1})`,
       transformOrigin: "center center",
     } satisfies React.CSSProperties,
@@ -2983,8 +3011,9 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
 }
 
 function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, texture: THREE.Texture) {
-  const width = Math.max(floor.designGrid.width, 1);
-  const depth = Math.max(floor.designGrid.depth, 1);
+  const source = referenceSourceSizeForFloor(floor);
+  const width = Math.max(source.width, 1);
+  const depth = Math.max(source.depth, 1);
   const crop = floor.reference?.crop;
   const display = referenceDisplayRectForFloor(floor);
   const transform = { ...defaultAlignmentTransform(), ...(floor.alignment?.transform ?? {}) };
@@ -7963,11 +7992,8 @@ export function TakeoffApp() {
       const asset = await uploadReferenceAsset(file, floor.id);
       setReferenceUrl(nextReferenceUrl);
       setReferenceRenderStatus(`Stored ${asset.filename} (${formatBytes(asset.size_bytes)}).`);
-      setFloor((current) => ({
-        ...current,
-        authoringMode: kind === "pdf" ? "pdf_trace" : "image_trace",
-        coordinateSpace: "world_feet",
-        reference: {
+      setFloor((current) => {
+        const nextReference: NonNullable<TakeoffFloor["reference"]> = {
           filename: file.name,
           kind,
           assetId: asset.id,
@@ -7982,12 +8008,23 @@ export function TakeoffApp() {
           previewHeightPx: pdfPreview?.heightPx,
           rotationDeg: 0,
           mirroredX: false,
-          crop: { x: 0, y: 0, width: current.designGrid.width, depth: current.designGrid.depth },
-        },
-        calibration: { lines: [], linesVisible: true, confirmed: false, appliedFactor: 1, areaConfirmed: false },
-        exteriorPolygon: [],
-        perimeterLocked: false,
-      }));
+        };
+        const nextDesignGrid = designGridForReferenceUpload(current, nextReference);
+        const floorWithReference = { ...current, designGrid: nextDesignGrid, reference: nextReference };
+        return {
+          ...current,
+          authoringMode: kind === "pdf" ? "pdf_trace" : "image_trace",
+          coordinateSpace: "world_feet",
+          designGrid: nextDesignGrid,
+          reference: {
+            ...nextReference,
+            crop: referenceFullCropForFloor(floorWithReference),
+          },
+          calibration: { lines: [], linesVisible: true, confirmed: false, appliedFactor: 1, areaConfirmed: false },
+          exteriorPolygon: [],
+          perimeterLocked: false,
+        };
+      });
     } catch (error) {
       setReferenceUrl("");
       setReferenceRenderStatus("Could not store the plan reference.");
