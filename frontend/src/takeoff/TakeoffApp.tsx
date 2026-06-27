@@ -2537,6 +2537,12 @@ function bandJoistMeshesForFloor(floor: TakeoffFloor, center: TakeoffPoint, topO
   return bandJoistPanels;
 }
 
+function floorHasRenderableBandJoist(floor: TakeoffFloor) {
+  if (Math.max(0, floor.bandJoistHeight ?? 1) <= 0.01) return false;
+  if (floor.rooms.length) return floor.rooms.some((room) => room.floorType !== "slab" && roomExteriorSegments(floor, room).length > 0);
+  return cleanPolygonPointsForRender(exteriorRingPoints(floor)).length >= 3;
+}
+
 function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number) {
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
   if (ceilingInfo.ceilingType !== "vaulted") return null;
@@ -2762,11 +2768,19 @@ function TakeoffModelPreview({
     const loadedTextures: THREE.Texture[] = [];
     const loader = new THREE.TextureLoader();
     loader.setCrossOrigin("anonymous");
+    const absoluteLowestFloorElevation = Math.min(...floors.map((entry) => entry.elevation ?? 0));
+    const lowestFloors = floors.filter((entry) => Math.abs((entry.elevation ?? 0) - absoluteLowestFloorElevation) <= 0.01);
+    const modelBaseLift = lowestFloors.some((entry) => floorHasRenderableBandJoist(entry))
+      ? Math.max(...lowestFloors.map((entry) => floorHasRenderableBandJoist(entry) ? Math.max(0, entry.bandJoistHeight ?? 1) : 0))
+      : 0;
+    const activeFloorYOffset = ((floor.elevation ?? 0) - absoluteLowestFloorElevation) + modelBaseLift;
     const activeOptions = floorViewOptions[activeFloorId] ?? defaultFloorViewOptions();
     if (activeOptions.visible && activeOptions.reference && visibleLayers.reference && referenceUrl) {
       const texture = loader.load(referenceUrl);
       loadedTextures.push(texture);
-      scene.add(referencePlaneForFloor(floor, center, texture));
+      const plane = referencePlaneForFloor(floor, center, texture);
+      plane.position.y += activeFloorYOffset;
+      scene.add(plane);
     }
 
     const exteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x8fc0b0, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
@@ -2795,14 +2809,12 @@ function TakeoffModelPreview({
     const passiveGlassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
     const passiveDoorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.36, side: THREE.DoubleSide });
     const bandJoistMaterial = new THREE.MeshPhongMaterial({ color: 0x587082, depthWrite: false, transparent: true, opacity: 0.34, side: THREE.DoubleSide });
-    const lowestFloorElevation = Math.min(...floors.map((entry) => entry.elevation ?? 0));
-
     if (visibleLayers.bandJoists) {
       for (const sourceFloor of floors) {
         const options = floorViewOptions[sourceFloor.id] ?? defaultFloorViewOptions();
         const sourceElevation = sourceFloor.elevation ?? 0;
-        if (!options.visible || sourceElevation <= lowestFloorElevation + 0.01) continue;
-        const yOffset = sourceElevation - (floor.elevation ?? 0);
+        if (!options.visible) continue;
+        const yOffset = (sourceElevation - absoluteLowestFloorElevation) + modelBaseLift;
         for (const mesh of bandJoistMeshesForFloor(sourceFloor, center, yOffset, bandJoistMaterial)) scene.add(mesh);
       }
     }
@@ -2811,7 +2823,7 @@ function TakeoffModelPreview({
       if (otherFloor.id === activeFloorId) continue;
       const options = floorViewOptions[otherFloor.id] ?? defaultFloorViewOptions();
       if (!options.visible) continue;
-      const yOffset = (otherFloor.elevation ?? 0) - (floor.elevation ?? 0);
+      const yOffset = ((otherFloor.elevation ?? 0) - absoluteLowestFloorElevation) + modelBaseLift;
       if (visibleLayers.reference && options.reference && referenceUrls[otherFloor.id]) {
         const texture = loader.load(referenceUrls[otherFloor.id]);
         loadedTextures.push(texture);
@@ -2928,7 +2940,7 @@ function TakeoffModelPreview({
     }
 
     const exteriorPoints = exteriorRingPoints(floor);
-    if (activeOptions.visible && exteriorPoints.length >= 3) scene.add(createHorizontalShapeMesh(exteriorPoints, center, -0.02, exteriorMaterial));
+    if (activeOptions.visible && exteriorPoints.length >= 3) scene.add(createHorizontalShapeMesh(exteriorPoints, center, activeFloorYOffset - 0.02, exteriorMaterial));
 
     for (const [index, sourceRoom] of (activeOptions.visible ? floor.rooms : []).entries()) {
       const rawPoints = roomCorners(sourceRoom);
@@ -2944,7 +2956,7 @@ function TakeoffModelPreview({
       roomCeilingMaterial.color = color;
 
       if (visibleLayers.floors) {
-        const floorMesh = createHorizontalShapeMesh(points, center, 0, roomFloorMaterial);
+        const floorMesh = createHorizontalShapeMesh(points, center, activeFloorYOffset, roomFloorMaterial);
         floorMesh.userData.roomId = room.id;
         floorMesh.userData.modelSurface = {
           roomId: room.id,
@@ -2961,6 +2973,7 @@ function TakeoffModelPreview({
       if (visibleLayers.walls) {
         for (const segment of roomExteriorSegments(floor, room)) {
           const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(room.ceilingHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
+          wallMesh.position.y += activeFloorYOffset;
           wallMesh.userData.roomId = room.id;
           wallMesh.userData.modelSurface = {
             roomId: room.id,
@@ -2983,6 +2996,7 @@ function TakeoffModelPreview({
             componentIsGeneratedCeilingWall(candidate) &&
             (!part.direction || candidate.direction === part.direction)
           );
+          part.mesh.position.y += activeFloorYOffset;
           part.mesh.userData.roomId = room.id;
           part.mesh.userData.modelSurface = {
             roomId: room.id,
@@ -3008,6 +3022,7 @@ function TakeoffModelPreview({
           const isLoadWall = exposedSegments.some((segment) => sharedSegmentLength(edge, segment, tolerance) > 0.25);
           if (isLoadWall) continue;
           const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), interiorWallMaterial);
+          wallMesh.position.y += activeFloorYOffset;
           wallMesh.userData.roomId = room.id;
           wallMesh.userData.modelSurface = {
             roomId: room.id,
@@ -3023,6 +3038,7 @@ function TakeoffModelPreview({
         const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
         if (ceilingInfo.ceilingType === "vaulted") {
           for (const part of slopedCeilingMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, roomCeilingMaterial)) {
+            part.mesh.position.y += activeFloorYOffset;
             part.mesh.userData.roomId = room.id;
             part.mesh.userData.modelSurface = {
               roomId: room.id,
@@ -3038,7 +3054,7 @@ function TakeoffModelPreview({
             scene.add(part.mesh);
           }
         } else {
-          const ceilingMesh = createHorizontalShapeMesh(points, center, room.ceilingHeight, roomCeilingMaterial);
+          const ceilingMesh = createHorizontalShapeMesh(points, center, activeFloorYOffset + room.ceilingHeight, roomCeilingMaterial);
           ceilingMesh.userData.roomId = room.id;
           ceilingMesh.userData.modelSurface = {
             roomId: room.id,
@@ -3054,13 +3070,18 @@ function TakeoffModelPreview({
       }
 
       const ridge = roomRidgePoints(room, center, floor.defaultCeilingHeight ?? 9);
-      if (visibleLayers.ceilings && ridge) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial));
+      if (visibleLayers.ceilings && ridge) {
+        const ridgeLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial);
+        ridgeLine.position.y += activeFloorYOffset;
+        scene.add(ridgeLine);
+      }
 
       for (const component of roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door"))) {
         if (component.surface === "glass" && !visibleLayers.windows) continue;
         if (component.surface === "door" && !visibleLayers.doors) continue;
         const openingMesh = openingMeshForComponent(component, room, center, component.surface === "glass" ? glassMaterial : doorMaterial, openingFrameMaterial);
         if (openingMesh) {
+          openingMesh.position.y += activeFloorYOffset;
           openingMesh.userData.modelSurface = {
             roomId: room.id,
             roomName: room.name,
@@ -3090,7 +3111,7 @@ function TakeoffModelPreview({
       const adjacentWallHeight = ceilingInfo.ceilingType === "vaulted" ? ceilingInfo.lowHeight : room.ceilingHeight;
 
       if (visibleLayers.floors) {
-        const floorMesh = createHorizontalShapeMesh(points, center, -0.01, selected ? adjacentSelectedMaterial : adjacentFloorMaterial);
+        const floorMesh = createHorizontalShapeMesh(points, center, activeFloorYOffset - 0.01, selected ? adjacentSelectedMaterial : adjacentFloorMaterial);
         floorMesh.userData.roomId = room.id;
         floorMesh.userData.modelSurface = {
           roomId: room.id,
@@ -3106,6 +3127,7 @@ function TakeoffModelPreview({
       if (visibleLayers.walls) {
         for (const edge of pointsToEdges(points)) {
           const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(adjacentWallHeight, 0.1), selected ? adjacentSelectedMaterial : adjacentWallMaterial);
+          wallMesh.position.y += activeFloorYOffset;
           wallMesh.userData.roomId = room.id;
           wallMesh.userData.modelSurface = {
             roomId: room.id,
@@ -3120,6 +3142,7 @@ function TakeoffModelPreview({
       if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
         if (ceilingInfo.ceilingType === "vaulted") {
           for (const part of slopedCeilingMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, adjacentCeilingMaterial)) {
+            part.mesh.position.y += activeFloorYOffset;
             part.mesh.userData.roomId = room.id;
             part.mesh.userData.modelSurface = {
               roomId: room.id,
@@ -3132,7 +3155,7 @@ function TakeoffModelPreview({
             scene.add(part.mesh);
           }
         } else {
-          const ceilingMesh = createHorizontalShapeMesh(points, center, room.ceilingHeight, adjacentCeilingMaterial);
+          const ceilingMesh = createHorizontalShapeMesh(points, center, activeFloorYOffset + room.ceilingHeight, adjacentCeilingMaterial);
           ceilingMesh.userData.roomId = room.id;
           ceilingMesh.userData.modelSurface = {
             roomId: room.id,
@@ -3145,7 +3168,11 @@ function TakeoffModelPreview({
           scene.add(ceilingMesh);
         }
         const ridge = roomRidgePoints(room, center, floor.defaultCeilingHeight ?? 9);
-        if (ridge) scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial));
+        if (ridge) {
+          const ridgeLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial);
+          ridgeLine.position.y += activeFloorYOffset;
+          scene.add(ridgeLine);
+        }
       }
     }
 
@@ -3729,29 +3756,31 @@ export function TakeoffApp() {
   }, []);
 
   useEffect(() => {
-    const downloadUrl = floor.reference?.downloadUrl;
-    if (referenceUrl || !downloadUrl) return;
-    const sourceUrl: string = downloadUrl;
-    const sourceKind = floor.reference?.kind;
-    const sourceFilename = floor.reference?.filename;
-    const sourceFloorId = floor.id;
+    const missingReferenceFloors = floors.filter((entry) => entry.reference?.downloadUrl && !referenceUrls[entry.id]);
+    if (!missingReferenceFloors.length) return;
     let cancelled = false;
-    async function restoreActiveReference() {
-      try {
-        const restoredPreview = sourceKind === "pdf" ? await renderPdfPreview(sourceUrl, floor.reference?.sourcePageNumber ?? 1) : null;
-        const restoredUrl = restoredPreview?.url ?? sourceUrl;
-        if (cancelled || !restoredUrl) return;
-        setReferenceUrls((current) => ({ ...current, [sourceFloorId]: restoredUrl }));
-        setReferenceRenderStatus(`Reference restored: ${sourceFilename}`);
-      } catch {
-        if (!cancelled) setReferenceRenderStatus("Reference metadata reopened, but the stored file was not available.");
+    async function restoreFloorReferences() {
+      for (const entry of missingReferenceFloors) {
+        const sourceUrl = entry.reference?.downloadUrl;
+        if (!sourceUrl) continue;
+        try {
+          const restoredPreview = entry.reference?.kind === "pdf"
+            ? await renderPdfPreview(sourceUrl, entry.reference?.sourcePageNumber ?? 1)
+            : null;
+          const restoredUrl = restoredPreview?.url ?? sourceUrl;
+          if (cancelled || !restoredUrl) return;
+          setReferenceUrls((current) => ({ ...current, [entry.id]: restoredUrl }));
+          setReferenceRenderStatus(`Reference restored: ${entry.reference?.filename ?? entry.name}`);
+        } catch {
+          if (!cancelled) setReferenceRenderStatus("Reference metadata reopened, but one stored file was not available.");
+        }
       }
     }
-    void restoreActiveReference();
+    void restoreFloorReferences();
     return () => {
       cancelled = true;
     };
-  }, [floor.id, floor.reference?.downloadUrl, floor.reference?.filename, floor.reference?.kind, referenceUrl]);
+  }, [floors, referenceUrls]);
 
   useEffect(() => {
     setRoomWorkbenchSections({ floor: false, ceiling: false, reconciliation: false });
