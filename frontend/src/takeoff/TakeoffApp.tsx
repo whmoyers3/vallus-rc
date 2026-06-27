@@ -159,12 +159,19 @@ type ValidationSection = "merge" | "wall-suggestions" | "wall-components" | "gla
 type LeftSetupSection = "project" | "mode" | "scale" | "grid" | "exterior";
 type ActiveValidationTarget = {
   key: string;
+  floorId?: string;
   roomId?: string;
   severity: TakeoffValidationIssue["severity"];
   section: ValidationSection;
   message: string;
   issueType?: TakeoffValidationIssue["issueType"];
   surfaceTreatmentSuggestion?: TakeoffValidationIssue["surfaceTreatmentSuggestion"];
+};
+type ProjectValidationEntry = {
+  floor: TakeoffFloor;
+  issue: TakeoffValidationIssue;
+  index: number;
+  key: string;
 };
 type SketchTarget = {
   roomId: string;
@@ -3866,6 +3873,10 @@ function validationIssueKey(issue: TakeoffValidationIssue, index?: number) {
   return `${issue.severity}:${issue.target?.type ?? "global"}:${issue.target?.roomId ?? issue.target?.regionId ?? ""}:${issue.message}:${index ?? ""}`;
 }
 
+function projectValidationIssueKey(floorId: string, issue: TakeoffValidationIssue, index?: number) {
+  return `${floorId}:${validationIssueKey(issue, index)}`;
+}
+
 function validationSectionForIssue(issue: TakeoffValidationIssue): ValidationSection {
   const message = issue.message.toLowerCase();
   if (message.includes("room type") || message.includes("internal gains")) return "room-profile";
@@ -3971,6 +3982,7 @@ export function TakeoffApp() {
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
   const [activeValidationTarget, setActiveValidationTarget] = useState<ActiveValidationTarget | null>(null);
+  const [dismissedValidationKeys, setDismissedValidationKeys] = useState<Set<string>>(() => new Set());
   const [activeSketchTarget, setActiveSketchTarget] = useState<SketchTarget | null>(null);
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", false, 0, "S", makeInitialFloor(), defaultComponentSchedule)));
@@ -4182,7 +4194,7 @@ export function TakeoffApp() {
   );
   const scaleLinesVisible = floor.calibration.linesVisible ?? true;
   const scaleReady = hasHorizontalScale && hasVerticalScale && !scaleApplied;
-  const activeRoomValidationTarget = activeValidationTarget && selectedRoom && activeValidationTarget.roomId === selectedRoom.id
+  const activeRoomValidationTarget = activeValidationTarget && selectedRoom && activeValidationTarget.floorId === floor.id && activeValidationTarget.roomId === selectedRoom.id
     ? activeValidationTarget
     : null;
   const validationSectionClass = (section: ValidationSection) => (
@@ -4296,14 +4308,31 @@ export function TakeoffApp() {
   const selectedSliceRoomId = sliceRoomId && sliceRoomOptions.some((room) => room.id === sliceRoomId)
     ? sliceRoomId
     : sliceRoomOptions[0]?.id ?? "";
-  const validation = useMemo(() => buildValidation(floor, unassignedRegions, floors), [floor, floors, unassignedRegions]);
+  const projectValidation = useMemo<ProjectValidationEntry[]>(() => {
+    const activeFirstFloors = [
+      ...orderedFloors.filter((entry) => entry.id === activeFloorId),
+      ...orderedFloors.filter((entry) => entry.id !== activeFloorId),
+    ];
+    return activeFirstFloors.flatMap((entry) =>
+      buildValidation(entry, entry.id === activeFloorId ? unassignedRegions : [], floors).map((issue, index) => ({
+        floor: entry,
+        issue,
+        index,
+        key: projectValidationIssueKey(entry.id, issue, index),
+      }))
+    );
+  }, [activeFloorId, floors, orderedFloors, unassignedRegions]);
+  const visibleProjectValidation = useMemo(
+    () => projectValidation.filter((entry) => !dismissedValidationKeys.has(entry.key)),
+    [dismissedValidationKeys, projectValidation],
+  );
   const polygonDraftActive = roomPolygonMode && roomPolygonDraft.length > 0;
 
   useEffect(() => {
     if (!activeValidationTarget) return;
-    const stillPresent = validation.some((issue, index) => validationIssueKey(issue, index) === activeValidationTarget.key);
+    const stillPresent = projectValidation.some((entry) => entry.key === activeValidationTarget.key);
     if (!stillPresent) setActiveValidationTarget(null);
-  }, [activeValidationTarget, validation]);
+  }, [activeValidationTarget, projectValidation]);
 
   useEffect(() => {
     if (!activeRoomValidationTarget || !selectedRoom) return;
@@ -4616,8 +4645,19 @@ export function TakeoffApp() {
       ...entry,
       rooms: entry.rooms.map((room) => ({ ...room, roomTypeSuggestionDismissedKey: undefined })),
     })));
+    setDismissedValidationKeys(new Set());
     setActiveValidationTarget(null);
-    setMessage("Validation rechecked. Previously dismissed room-type suggestions can appear again.");
+    setMessage("Validation rechecked. Previously dismissed flags can appear again.");
+  }
+
+  function dismissActiveValidation() {
+    if (!activeValidationTarget) return;
+    setDismissedValidationKeys((current) => {
+      const next = new Set(current);
+      next.add(activeValidationTarget.key);
+      return next;
+    });
+    setActiveValidationTarget(null);
   }
 
   function updateRoomCeilingGeometry(roomId: string, patch: Partial<TakeoffRectRoom>) {
@@ -5706,58 +5746,63 @@ export function TakeoffApp() {
     });
   }
 
-  function resolveBoundaryCandidate(candidateId: string, resolution: "slice" | "whole-section" | "ignore") {
-    const candidate = boundaryCandidatesForFloor(floor).find((entry) => entry.id === candidateId);
+  function resolveBoundaryCandidate(candidateId: string, resolution: "slice" | "whole-section" | "ignore", floorId = activeFloorId) {
+    const targetFloor = floors.find((entry) => entry.id === floorId) ?? floor;
+    const candidate = boundaryCandidatesForFloor(targetFloor).find((entry) => entry.id === candidateId);
     if (!candidate) {
       setMessage("That boundary warning is no longer current.");
       return;
     }
     const kneeWallArea = resolution === "whole-section" ? candidate.wholeSectionArea : candidate.area;
     const exteriorOverlapArea = resolution === "whole-section" ? candidate.wholeSectionArea : candidate.existingWallOverlapArea;
-    setFloor((current) => ({
-      ...current,
-      boundaryCandidateResolutions: {
-        ...(current.boundaryCandidateResolutions ?? {}),
-        [candidate.id]: resolution,
-      },
-      rooms: current.rooms.map((room) => {
-        if (room.id !== candidate.roomId || resolution === "ignore") return room;
-        const components = roomComponents(room);
-        const nextComponents = components.map((component) => {
-          if (
-            exteriorOverlapArea > 0 &&
-            component.surface === "wall" &&
-            component.direction === candidate.direction &&
-            wallCanHostOpenings(component)
-          ) {
-            return { ...component, area: Math.max(0, Math.round((component.area || 0) - exteriorOverlapArea)) };
-          }
-          return component;
-        });
-        return {
-          ...room,
-          components: [
-            ...nextComponents,
-            {
-              id: nextId("component-boundary-wall"),
-              surface: "wall",
-              assembly: candidate.recommendedAssembly,
-              direction: candidate.direction,
-              area: Math.round(kneeWallArea),
-              label: resolution === "whole-section" ? `${candidate.direction} porch knee-wall section` : `${candidate.direction} porch knee-wall slice`,
-              source: "manual",
-              adjacency: candidate.recommendedAdjacency,
-              boundary: candidate.recommendedBoundary,
-              geometryLabel: `${candidate.adjacentSpaceName} ${candidate.zMin}-${candidate.zMax} ft`,
-              spanStart: candidate.spanStart,
-              spanEnd: candidate.spanEnd,
-              zMin: candidate.zMin,
-              zMax: candidate.zMax,
-            },
-          ],
-        };
-      }),
+    setFloors((currentFloors) => currentFloors.map((entry) => {
+      if (entry.id !== targetFloor.id) return entry;
+      return {
+        ...entry,
+        boundaryCandidateResolutions: {
+          ...(entry.boundaryCandidateResolutions ?? {}),
+          [candidate.id]: resolution,
+        },
+        rooms: entry.rooms.map((room) => {
+          if (room.id !== candidate.roomId || resolution === "ignore") return room;
+          const components = roomComponents(room);
+          const nextComponents = components.map((component) => {
+            if (
+              exteriorOverlapArea > 0 &&
+              component.surface === "wall" &&
+              component.direction === candidate.direction &&
+              wallCanHostOpenings(component)
+            ) {
+              return { ...component, area: Math.max(0, Math.round((component.area || 0) - exteriorOverlapArea)) };
+            }
+            return component;
+          });
+          return {
+            ...room,
+            components: [
+              ...nextComponents,
+              {
+                id: nextId("component-boundary-wall"),
+                surface: "wall",
+                assembly: candidate.recommendedAssembly,
+                direction: candidate.direction,
+                area: Math.round(kneeWallArea),
+                label: resolution === "whole-section" ? `${candidate.direction} porch knee-wall section` : `${candidate.direction} porch knee-wall slice`,
+                source: "manual",
+                adjacency: candidate.recommendedAdjacency,
+                boundary: candidate.recommendedBoundary,
+                geometryLabel: `${candidate.adjacentSpaceName} ${candidate.zMin}-${candidate.zMax} ft`,
+                spanStart: candidate.spanStart,
+                spanEnd: candidate.spanEnd,
+                zMin: candidate.zMin,
+                zMax: candidate.zMax,
+              },
+            ],
+          };
+        }),
+      };
     }));
+    setActiveFloorId(targetFloor.id);
     setMessage(
       resolution === "ignore"
         ? "Boundary warning ignored for this adjacent space."
@@ -7004,10 +7049,11 @@ export function TakeoffApp() {
     setMessage(`${room.name || "Room"} marked open to ${targetFloor.name || "the floor above"} and raised to ${Number(linkedHeight.toFixed(1))} ft.`);
   }
 
-  function focusValidationIssue(issue: TakeoffValidationIssue, key = validationIssueKey(issue)) {
+  function focusValidationIssue(issue: TakeoffValidationIssue, key = projectValidationIssueKey(floor.id, issue), issueFloor = floor) {
     const section = validationSectionForIssue(issue);
     setActiveValidationTarget({
       key,
+      floorId: issueFloor.id,
       roomId: issue.target?.roomId,
       severity: issue.severity,
       section,
@@ -7015,6 +7061,10 @@ export function TakeoffApp() {
       issueType: issue.issueType,
       surfaceTreatmentSuggestion: issue.surfaceTreatmentSuggestion,
     });
+    if (issueFloor.id !== activeFloorId) {
+      setActiveFloorId(issueFloor.id);
+      resetTransientFloorTools();
+    }
     if (issue.target?.roomId) {
       const sketchSurface = sketchSurfaceForSection(section);
       if (sketchSurface) setActiveSketchTarget({ roomId: issue.target.roomId, surface: sketchSurface });
@@ -7023,8 +7073,8 @@ export function TakeoffApp() {
     if (issue.target.type === "room" && issue.target.roomId) {
       setSelectedRoomId(issue.target.roomId);
       setRightPanelOpen(true);
-      const room = floor.rooms.find((candidate) => candidate.id === issue.target?.roomId);
-      setMessage(room ? `${room.name} selected from validation.` : "Room selected from validation.");
+      const room = issueFloor.rooms.find((candidate) => candidate.id === issue.target?.roomId);
+      setMessage(room ? `${room.name} selected from ${issueFloor.name} validation.` : `${issueFloor.name} room selected from validation.`);
       return;
     }
     if (issue.target.type === "unassigned") {
@@ -7373,18 +7423,11 @@ export function TakeoffApp() {
         return;
       }
     }
-    const allFloorValidation = floors.flatMap((entry) =>
-      buildValidation(entry, entry.id === floor.id ? unassignedRegions : [], floors).map((issue, index) => ({ floor: entry, issue, index }))
-    );
-    const blockingEntry = allFloorValidation.find((entry) => entry.issue.severity === "error") ?? null;
-    const blockingIssue = blockingEntry?.issue ?? null;
-    if (blockingIssue) {
+    const blockingEntry = projectValidation.find((entry) => entry.issue.severity === "error") ?? null;
+    if (blockingEntry) {
+      const blockingIssue = blockingEntry.issue;
       setMessage(blockingIssue.message);
-      if (blockingEntry && blockingEntry.floor.id !== floor.id) {
-        switchActiveFloor(blockingEntry.floor.id);
-      } else {
-        focusValidationIssue(blockingIssue, validationIssueKey(blockingIssue, blockingEntry?.index));
-      }
+      focusValidationIssue(blockingIssue, blockingEntry.key, blockingEntry.floor);
       return;
     }
     setCalcLoading(true);
@@ -9026,7 +9069,7 @@ export function TakeoffApp() {
                                 ) : (
                                   <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
                                 )}
-                                <button onClick={() => setActiveValidationTarget(null)}>Dismiss</button>
+                                <button onClick={dismissActiveValidation}>Dismiss</button>
                               </div>
                             </div>
                           );
@@ -9645,30 +9688,38 @@ export function TakeoffApp() {
               <h2>Validation</h2>
               <button type="button" onClick={recheckValidation}>Recheck Validation</button>
             </div>
-            {validation.length === 0 ? (
-              <p className="takeoff-ok">Ready for payload preview.</p>
+            {visibleProjectValidation.length === 0 ? (
+              <p className="takeoff-ok">{projectValidation.length > 0 ? "All visible validation flags are dismissed. Recheck Validation will show them again." : "Ready for payload preview."}</p>
             ) : (
               <div className="takeoff-issue-list">
-                {validation.map((issue, index) => (
+                {visibleProjectValidation.map((entry, listIndex) => (
                   (() => {
-                    const issueKey = validationIssueKey(issue, index);
+                    const { issue, floor: issueFloor, key: issueKey } = entry;
+                    const previousEntry = visibleProjectValidation[listIndex - 1];
+                    const showFloorDivider = !previousEntry || previousEntry.floor.id !== issueFloor.id;
                     const boundaryCandidate = issue.boundaryCandidateId
-                      ? boundaryCandidatesForFloor(floor).find((candidate) => candidate.id === issue.boundaryCandidateId)
+                      ? boundaryCandidatesForFloor(issueFloor).find((candidate) => candidate.id === issue.boundaryCandidateId)
                       : null;
                     return (
                       <div key={issueKey} className="takeoff-issue-stack">
+                        {showFloorDivider && (
+                          <div className="takeoff-validation-floor-divider">
+                            <span>{issueFloor.name}</span>
+                            {issueFloor.id === activeFloorId && <strong>Active</strong>}
+                          </div>
+                        )}
                         <button
                           className={`takeoff-issue takeoff-issue--${issue.severity} ${issue.target ? "takeoff-issue--clickable" : ""} ${activeValidationTarget?.key === issueKey ? "takeoff-issue--active" : ""}`}
-                          onClick={() => focusValidationIssue(issue, issueKey)}
+                          onClick={() => focusValidationIssue(issue, issueKey, issueFloor)}
                           disabled={!issue.target}
                         >
                           {issue.message}
                         </button>
                         {boundaryCandidate && (
                           <div className="takeoff-boundary-actions">
-                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "slice")}>Slice wall</button>
-                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "whole-section")}>Whole section</button>
-                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "ignore")}>Keep exterior</button>
+                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "slice", issueFloor.id)}>Slice wall</button>
+                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "whole-section", issueFloor.id)}>Whole section</button>
+                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "ignore", issueFloor.id)}>Keep exterior</button>
                           </div>
                         )}
                       </div>

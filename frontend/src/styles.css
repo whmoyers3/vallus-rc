@@ -2074,6 +2074,34 @@ button.toolbar-primary:hover {
   gap: 4px;
 }
 
+.takeoff-validation-floor-divider {
+  align-items: center;
+  border-top: 1px solid #d9e2ea;
+  color: #536273;
+  display: flex;
+  font-size: 11px;
+  font-weight: 700;
+  justify-content: space-between;
+  margin-top: 4px;
+  padding-top: 8px;
+  text-transform: uppercase;
+}
+
+.takeoff-issue-stack:first-child .takeoff-validation-floor-divider {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.takeoff-validation-floor-divider strong {
+  background: #e7f2ec;
+  border: 1px solid #bdd8c8;
+  border-radius: 999px;
+  color: #2f6e48;
+  font-size: 10px;
+  padding: 1px 6px;
+}
+
 .takeoff-issue {
   border-radius: 5px;
   font-size: 12px;
