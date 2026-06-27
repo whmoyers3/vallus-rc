@@ -7,7 +7,7 @@ export type TakeoffPoint = {
   y: number;
 };
 
-export type TakeoffRoomComponentSource = "manual" | "exterior-perimeter" | "opening-placement" | "raised-ceiling" | "vault-gable";
+export type TakeoffRoomComponentSource = "manual" | "exterior-perimeter" | "opening-placement" | "raised-ceiling" | "vault-gable" | "tray-knee-wall";
 export type TakeoffWallAdjacency = "outside" | "attic" | "garage" | "crawlspace" | "conditioned" | "unknown";
 export type TakeoffBoundaryType =
   | "exterior"
@@ -65,7 +65,7 @@ export type TakeoffAdjacentSpace = {
   depth: number;
   polygon?: TakeoffPoint[];
   ceilingHeight?: number;
-  ceilingType?: "none" | "flat" | "vaulted";
+  ceilingType?: "none" | "flat" | "vaulted" | "tray";
   ceilingLowHeight?: number;
   ceilingPeakHeight?: number;
   ceilingRidgeDirection?: "E-W" | "N-S";
@@ -95,11 +95,14 @@ export type TakeoffRectRoom = {
   width: number;
   depth: number;
   ceilingHeight: number;
-  ceilingType?: "none" | "flat" | "vaulted";
+  ceilingType?: "none" | "flat" | "vaulted" | "tray";
   ceilingLowHeight?: number;
   ceilingPeakHeight?: number;
   ceilingRidgeDirection?: "E-W" | "N-S";
   ceilingRidgeOffset?: number;
+  ceilingTrayOffset?: number;
+  ceilingTrayShape?: "rectangular" | "clipped";
+  ceilingTraySteps?: number;
   ceilingGeometryApproved?: boolean;
   floorType?: "none" | "slab" | "framed";
   ceilingLoadArea?: number;
@@ -223,6 +226,7 @@ export type TakeoffProject = {
   schemaVersion: "takeoff.v1";
   name: string;
   location?: string;
+  dimensionInputMode?: "decimal" | "feet-inches";
   mechanicalVentilation?: boolean;
   ventilationCfm?: number;
   frontDoorFaces: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";

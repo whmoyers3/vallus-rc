@@ -345,6 +345,8 @@ type AlignmentTransform = {
   scale: number;
 };
 
+type DimensionInputMode = NonNullable<TakeoffProject["dimensionInputMode"]>;
+
 function defaultFloorViewOptions(): FloorViewOptions {
   return { visible: true, reference: true, exterior: true, rooms: true };
 }
@@ -387,6 +389,7 @@ function makeInitialFloor(): TakeoffFloor {
 function makeTakeoffProject(
   name: string,
   location: string,
+  dimensionInputMode: DimensionInputMode,
   mechanicalVentilation: boolean,
   ventilationCfm: number,
   frontDoorFaces: TakeoffProject["frontDoorFaces"],
@@ -398,6 +401,7 @@ function makeTakeoffProject(
     schemaVersion: "takeoff.v1",
     name,
     location,
+    dimensionInputMode,
     mechanicalVentilation,
     ventilationCfm,
     frontDoorFaces,
@@ -718,10 +722,192 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function trimNumber(value: number, digits = 3) {
+  return Number(value.toFixed(digits)).toString();
+}
+
+function formatDimensionValue(value: number, mode: DimensionInputMode) {
+  if (mode === "decimal") return trimNumber(value);
+  const sign = value < 0 ? "-" : "";
+  const absolute = Math.abs(value);
+  let feet = Math.floor(absolute);
+  let eighths = Math.round((absolute - feet) * 12 * 8);
+  if (eighths >= 96) {
+    feet += 1;
+    eighths = 0;
+  }
+  const inches = Math.floor(eighths / 8);
+  const fraction = eighths % 8;
+  const fractionText = fraction === 0 ? "" : ` ${fraction}/8`;
+  return `${sign}${feet}'${inches || fraction ? ` ${inches}${fractionText}"` : ""}`;
+}
+
+function parseMaybeFraction(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return 0;
+  const mixed = trimmed.match(/^(-?\d+(?:\.\d+)?)\s+(\d+)\/(\d+)$/);
+  if (mixed) return Number(mixed[1]) + Number(mixed[2]) / Math.max(1, Number(mixed[3]));
+  const fraction = trimmed.match(/^(-?\d+)\/(\d+)$/);
+  if (fraction) return Number(fraction[1]) / Math.max(1, Number(fraction[2]));
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function parseDimensionValue(raw: string, mode: DimensionInputMode) {
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return null;
+  const decimal = Number(trimmed);
+  if (Number.isFinite(decimal) && !/[\'"\-a-z\s]/.test(trimmed.replace(/^-/, ""))) return decimal;
+  const normalized = trimmed
+    .replace(/feet|foot|ft/g, "'")
+    .replace(/inches|inch|in/g, "\"")
+    .replace(/[’]/g, "'")
+    .replace(/[”]/g, "\"");
+  const explicit = normalized.match(/^(-)?\s*(\d+(?:\.\d+)?)\s*'?\s*(?:(\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+)\s*\"?)?$/);
+  if (explicit && (normalized.includes("'") || normalized.includes("\"") || mode === "feet-inches")) {
+    const sign = explicit[1] ? -1 : 1;
+    const feet = Number(explicit[2]);
+    const inches = parseMaybeFraction(explicit[3] ?? "0");
+    if (Number.isFinite(feet) && inches != null) return sign * (feet + inches / 12);
+  }
+  if (mode === "feet-inches") {
+    const pair = normalized.match(/^(-)?\s*(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+)$/);
+    if (pair) {
+      const inches = parseMaybeFraction(pair[3]);
+      if (inches != null) return (pair[1] ? -1 : 1) * (Number(pair[2]) + inches / 12);
+    }
+    const dash = normalized.match(/^(-)?\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?(?:\s+\d+\/\d+)?|\d+\/\d+)$/);
+    if (dash) {
+      const inches = parseMaybeFraction(dash[3]);
+      if (inches != null) return (dash[1] ? -1 : 1) * (Number(dash[2]) + inches / 12);
+    }
+  }
+  return Number.isFinite(decimal) ? decimal : null;
+}
+
+function DimensionInput({
+  value,
+  mode,
+  onCommit,
+  min,
+  step,
+  ariaLabel,
+}: {
+  value: number;
+  mode: DimensionInputMode;
+  onCommit: (value: number) => void;
+  min?: number;
+  step?: number;
+  ariaLabel?: string;
+}) {
+  const [draft, setDraft] = useState(() => formatDimensionValue(value, mode));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setDraft(formatDimensionValue(value, mode));
+  }, [focused, mode, value]);
+
+  const commit = () => {
+    const parsed = parseDimensionValue(draft, mode);
+    if (parsed == null) {
+      setDraft(formatDimensionValue(value, mode));
+      return;
+    }
+    const next = min != null ? Math.max(min, parsed) : parsed;
+    onCommit(Number(next.toFixed(4)));
+    setDraft(formatDimensionValue(next, mode));
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      aria-label={ariaLabel}
+      value={draft}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        commit();
+      }}
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+      }}
+      placeholder={mode === "feet-inches" ? "9' 6\"" : step ? String(step) : "0"}
+    />
+  );
+}
+
+function trayStepCount(room: TakeoffRectRoom) {
+  return Math.max(1, Math.min(6, Math.round(room.ceilingTraySteps ?? 1)));
+}
+
+function trayStepHeight() {
+  return 1;
+}
+
+function trayBoundaryDimensions(room: TakeoffRectRoom, offset: number) {
+  const bounds = polygonBounds(roomCorners(room));
+  return {
+    width: Math.max(0, bounds.width - offset * 2),
+    depth: Math.max(0, bounds.depth - offset * 2),
+  };
+}
+
+function trayBoundaryPoints(room: TakeoffRectRoom, offset: number) {
+  const bounds = polygonBounds(roomCorners(room));
+  const { width, depth } = trayBoundaryDimensions(room, offset);
+  if (width <= 0.25 || depth <= 0.25) return [];
+  const x0 = bounds.x + offset;
+  const y0 = bounds.y + offset;
+  const x1 = bounds.x + bounds.width - offset;
+  const y1 = bounds.y + bounds.depth - offset;
+  const clipped = (room.ceilingTrayShape ?? "rectangular") === "clipped";
+  if (!clipped) return rectToPoints({ x: x0, y: y0, width, depth });
+  const cornerClip = Math.min(4, width / 4, depth / 4);
+  return [
+    { x: x0 + cornerClip, y: y0 },
+    { x: x1 - cornerClip, y: y0 },
+    { x: x1, y: y0 + cornerClip },
+    { x: x1, y: y1 - cornerClip },
+    { x: x1 - cornerClip, y: y1 },
+    { x: x0 + cornerClip, y: y1 },
+    { x: x0, y: y1 - cornerClip },
+    { x: x0, y: y0 + cornerClip },
+  ];
+}
+
+function trayBoundaryPerimeter(room: TakeoffRectRoom, offset: number) {
+  const { width, depth } = trayBoundaryDimensions(room, offset);
+  if (width <= 0.25 || depth <= 0.25) return 0;
+  const clipped = (room.ceilingTrayShape ?? "rectangular") === "clipped";
+  if (!clipped) return (width + depth) * 2;
+  const cornerClip = Math.min(4, width / 4, depth / 4);
+  return (width + depth) * 2 + (2 * Math.SQRT2 - 4) * cornerClip * 4;
+}
+
+function trayKneeWallArea(room: TakeoffRectRoom) {
+  if ((room.ceilingType ?? "flat") !== "tray") return 0;
+  const firstOffset = Math.max(0, room.ceilingTrayOffset ?? 2);
+  let area = 0;
+  for (let stepIndex = 0; stepIndex < trayStepCount(room); stepIndex += 1) {
+    const offset = firstOffset + stepIndex;
+    area += trayBoundaryPerimeter(room, offset) * trayStepHeight();
+  }
+  return area;
+}
+
 function ceilingGeometryInfo(room: TakeoffRectRoom, defaultCeilingHeight = 9) {
   const ceilingType = room.ceilingType ?? "flat";
+  const traySteps = trayStepCount(room);
   const lowHeight = ceilingType === "vaulted" ? room.ceilingLowHeight ?? room.ceilingHeight : room.ceilingHeight;
-  const peakHeight = ceilingType === "vaulted" ? room.ceilingPeakHeight ?? Math.max(lowHeight, room.ceilingHeight) : room.ceilingHeight;
+  const peakHeight = ceilingType === "vaulted"
+    ? room.ceilingPeakHeight ?? Math.max(lowHeight, room.ceilingHeight)
+    : ceilingType === "tray"
+      ? room.ceilingHeight + traySteps * trayStepHeight()
+      : room.ceilingHeight;
   const ridgeDirection = room.ceilingRidgeDirection ?? "E-W";
   const ridgeOffset = clamp(room.ceilingRidgeOffset ?? 0, -1, 1);
   const ridgeRatio = (ridgeOffset + 1) / 2;
@@ -744,7 +930,8 @@ function ceilingGeometryInfo(room: TakeoffRectRoom, defaultCeilingHeight = 9) {
     )
     : rectArea(room);
   const gableArea = ceilingType === "vaulted" ? gableBase * peakDelta : 0;
-  const estimatedAddedWallArea = raisedWallArea + gableArea;
+  const trayArea = trayKneeWallArea(room);
+  const estimatedAddedWallArea = raisedWallArea + gableArea + trayArea;
   const heightDelta = Math.max(flatDelta, lowDelta, Math.max(0, peakHeight - defaultCeilingHeight));
   return {
     ceilingType,
@@ -757,20 +944,24 @@ function ceilingGeometryInfo(room: TakeoffRectRoom, defaultCeilingHeight = 9) {
     heightDelta,
     raisedWallArea,
     gableArea,
+    trayArea,
+    trayOffset: Math.max(0, room.ceilingTrayOffset ?? 2),
+    trayShape: room.ceilingTrayShape ?? "rectangular",
+    traySteps,
     estimatedAddedWallArea,
-    needsReview: ceilingType !== "none" && heightDelta > 1.5 && !room.ceilingGeometryApproved,
+    needsReview: ceilingType !== "none" && (heightDelta > 1.5 || trayArea > 0.5) && !room.ceilingGeometryApproved,
   };
 }
 
 type CeilingWallSuggestion = {
   key: string;
-  direction: TakeoffRoomComponent["direction"];
+  direction?: TakeoffRoomComponent["direction"];
   area: number;
   label: string;
   description: string;
   geometryLabel: string;
-  basis: "raised-wall" | "gable-end";
-  source: Extract<TakeoffRoomComponentSource, "raised-ceiling" | "vault-gable">;
+  basis: "raised-wall" | "gable-end" | "tray-step";
+  source: Extract<TakeoffRoomComponentSource, "raised-ceiling" | "vault-gable" | "tray-knee-wall">;
   adjacency: TakeoffWallAdjacency;
   length?: number;
   addedHeight?: number;
@@ -842,6 +1033,20 @@ function ceilingWallSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoo
       });
     }
   }
+  if (ceilingInfo.ceilingType === "tray" && ceilingInfo.trayArea > 0.5) {
+    suggestions.push({
+      key: `ceiling-tray-${ceilingInfo.trayShape}-${Math.round(ceilingInfo.trayOffset * 10)}-${ceilingInfo.traySteps}`,
+      area: Math.round(ceilingInfo.trayArea * 10) / 10,
+      label: "Tray ceiling knee wall",
+      description: `${ceilingInfo.traySteps} step${ceilingInfo.traySteps === 1 ? "" : "s"} · ${ceilingInfo.trayOffset} ft ${ceilingInfo.trayShape === "clipped" ? "clipped-corner" : "rectangular"} tray offset`,
+      geometryLabel: "Tray ceiling knee wall",
+      basis: "tray-step",
+      source: "tray-knee-wall",
+      adjacency: "attic",
+      length: Math.round((ceilingInfo.trayArea / trayStepHeight()) * 10) / 10,
+      addedHeight: trayStepHeight(),
+    });
+  }
   if (ceilingInfo.ceilingType !== "vaulted" || ceilingInfo.gableArea <= 0) return suggestions;
   const directions: Array<NonNullable<TakeoffRoomComponent["direction"]>> = ceilingInfo.ridgeDirection === "N-S"
     ? ["N", "S"]
@@ -887,12 +1092,13 @@ function legacyComponentsForRoom(room: TakeoffRectRoom): TakeoffRoomComponent[] 
   }
   if ((room.ceilingType ?? "flat") !== "none") {
     const assembly = room.ceilingType === "vaulted" ? "C2" : "C1";
+    const label = room.ceilingType === "vaulted" ? "Vaulted ceiling" : room.ceilingType === "tray" ? "Tray ceiling" : "Flat ceiling";
     components.push({
       id: `${room.id}-ceiling-default`,
       surface: "ceiling",
       assembly,
       area: Math.max(0, room.ceilingLoadArea ?? rectArea(room)),
-      label: assembly === "C2" ? "Vaulted ceiling" : "Flat ceiling",
+      label,
     });
   }
   return components;
@@ -997,7 +1203,7 @@ function componentNeedsDirection(surface: TakeoffRoomComponent["surface"]) {
 
 function componentIsGeneratedCeilingWall(component: TakeoffRoomComponent) {
   if (component.surface !== "wall") return false;
-  if (component.source === "raised-ceiling" || component.source === "vault-gable") return true;
+  if (component.source === "raised-ceiling" || component.source === "vault-gable" || component.source === "tray-knee-wall") return true;
   const label = `${component.label ?? ""} ${component.geometryLabel ?? ""}`.toLowerCase();
   return (
     label.includes("gable") ||
@@ -1005,6 +1211,7 @@ function componentIsGeneratedCeilingWall(component: TakeoffRoomComponent) {
     label.includes("raised wall band") ||
     label.includes("knee-wall") ||
     label.includes("kneewall") ||
+    label.includes("tray") ||
     label.includes("vault")
   );
 }
@@ -2763,6 +2970,7 @@ function normalizeTakeoffProject(rawProject: Partial<TakeoffProject>): TakeoffPr
   return makeTakeoffProject(
     rawProject.name || "Takeoff V1 Draft",
     rawProject.location ?? "",
+    rawProject.dimensionInputMode === "feet-inches" ? "feet-inches" : "decimal",
     Boolean(rawProject.mechanicalVentilation),
     Number(rawProject.ventilationCfm ?? 0),
     frontDoorFaces,
@@ -3192,6 +3400,43 @@ function vaultedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint
   return parts;
 }
 
+function trayWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, kneeWallMaterial: THREE.Material): ModelMeshPart[] {
+  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
+  if (ceilingInfo.ceilingType !== "tray") return [];
+  const parts: ModelMeshPart[] = [];
+  for (let stepIndex = 0; stepIndex < ceilingInfo.traySteps; stepIndex += 1) {
+    const offset = ceilingInfo.trayOffset + stepIndex;
+    const points = trayBoundaryPoints(room, offset);
+    if (points.length < 3) continue;
+    const bottom = room.ceilingHeight + stepIndex * trayStepHeight();
+    const top = bottom + trayStepHeight();
+    for (const edge of pointsToEdges(points)) {
+      parts.push({
+        mesh: createPanelMesh([
+          modelPoint(edge.a, center, bottom),
+          modelPoint(edge.b, center, bottom),
+          modelPoint(edge.b, center, top),
+          modelPoint(edge.a, center, top),
+        ], kneeWallMaterial),
+        kind: "knee-wall",
+        label: `Tray step ${stepIndex + 1} knee-wall panel`,
+        surface: "wall",
+        area: Number(distance(edge.a, edge.b).toFixed(3)),
+        source: "tray-knee-wall",
+        geometryLabel: `Tray ceiling knee wall - step ${stepIndex + 1}`,
+      });
+    }
+  }
+  return parts;
+}
+
+function ceilingWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, kneeWallMaterial: THREE.Material): ModelMeshPart[] {
+  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
+  if (ceilingInfo.ceilingType === "vaulted") return vaultedWallMeshPartsForRoom(room, center, defaultCeilingHeight, kneeWallMaterial);
+  if (ceilingInfo.ceilingType === "tray") return trayWallMeshPartsForRoom(room, center, defaultCeilingHeight, kneeWallMaterial);
+  return raisedWallMeshPartsForRoom(room, center, defaultCeilingHeight, room.ceilingHeight, kneeWallMaterial);
+}
+
 function modelSurfaceFromObject(object: THREE.Object3D) {
   let current: THREE.Object3D | null = object;
   while (current) {
@@ -3471,10 +3716,7 @@ function TakeoffModelPreview({
             wallMesh.position.y += yOffset;
             scene.add(wallMesh);
           }
-          const ceilingInfo = ceilingGeometryInfo(room, otherFloor.defaultCeilingHeight ?? 9);
-          const generatedWallParts = ceilingInfo.ceilingType === "vaulted"
-            ? vaultedWallMeshPartsForRoom(room, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial)
-            : raisedWallMeshPartsForRoom(room, center, otherFloor.defaultCeilingHeight ?? 9, room.ceilingHeight, passiveKneeWallMaterial);
+          const generatedWallParts = ceilingWallMeshPartsForRoom(room, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial);
           for (const part of generatedWallParts) {
             part.mesh.position.y += yOffset;
             scene.add(part.mesh);
@@ -3615,13 +3857,11 @@ function TakeoffModelPreview({
           } satisfies ModelSurfaceSelection;
           scene.add(wallMesh);
         }
-        const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
-        const generatedWallParts = ceilingInfo.ceilingType === "vaulted"
-          ? vaultedWallMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, kneeWallMaterial)
-          : raisedWallMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, room.ceilingHeight, kneeWallMaterial);
+        const generatedWallParts = ceilingWallMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, kneeWallMaterial);
         for (const part of generatedWallParts) {
           const component = roomSurfaceComponents(room, "wall").find((candidate) =>
             componentIsGeneratedCeilingWall(candidate) &&
+            (!part.source || candidate.source === part.source) &&
             (!part.direction || candidate.direction === part.direction)
           );
           part.mesh.position.y += activeFloorYOffset;
@@ -4237,6 +4477,7 @@ function componentSourceLabel(source?: TakeoffRoomComponent["source"]) {
   if (source === "exterior-perimeter") return "Approved from suggested wall";
   if (source === "raised-ceiling") return "Generated from raised ceiling";
   if (source === "vault-gable") return "Generated from vaulted ceiling";
+  if (source === "tray-knee-wall") return "Generated from tray ceiling";
   if (source === "opening-placement") return "Placed opening";
   return null;
 }
@@ -4288,6 +4529,7 @@ export function TakeoffApp() {
   const [calcLoading, setCalcLoading] = useState(false);
   const [calcResult, setCalcResult] = useState<TakeoffCalcResult | null>(null);
   const [componentSchedule, setComponentSchedule] = useState<TakeoffComponentDefinition[]>(() => defaultComponentSchedule);
+  const [dimensionInputMode, setDimensionInputMode] = useState<DimensionInputMode>("decimal");
   const [floors, setFloors] = useState<TakeoffFloor[]>(() => [makeInitialFloor()]);
   const [activeFloorId, setActiveFloorId] = useState("floor-1");
   const [floorViewOptions, setFloorViewOptions] = useState<Record<string, FloorViewOptions>>(() => ({ "floor-1": defaultFloorViewOptions() }));
@@ -4297,7 +4539,7 @@ export function TakeoffApp() {
   const [dismissedValidationKeys, setDismissedValidationKeys] = useState<Set<string>>(() => new Set());
   const [activeSketchTarget, setActiveSketchTarget] = useState<SketchTarget | null>(null);
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
-  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", false, 0, "S", makeInitialFloor(), defaultComponentSchedule)));
+  const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", "decimal", false, 0, "S", makeInitialFloor(), defaultComponentSchedule)));
   const [saveLoading, setSaveLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
   const [openDialogLoading, setOpenDialogLoading] = useState(false);
@@ -4496,8 +4738,8 @@ export function TakeoffApp() {
   }, [roomMergeMenuOpen, roomTypeMenuOpen]);
 
   const takeoffProject = useMemo<TakeoffProject>(
-    () => makeTakeoffProject(projectName, location, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule),
-    [componentSchedule, floors, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
+    () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule),
+    [componentSchedule, dimensionInputMode, floors, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
   );
   const taggedBedroomCount = Math.max(floors.reduce((sum, entry) => sum + entry.rooms.filter((room) => room.roomType === "bedroom").length, 0), 1);
   const suggestedVentilationCfm = ventilationCfmForBedrooms(taggedBedroomCount);
@@ -4730,6 +4972,29 @@ export function TakeoffApp() {
 
   function updateFloor(patch: Partial<TakeoffFloor>) {
     setFloor((current) => ({ ...current, ...patch }));
+  }
+
+  function updateFloorDefaultCeilingHeight(height: number) {
+    setFloor((current) => ({
+      ...current,
+      defaultCeilingHeight: height,
+      rooms: current.rooms.map((room) => ({ ...room, ceilingGeometryApproved: false })),
+    }));
+  }
+
+  function applyFloorDefaultCeilingHeightToRooms() {
+    const height = floor.defaultCeilingHeight ?? 9;
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => ({
+        ...room,
+        ceilingHeight: height,
+        ceilingLowHeight: room.ceilingType === "vaulted" ? height : room.ceilingLowHeight,
+        ceilingPeakHeight: room.ceilingType === "vaulted" ? Math.max(height, room.ceilingPeakHeight ?? height + 1) : room.ceilingPeakHeight,
+        ceilingGeometryApproved: false,
+      })),
+    }));
+    setMessage(`${floor.name || "Active floor"} default ceiling height applied to ${floor.rooms.length} room${floor.rooms.length === 1 ? "" : "s"}.`);
   }
 
   function resetTransientFloorTools() {
@@ -5375,6 +5640,12 @@ export function TakeoffApp() {
               </g>
             );
           })}
+          {mode === "ceiling" && ceilingInfo.ceilingType === "tray" && trayBoundaryPoints(room, ceilingInfo.trayOffset).length >= 3 && (
+            <polygon
+              className="takeoff-room-sketch-tray"
+              points={sketchPointList(trayBoundaryPoints(room, ceilingInfo.trayOffset), ceilingProject)}
+            />
+          )}
           {roomEdges.flatMap((edge) => {
             const glass = openingsBySurfaceEdge("glass", edge);
             const doors = openingsBySurfaceEdge("door", edge);
@@ -5468,7 +5739,7 @@ export function TakeoffApp() {
             ? "NO_LOAD - Conditioned"
             : selectedDefinition ? `${selectedDefinition.code} - ${selectedDefinition.description}` : component.assembly;
           return (
-            <div key={component.id} className={`takeoff-component-row takeoff-component-row--workbench ${isEditingComponent ? "takeoff-component-row--editing" : "takeoff-component-row--readonly"} ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
+            <div key={component.id} className={`takeoff-component-row takeoff-component-row--workbench ${isEditingComponent ? "takeoff-component-row--editing" : "takeoff-component-row--readonly"} ${componentRequiresDirection(component) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
               <span className="takeoff-component-kind">{componentSurfaceLabel(surface)}</span>
               {isEditingComponent ? (
                 <>
@@ -5483,7 +5754,7 @@ export function TakeoffApp() {
                       <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
                     ))}
                   </select>
-                  {componentNeedsDirection(surface) ? (
+                  {componentRequiresDirection(component) ? (
                     <select
                       value={component.direction ?? ""}
                       className="takeoff-component-direction"
@@ -5666,6 +5937,9 @@ export function TakeoffApp() {
         ceilingPeakHeight: undefined,
         ceilingRidgeDirection: undefined,
         ceilingRidgeOffset: undefined,
+        ceilingTrayOffset: undefined,
+        ceilingTrayShape: undefined,
+        ceilingTraySteps: undefined,
         components: roomComponents(room).filter((component) => component.surface !== "ceiling"),
       };
     }
@@ -5676,13 +5950,16 @@ export function TakeoffApp() {
       ceilingPeakHeight: ceilingType === "vaulted" ? room.ceilingPeakHeight ?? Math.max(room.ceilingHeight, room.ceilingHeight + 1) : undefined,
       ceilingRidgeDirection: ceilingType === "vaulted" ? room.ceilingRidgeDirection ?? "E-W" : undefined,
       ceilingRidgeOffset: ceilingType === "vaulted" ? room.ceilingRidgeOffset ?? 0 : undefined,
+      ceilingTrayOffset: ceilingType === "tray" ? room.ceilingTrayOffset ?? 2 : undefined,
+      ceilingTrayShape: ceilingType === "tray" ? room.ceilingTrayShape ?? "rectangular" : undefined,
+      ceilingTraySteps: ceilingType === "tray" ? trayStepCount(room) : undefined,
     };
     const expectedCeilingArea = expectedSurfaceArea(nextRoom, "ceiling");
     const defaultCeiling = defaultComponent("ceiling", expectedCeilingArea);
     const normalizedCeiling = [{
       ...defaultCeiling,
       assembly: ceilingType === "vaulted" ? "C2" : "C1",
-      label: ceilingType === "vaulted" ? "Vaulted ceiling" : "Flat ceiling",
+      label: ceilingType === "vaulted" ? "Vaulted ceiling" : ceilingType === "tray" ? "Tray ceiling" : "Flat ceiling",
       area: Number(expectedCeilingArea.toFixed(3)),
     }];
     return {
@@ -8030,6 +8307,7 @@ export function TakeoffApp() {
       const firstLoadedFloor = loadedProject.floors[0] ?? makeInitialFloor();
       setProjectName(loadedProject.name);
       setLocation(loadedProject.location ?? "");
+      setDimensionInputMode(loadedProject.dimensionInputMode ?? "decimal");
       setMechanicalVentilation(Boolean(loadedProject.mechanicalVentilation));
       setVentilationCfm(Number(loadedProject.ventilationCfm ?? 0));
       setFrontDoorFaces(loadedProject.frontDoorFaces);
@@ -8380,6 +8658,13 @@ export function TakeoffApp() {
               Location <span className="required-star">*</span>
               <input value={location} placeholder="City, ST (e.g. Atlanta, GA)" onChange={(event) => setLocation(event.target.value)} />
             </label>
+            <label>
+              Dimension entry
+              <select value={dimensionInputMode} onChange={(event) => setDimensionInputMode(event.target.value as DimensionInputMode)}>
+                <option value="decimal">Decimal feet</option>
+                <option value="feet-inches">Feet and inches</option>
+              </select>
+            </label>
             <div className="takeoff-floor-manager">
               <div className="takeoff-floor-manager-head">
                 <span>Floors</span>
@@ -8414,46 +8699,45 @@ export function TakeoffApp() {
               </select>
             </label>
             <label>
-              Default ceiling height ft
-              <input
-                type="number"
-                min="0"
-                step="0.5"
+              Default ceiling height
+              <DimensionInput
                 value={floor.defaultCeilingHeight ?? 9}
-                onChange={(event) => setFloor((current) => ({
-                  ...current,
-                  defaultCeilingHeight: Number(event.target.value),
-                  rooms: current.rooms.map((room) => ({ ...room, ceilingGeometryApproved: false })),
-                }))}
+                mode={dimensionInputMode}
+                min={0}
+                step={0.5}
+                onCommit={updateFloorDefaultCeilingHeight}
               />
             </label>
+            <button type="button" onClick={applyFloorDefaultCeilingHeightToRooms} disabled={floor.rooms.length === 0}>
+              Apply default height to rooms
+            </button>
             <label>
-              Floor elevation ft
-              <input
-                type="number"
-                step="0.5"
+              Floor elevation
+              <DimensionInput
                 value={floor.elevation ?? 0}
-                onChange={(event) => updateFloor({ elevation: Number(event.target.value), coordinateSpace: "world_feet" })}
+                mode={dimensionInputMode}
+                step={0.5}
+                onCommit={(value) => updateFloor({ elevation: value, coordinateSpace: "world_feet" })}
               />
             </label>
             <label>
-              Floor-to-floor height ft
-              <input
-                type="number"
-                min="0"
-                step="0.5"
+              Floor-to-floor height
+              <DimensionInput
                 value={floor.floorToFloorHeight ?? 10}
-                onChange={(event) => updateFloor({ floorToFloorHeight: Number(event.target.value), coordinateSpace: "world_feet" })}
+                mode={dimensionInputMode}
+                min={0}
+                step={0.5}
+                onCommit={(value) => updateFloor({ floorToFloorHeight: value, coordinateSpace: "world_feet" })}
               />
             </label>
             <label>
-              Band joist height ft
-              <input
-                type="number"
-                min="0"
-                step="0.25"
+              Band joist height
+              <DimensionInput
                 value={floor.bandJoistHeight ?? 1}
-                onChange={(event) => updateFloor({ bandJoistHeight: Number(event.target.value), coordinateSpace: "world_feet" })}
+                mode={dimensionInputMode}
+                min={0}
+                step={0.25}
+                onCommit={(value) => updateFloor({ bandJoistHeight: value, coordinateSpace: "world_feet" })}
               />
             </label>
             <label className="check-field">Mechanical ventilation
@@ -9189,6 +9473,28 @@ export function TakeoffApp() {
                             Vault {ceilingInfo.ridgeDirection} {ceilingInfo.lowHeight}/{ceilingInfo.peakHeight} ft
                           </text>
                         </>
+                      ) : ceilingInfo.ceilingType === "tray" ? (
+                        <>
+                          {trayBoundaryPoints(room, ceilingInfo.trayOffset).length >= 3 && (
+                            <polygon
+                              points={trayBoundaryPoints(room, ceilingInfo.trayOffset).map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
+                              fill="none"
+                              stroke="#b35b2f"
+                              strokeWidth="2"
+                              strokeDasharray="6 4"
+                            />
+                          )}
+                          <text
+                            x={offsetX + labelPoint.x * scale}
+                            y={offsetY + labelPoint.y * scale - 18}
+                            fontSize="10"
+                            fill="#7f3f20"
+                            fontWeight="700"
+                            textAnchor="middle"
+                          >
+                            Tray {ceilingInfo.trayOffset} ft · {ceilingInfo.traySteps} step{ceilingInfo.traySteps === 1 ? "" : "s"}
+                          </text>
+                        </>
                       ) : (
                         <text
                           x={offsetX + labelPoint.x * scale}
@@ -9729,13 +10035,13 @@ export function TakeoffApp() {
                           <div id={validationTargetId("ceiling-geometry")} className={`takeoff-workbench-section-body ${validationSectionClass("ceiling-geometry")}`}>
                             <div className="takeoff-ceiling-shape">
                               <label>
-                                Ceiling height ft
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.5"
+                                Ceiling height
+                                <DimensionInput
                                   value={selectedRoom.ceilingHeight}
-                                  onChange={(event) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
+                                  mode={dimensionInputMode}
+                                  min={0}
+                                  step={0.5}
+                                  onCommit={(value) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingHeight: value })}
                                 />
                               </label>
                               <label>
@@ -9746,29 +10052,30 @@ export function TakeoffApp() {
                                 >
                                   <option value="flat">Flat / taller flat</option>
                                   <option value="vaulted">Vaulted</option>
+                                  <option value="tray">Tray</option>
                                   <option value="none">No ceiling load</option>
                                 </select>
                               </label>
                               {(selectedRoom.ceilingType ?? "flat") === "vaulted" && (
                                 <div className="takeoff-ceiling-shape-grid">
                                   <label>
-                                    Low height ft
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="0.5"
+                                    Low height
+                                    <DimensionInput
                                       value={selectedRoom.ceilingLowHeight ?? selectedRoom.ceilingHeight}
-                                      onChange={(event) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingLowHeight: Number(event.target.value) })}
+                                      mode={dimensionInputMode}
+                                      min={0}
+                                      step={0.5}
+                                      onCommit={(value) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingLowHeight: value })}
                                     />
                                   </label>
                                   <label>
-                                    Peak height ft
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="0.5"
+                                    Peak height
+                                    <DimensionInput
                                       value={selectedRoom.ceilingPeakHeight ?? Math.max(selectedRoom.ceilingHeight, selectedRoom.ceilingHeight + 1)}
-                                      onChange={(event) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingPeakHeight: Number(event.target.value) })}
+                                      mode={dimensionInputMode}
+                                      min={0}
+                                      step={0.5}
+                                      onCommit={(value) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingPeakHeight: value })}
                                     />
                                   </label>
                                   <label>
@@ -9780,6 +10087,41 @@ export function TakeoffApp() {
                                       <option value="E-W">East - West</option>
                                       <option value="N-S">North - South</option>
                                     </select>
+                                  </label>
+                                </div>
+                              )}
+                              {(selectedRoom.ceilingType ?? "flat") === "tray" && (
+                                <div className="takeoff-ceiling-shape-grid">
+                                  <label>
+                                    Tray offset
+                                    <DimensionInput
+                                      value={selectedRoom.ceilingTrayOffset ?? 2}
+                                      mode={dimensionInputMode}
+                                      min={0}
+                                      step={0.5}
+                                      onCommit={(value) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingTrayOffset: value })}
+                                    />
+                                  </label>
+                                  <label>
+                                    Tray shape
+                                    <select
+                                      value={selectedRoom.ceilingTrayShape ?? "rectangular"}
+                                      onChange={(event) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingTrayShape: event.target.value as NonNullable<TakeoffRectRoom["ceilingTrayShape"]> })}
+                                    >
+                                      <option value="rectangular">Rectangular</option>
+                                      <option value="clipped">Clipped corners</option>
+                                    </select>
+                                  </label>
+                                  <label>
+                                    Steps
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="6"
+                                      step="1"
+                                      value={selectedRoom.ceilingTraySteps ?? 1}
+                                      onChange={(event) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingTraySteps: Number(event.target.value) })}
+                                    />
                                   </label>
                                 </div>
                               )}
@@ -9829,7 +10171,7 @@ export function TakeoffApp() {
                                           <small>
                                             {Math.round(suggestion.area)} sf
                                             {suggestion.length && suggestion.addedHeight ? ` · ${Number(suggestion.length.toFixed(1))} lf x ${Number(suggestion.addedHeight.toFixed(1))} ft` : ""}
-                                            {suggestion.basis === "gable-end" ? " · vault gable" : " · raised wall band"} · {suggestion.direction}-side · {selectedAdjacency}
+                                            {suggestion.basis === "gable-end" ? " · vault gable" : suggestion.basis === "tray-step" ? " · tray knee wall" : " · raised wall band"} · {suggestion.direction ? `${suggestion.direction}-side` : "no direction required"} · {selectedAdjacency}
                                           </small>
                                         </span>
                                         <select
@@ -10033,13 +10375,13 @@ export function TakeoffApp() {
                                 />
                               </label>
                               <label>
-                                Ceiling height ft
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.5"
+                                Ceiling height
+                                <DimensionInput
                                   value={selectedAdjacentRoom.ceilingHeight}
-                                  onChange={(event) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingHeight: Number(event.target.value) })}
+                                  mode={dimensionInputMode}
+                                  min={0}
+                                  step={0.5}
+                                  onCommit={(value) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingHeight: value })}
                                 />
                               </label>
                               <label>
@@ -10056,23 +10398,23 @@ export function TakeoffApp() {
                               {(selectedAdjacentRoom.ceilingType ?? "flat") === "vaulted" && (
                                 <div className="takeoff-ceiling-shape-grid">
                                   <label>
-                                    Low height ft
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="0.5"
+                                    Low height
+                                    <DimensionInput
                                       value={selectedAdjacentRoom.ceilingLowHeight ?? selectedAdjacentRoom.ceilingHeight}
-                                      onChange={(event) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingLowHeight: Number(event.target.value) })}
+                                      mode={dimensionInputMode}
+                                      min={0}
+                                      step={0.5}
+                                      onCommit={(value) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingLowHeight: value })}
                                     />
                                   </label>
                                   <label>
-                                    Peak height ft
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="0.5"
+                                    Peak height
+                                    <DimensionInput
                                       value={selectedAdjacentRoom.ceilingPeakHeight ?? Math.max(selectedAdjacentRoom.ceilingHeight, selectedAdjacentRoom.ceilingHeight + 1)}
-                                      onChange={(event) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingPeakHeight: Number(event.target.value) })}
+                                      mode={dimensionInputMode}
+                                      min={0}
+                                      step={0.5}
+                                      onCommit={(value) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingPeakHeight: value })}
                                     />
                                   </label>
                                   <label>
@@ -10494,13 +10836,13 @@ export function TakeoffApp() {
                   </select>
                 </label>
                 <label>
-                  Ceiling height ft
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.5"
+                  Ceiling height
+                  <DimensionInput
                     value={selectedRoom.ceilingHeight}
-                    onChange={(event) => updateRoom(selectedRoom.id, { ceilingHeight: Number(event.target.value) })}
+                    mode={dimensionInputMode}
+                    min={0}
+                    step={0.5}
+                    onCommit={(value) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingHeight: value })}
                   />
                 </label>
                 {renderRoomTypeSuggestion(selectedRoom)}
@@ -10513,35 +10855,71 @@ export function TakeoffApp() {
                     >
                       <option value="flat">Flat / taller flat</option>
                       <option value="vaulted">Vaulted</option>
+                      <option value="tray">Tray</option>
                       <option value="none">No ceiling load</option>
                     </select>
                   </label>
                   {(selectedRoom.ceilingType ?? "flat") === "vaulted" && (
                     <div className="takeoff-ceiling-shape-grid">
                       <label>
-                        Low height ft
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.5"
+                        Low height
+                        <DimensionInput
                           value={selectedRoom.ceilingLowHeight ?? selectedRoom.ceilingHeight}
-                          onChange={(event) => updateRoom(selectedRoom.id, { ceilingLowHeight: Number(event.target.value) })}
+                          mode={dimensionInputMode}
+                          min={0}
+                          step={0.5}
+                          onCommit={(value) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingLowHeight: value })}
                         />
                       </label>
                       <label>
-                        Peak height ft
+                        Peak height
+                        <DimensionInput
+                          value={selectedRoom.ceilingPeakHeight ?? Math.max(selectedRoom.ceilingHeight, selectedRoom.ceilingHeight + 1)}
+                          mode={dimensionInputMode}
+                          min={0}
+                          step={0.5}
+                          onCommit={(value) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingPeakHeight: value })}
+                        />
+                      </label>
+                    </div>
+                  )}
+                  {(selectedRoom.ceilingType ?? "flat") === "tray" && (
+                    <div className="takeoff-ceiling-shape-grid">
+                      <label>
+                        Tray offset
+                        <DimensionInput
+                          value={selectedRoom.ceilingTrayOffset ?? 2}
+                          mode={dimensionInputMode}
+                          min={0}
+                          step={0.5}
+                          onCommit={(value) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingTrayOffset: value })}
+                        />
+                      </label>
+                      <label>
+                        Tray shape
+                        <select
+                          value={selectedRoom.ceilingTrayShape ?? "rectangular"}
+                          onChange={(event) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingTrayShape: event.target.value as NonNullable<TakeoffRectRoom["ceilingTrayShape"]> })}
+                        >
+                          <option value="rectangular">Rectangular</option>
+                          <option value="clipped">Clipped corners</option>
+                        </select>
+                      </label>
+                      <label>
+                        Steps
                         <input
                           type="number"
-                          min="0"
-                          step="0.5"
-                          value={selectedRoom.ceilingPeakHeight ?? Math.max(selectedRoom.ceilingHeight, selectedRoom.ceilingHeight + 1)}
-                          onChange={(event) => updateRoom(selectedRoom.id, { ceilingPeakHeight: Number(event.target.value) })}
+                          min="1"
+                          max="6"
+                          step="1"
+                          value={selectedRoom.ceilingTraySteps ?? 1}
+                          onChange={(event) => updateRoomCeilingGeometry(selectedRoom.id, { ceilingTraySteps: Number(event.target.value) })}
                         />
                       </label>
                     </div>
                   )}
                   <p className="takeoff-muted">
-                    Ceiling shape is stored with the editable takeoff JSON; vaulted geometry refinement and sketching will build on these values.
+                    Ceiling shape is stored with the editable takeoff JSON; generated knee-wall sections are added when ceiling geometry is approved.
                   </p>
                 </div>
                 {(["floor", "ceiling", "wall", "glass", "door"] as const).map((surface) => {
@@ -10609,7 +10987,7 @@ export function TakeoffApp() {
                               activeSketchTarget.surface === component.surface &&
                               (!activeSketchTarget.direction || !component.direction || activeSketchTarget.direction === component.direction);
                             return (
-                              <div key={component.id} className={`takeoff-component-row ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
+                              <div key={component.id} className={`takeoff-component-row ${componentRequiresDirection(component) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
                                 <select
                                   value={component.assembly}
                                   onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { assembly: event.target.value })}
@@ -10618,7 +10996,7 @@ export function TakeoffApp() {
                                     <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
                                   ))}
                                 </select>
-                                {componentNeedsDirection(surface) && (
+                                {componentRequiresDirection(component) && (
                                   <select
                                     value={component.direction ?? ""}
                                     onChange={(event) => updateRoomComponent(selectedRoom.id, component.id, { direction: event.target.value as TakeoffRoomComponent["direction"] || undefined })}
