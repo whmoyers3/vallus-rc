@@ -6040,9 +6040,11 @@ export function TakeoffApp() {
     if (!selectedOpening) return;
     const room = floor.rooms.find((candidate) => candidate.id === selectedOpening.roomId);
     const component = room ? roomComponents(room).find((candidate) => candidate.id === selectedOpening.componentId) : null;
+    if (component && !window.confirm(`Remove ${component.label || "this opening"} from ${room?.name || "this room"}? This cannot be undone.`)) return;
     removeRoomComponent(selectedOpening.roomId, selectedOpening.componentId);
     setEditingOpeningTarget(null);
     setOpeningPlacement(null);
+    setSelectedOpening(null);
     setMessage(component ? `${component.label || "Opening"} removed from ${room?.name || "room"}.` : "Opening removed.");
   }
 
@@ -10123,7 +10125,7 @@ export function TakeoffApp() {
                 {targetAdjacent.length > 0 ? ` Adjacent: ${targetAdjacent.map(adjacentSpaceLabel).join(", ")}.` : ""}
               </p>
               <div className="takeoff-opening-grid">
-                <label>
+                <label className="takeoff-opening-field">
                   Type
                   <select
                     value={openingPlacement.surface}
@@ -10133,7 +10135,7 @@ export function TakeoffApp() {
                     <option value="door">Door</option>
                   </select>
                 </label>
-                <label>
+                <label className="takeoff-opening-field takeoff-opening-field--component">
                   Component
                   <select
                     value={openingPlacement.assembly}
@@ -10145,7 +10147,7 @@ export function TakeoffApp() {
                   </select>
                 </label>
                 {openingPlacement.surface === "glass" && (
-                  <label>
+                  <label className="takeoff-opening-field">
                     Solar
                     <select
                       value={openingPlacement.solarDirection ?? ""}
@@ -10163,7 +10165,7 @@ export function TakeoffApp() {
                   {" · "}{componentThermalSummary(selectedDefinition)}
                   {openingPlacement.surface === "glass" && openingPlacement.solarDirection ? ` · exports as ${openingPlacement.solarDirection}` : ""}
                 </p>
-                <label>
+                <label className="takeoff-opening-field">
                   Width ft
                   <input
                     type="number"
@@ -10173,7 +10175,7 @@ export function TakeoffApp() {
                     onChange={(event) => updateOpeningPlacement({ width: Number(event.target.value) })}
                   />
                 </label>
-                <label>
+                <label className="takeoff-opening-field">
                   Height ft
                   <input
                     type="number"
@@ -10183,7 +10185,7 @@ export function TakeoffApp() {
                     onChange={(event) => updateOpeningPlacement({ height: Number(event.target.value) })}
                   />
                 </label>
-                <label>
+                <label className="takeoff-opening-field takeoff-opening-field--label">
                   Label
                   <input
                     value={openingPlacement.label}
@@ -10195,12 +10197,14 @@ export function TakeoffApp() {
                   <strong>{Number((openingPlacement.width * openingPlacement.height).toFixed(2))} sf</strong>
                 </div>
               </div>
-              <div className="takeoff-form-actions">
-                <button className="toolbar-primary" onClick={editingOpeningTarget ? confirmOpeningEdit : confirmOpeningPlacement}>
-                  {editingOpeningTarget ? "Update Opening" : "Confirm Opening"}
-                </button>
-                {editingOpeningTarget && <button onClick={removeSelectedOpening}>Remove Opening</button>}
-                <button onClick={closeOpeningDialog}>Cancel</button>
+              <div className="takeoff-opening-footer">
+                <div className="takeoff-form-actions">
+                  <button className="toolbar-primary" onClick={editingOpeningTarget ? confirmOpeningEdit : confirmOpeningPlacement}>
+                    {editingOpeningTarget ? "Update Opening" : "Confirm Opening"}
+                  </button>
+                  <button onClick={closeOpeningDialog}>Cancel</button>
+                </div>
+                {editingOpeningTarget && <button className="danger-button takeoff-opening-remove" onClick={removeSelectedOpening}>Remove</button>}
               </div>
             </div>
           </div>
