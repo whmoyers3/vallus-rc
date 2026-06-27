@@ -4761,7 +4761,6 @@ export function TakeoffApp() {
     !openingModeActive &&
     !(traceTool === "exterior" && !floor.perimeterLocked);
   const show2DDraftingPanels = planReviewMode === "plan" && workflowStep === "trace";
-  const projectInfoComplete = projectName.trim().length > 0 && location.trim().length > 0;
   const hasReference = Boolean(floor.reference);
   const hasHorizontalScale = floor.calibration.lines.some((line) => line.orientation === "horizontal" && scaleLineHasKnownDimension(line));
   const hasVerticalScale = floor.calibration.lines.some((line) => line.orientation === "vertical" && scaleLineHasKnownDimension(line));
@@ -4782,11 +4781,6 @@ export function TakeoffApp() {
   const validationTargetId = (section: ValidationSection) => selectedRoom ? validationSectionElementId(selectedRoom.id, section) : undefined;
   const setLeftSectionOpen = (section: LeftSetupSection, open: boolean) => {
     setLeftSectionsOpen((current) => ({ ...current, [section]: open }));
-  };
-  const handleProjectSectionBlur = (event: React.FocusEvent<HTMLDetailsElement>) => {
-    const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
-    if (projectInfoComplete) setLeftSectionOpen("project", false);
   };
   const floorScheduleOptions = componentSchedule.filter((component) => component.category === "Floor");
   const ceilingScheduleOptions = componentSchedule.filter((component) => component.category === "Ceiling");
@@ -4983,18 +4977,28 @@ export function TakeoffApp() {
   }
 
   function applyFloorDefaultCeilingHeightToRooms() {
-    const height = floor.defaultCeilingHeight ?? 9;
-    setFloor((current) => ({
-      ...current,
-      rooms: current.rooms.map((room) => ({
-        ...room,
-        ceilingHeight: height,
-        ceilingLowHeight: room.ceilingType === "vaulted" ? height : room.ceilingLowHeight,
-        ceilingPeakHeight: room.ceilingType === "vaulted" ? Math.max(height, room.ceilingPeakHeight ?? height + 1) : room.ceilingPeakHeight,
-        ceilingGeometryApproved: false,
-      })),
-    }));
-    setMessage(`${floor.name || "Active floor"} default ceiling height applied to ${floor.rooms.length} room${floor.rooms.length === 1 ? "" : "s"}.`);
+    let appliedHeight = floor.defaultCeilingHeight ?? 9;
+    let roomCount = floor.rooms.length;
+    let floorName = floor.name || "Active floor";
+    setFloor((current) => {
+      const height = current.defaultCeilingHeight ?? 9;
+      appliedHeight = height;
+      roomCount = current.rooms.length;
+      floorName = current.name || "Active floor";
+      return {
+        ...current,
+        rooms: current.rooms.map((room) => {
+          return {
+            ...room,
+            ceilingHeight: height,
+            ceilingLowHeight: room.ceilingType === "vaulted" ? height : room.ceilingLowHeight,
+            ceilingPeakHeight: room.ceilingType === "vaulted" ? Math.max(height, room.ceilingPeakHeight ?? height + 1) : room.ceilingPeakHeight,
+            ceilingGeometryApproved: false,
+          };
+        }),
+      };
+    });
+    setMessage(`${floorName} default ceiling height (${formatDimensionValue(appliedHeight, dimensionInputMode)}) applied to ${roomCount} room${roomCount === 1 ? "" : "s"}.`);
   }
 
   function resetTransientFloorTools() {
@@ -8633,7 +8637,6 @@ export function TakeoffApp() {
           <details
             className="takeoff-panel takeoff-left-details"
             open={leftSectionsOpen.project}
-            onBlur={handleProjectSectionBlur}
             onToggle={(event) => setLeftSectionOpen("project", event.currentTarget.open)}
           >
             <summary>
@@ -8708,8 +8711,15 @@ export function TakeoffApp() {
                 onCommit={updateFloorDefaultCeilingHeight}
               />
             </label>
-            <button type="button" onClick={applyFloorDefaultCeilingHeightToRooms} disabled={floor.rooms.length === 0}>
-              Apply default height to rooms
+            <button
+              type="button"
+              onMouseDown={() => {
+                if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+              }}
+              onClick={applyFloorDefaultCeilingHeightToRooms}
+              disabled={floor.rooms.length === 0}
+            >
+              Apply New Ceiling Height to All Rooms on this Floor
             </button>
             <label>
               Floor elevation
