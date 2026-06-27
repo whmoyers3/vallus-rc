@@ -2519,14 +2519,22 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
 function bandJoistMeshesForFloor(floor: TakeoffFloor, center: TakeoffPoint, topOffset: number, material: THREE.Material) {
   const height = Math.max(0, floor.bandJoistHeight ?? 1);
   if (height <= 0.01) return [];
-  const points = cleanPolygonPointsForRender(exteriorRingPoints(floor));
-  if (points.length < 3) return [];
-  return pointsToEdges(points).map((edge) => createPanelMesh([
-    modelPoint(edge.a, center, topOffset - height),
-    modelPoint(edge.b, center, topOffset - height),
-    modelPoint(edge.b, center, topOffset),
-    modelPoint(edge.a, center, topOffset),
-  ], material));
+  const bandJoistPanels: THREE.Mesh[] = [];
+  const edges = floor.rooms.length
+    ? floor.rooms
+        .filter((room) => room.floorType !== "slab")
+        .flatMap((room) => roomExteriorSegments(floor, room).map((segment) => ({ a: segment.a, b: segment.b })))
+    : pointsToEdges(cleanPolygonPointsForRender(exteriorRingPoints(floor)));
+  for (const edge of edges) {
+    if (distance(edge.a, edge.b) <= 0.01) continue;
+    bandJoistPanels.push(createPanelMesh([
+      modelPoint(edge.a, center, topOffset - height),
+      modelPoint(edge.b, center, topOffset - height),
+      modelPoint(edge.b, center, topOffset),
+      modelPoint(edge.a, center, topOffset),
+    ], material));
+  }
+  return bandJoistPanels;
 }
 
 function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number) {
