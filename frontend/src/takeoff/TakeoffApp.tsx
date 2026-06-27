@@ -166,6 +166,7 @@ type ActiveValidationTarget = {
   message: string;
   issueType?: TakeoffValidationIssue["issueType"];
   surfaceTreatmentSuggestion?: TakeoffValidationIssue["surfaceTreatmentSuggestion"];
+  wallComponentGeometrySuggestion?: TakeoffValidationIssue["wallComponentGeometrySuggestion"];
 };
 type ProjectValidationEntry = {
   floor: TakeoffFloor;
@@ -2187,6 +2188,32 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
+    for (const reconciliation of roomWallReconciliation(floor, room)) {
+      if (!reconciliation.isAssigned || reconciliation.suggestedGross <= 0) continue;
+      const delta = reconciliation.assignedGross - reconciliation.suggestedGross;
+      const tolerance = Math.max(1, reconciliation.suggestedGross * 0.02);
+      if (Math.abs(delta) <= tolerance) continue;
+      const component = roomSurfaceComponents(room, "wall").find((entry) =>
+        entry.direction === reconciliation.direction && !componentIsGeneratedCeilingWall(entry)
+      );
+      if (!component) continue;
+      const recommendation = recommendedWallTreatment(reconciliation.adjacentKinds, component.assembly || "W1");
+      issues.push({
+        severity: "error",
+        message: `${room.name || "Room"} has ${Math.round(reconciliation.assignedGross)} sf assigned to ${reconciliation.direction} wall, but detected exterior/load-bearing area is ${Math.round(reconciliation.suggestedGross)} sf after the current footprint. Apply the detected wall slice.`,
+        issueType: "wall-component-geometry-suggestion",
+        wallComponentGeometrySuggestion: {
+          action: "resize",
+          componentId: component.id,
+          direction: reconciliation.direction,
+          area: reconciliation.suggestedGross,
+          assembly: recommendation.assembly,
+          adjacency: recommendation.adjacency,
+          label: `${reconciliation.direction} ${recommendation.label.toLowerCase()}`,
+        },
+        target: roomTarget,
+      });
+    }
     if (!noFloorLoad && floorArea > roomArea + 0.5) {
       issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.`, target: roomTarget });
     }
@@ -2206,9 +2233,19 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         isCompassDirection(component.direction) &&
         !exteriorDirections.includes(component.direction)
       ) {
+        const removableWallComponent = component.surface === "wall" && !componentIsGeneratedCeilingWall(component);
         issues.push({
           severity: "error",
           message: `${room.name || "Room"} cannot assign a ${componentSurfaceLabel(component.surface).toLowerCase()} to ${component.direction}; detected exterior/load-bearing directions: ${exteriorDirections.join(", ") || "none"}.`,
+          issueType: removableWallComponent ? "wall-component-geometry-suggestion" : undefined,
+          wallComponentGeometrySuggestion: removableWallComponent
+            ? {
+                action: "remove",
+                componentId: component.id,
+                direction: component.direction,
+                label: component.label || `${component.direction} wall`,
+              }
+            : undefined,
           target: roomTarget,
         });
       }
@@ -3876,6 +3913,7 @@ function validationSectionForIssue(issue: TakeoffValidationIssue): ValidationSec
   const message = issue.message.toLowerCase();
   if (message.includes("room type") || message.includes("internal gains")) return "room-profile";
   if (message.includes("suggested exterior wall")) return "wall-suggestions";
+  if (issue.issueType === "wall-component-geometry-suggestion") return "wall-components";
   if (message.includes("glass") || message.includes("window") || message.includes("opening")) return "glass-components";
   if (message.includes("door")) return "door-components";
   if (message.includes("wall component") || message.includes("wall components") || message.includes("garage-adjacent") || message.includes("adjacent space")) return "wall-components";
@@ -5644,6 +5682,42 @@ export function TakeoffApp() {
     );
   }
 
+  function applyWallComponentGeometrySuggestion(issue: TakeoffValidationIssue) {
+    const suggestion = issue.wallComponentGeometrySuggestion;
+    const roomId = issue.target?.roomId;
+    if (!suggestion || !roomId) return;
+    const roomName = floor.rooms.find((room) => room.id === roomId)?.name || "Room";
+
+    if (suggestion.action === "remove") {
+      removeRoomComponent(roomId, suggestion.componentId);
+      setMessage(`${suggestion.label || "Wall component"} removed from ${roomName}; that boundary is no longer exterior/load-bearing.`);
+      return;
+    }
+
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        return {
+          ...room,
+          components: roomComponents(room).map((component) => (
+            component.id === suggestion.componentId
+              ? {
+                  ...component,
+                  area: Math.round(Math.max(0, suggestion.area ?? component.area)),
+                  assembly: suggestion.assembly ?? component.assembly,
+                  adjacency: suggestion.adjacency ?? component.adjacency,
+                  label: suggestion.label ?? component.label,
+                  source: "exterior-perimeter",
+                }
+              : component
+          )),
+        };
+      }),
+    }));
+    setMessage(`${suggestion.direction || "Wall"} wall slice updated to ${Math.round(suggestion.area ?? 0)} sf for ${roomName}.`);
+  }
+
   function updateRoomCeilingType(roomId: string, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>) {
     const nextFloor = {
       ...floor,
@@ -7132,6 +7206,7 @@ export function TakeoffApp() {
       message: issue.message,
       issueType: issue.issueType,
       surfaceTreatmentSuggestion: issue.surfaceTreatmentSuggestion,
+      wallComponentGeometrySuggestion: issue.wallComponentGeometrySuggestion,
     });
     if (issueFloor.id !== activeFloorId) {
       setActiveFloorId(issueFloor.id);
@@ -9145,6 +9220,7 @@ export function TakeoffApp() {
                             ? inferredRoomTypeFromName(selectedRoom.name)
                             : null;
                           const surfaceTreatmentSuggestion = activeRoomValidationTarget.surfaceTreatmentSuggestion;
+                          const wallComponentGeometrySuggestion = activeRoomValidationTarget.wallComponentGeometrySuggestion;
                           const suggestedLabel = roomTypeSuggestion
                             ? roomTypeOptions.find((option) => option.id === roomTypeSuggestion.type)?.shortLabel ?? roomTypeLabel(roomTypeSuggestion.type)
                             : "";
@@ -9153,6 +9229,7 @@ export function TakeoffApp() {
                             message: activeRoomValidationTarget.message,
                             issueType: activeRoomValidationTarget.issueType,
                             surfaceTreatmentSuggestion,
+                            wallComponentGeometrySuggestion,
                             target: { type: "room", roomId: selectedRoom.id },
                           };
                           return (
@@ -9170,6 +9247,8 @@ export function TakeoffApp() {
                                   </>
                                 ) : surfaceTreatmentSuggestion ? (
                                   <button className="toolbar-primary" onClick={() => applySurfaceTreatmentSuggestion(activeValidationIssue)}>Apply Change</button>
+                                ) : wallComponentGeometrySuggestion ? (
+                                  <button className="toolbar-primary" onClick={() => applyWallComponentGeometrySuggestion(activeValidationIssue)}>Apply Change</button>
                                 ) : (
                                   <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
                                 )}

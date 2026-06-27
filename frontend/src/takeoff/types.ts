@@ -241,12 +241,23 @@ export type TakeoffSurfaceTreatmentSuggestion = {
   conditionedPanelPolygons?: TakeoffPoint[][];
 };
 
+export type TakeoffWallComponentGeometrySuggestion = {
+  action: "remove" | "resize";
+  componentId: string;
+  direction?: TakeoffRoomComponent["direction"];
+  area?: number;
+  assembly?: string;
+  adjacency?: TakeoffWallAdjacency;
+  label?: string;
+};
+
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
-  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion";
+  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion";
   boundaryCandidateId?: string;
   surfaceTreatmentSuggestion?: TakeoffSurfaceTreatmentSuggestion;
+  wallComponentGeometrySuggestion?: TakeoffWallComponentGeometrySuggestion;
   target?: {
     type: "room" | "unassigned";
     roomId?: string;
