@@ -715,6 +715,16 @@ function expectedSurfaceArea(room: TakeoffRectRoom, surface: "floor" | "ceiling"
   return surface === "ceiling" ? ceilingGeometryInfo(room).slopedCeilingArea : rectArea(room);
 }
 
+function roomLightingBasis(room: TakeoffRectRoom): "Floor" | "Ceiling" {
+  const floorArea = rectArea(room);
+  const ceilingArea = expectedSurfaceArea(room, "ceiling");
+  return room.ceilingType !== "none" && ceilingArea > floorArea + 0.5 ? "Ceiling" : "Floor";
+}
+
+function roomLightingArea(room: TakeoffRectRoom) {
+  return roomLightingBasis(room) === "Ceiling" ? expectedSurfaceArea(room, "ceiling") : rectArea(room);
+}
+
 function roomAreaReconciliation(room: TakeoffRectRoom, surface: "floor" | "ceiling") {
   const roomArea = expectedSurfaceArea(room, surface);
   const assignedArea = componentAreaTotal(room, surface);
@@ -2289,13 +2299,15 @@ function buildVrcPayload(project: TakeoffProject) {
     const zoneId = `zone-${floor.id}`;
     const rooms = floor.rooms.map((room) => {
       const effectiveCeilingHeight = computedOpenToAboveHeight(floor, room, project.floors);
+      const conditionedFloorArea = rectArea(room);
+      const lightingBasis = roomLightingBasis(room);
       return {
         name: room.name,
-        floor_area: rectArea(room),
-        lighting_area: rectArea(room),
+        floor_area: conditionedFloorArea,
+        lighting_area: roomLightingArea(room),
         ceiling_height: effectiveCeilingHeight,
-        volume: rectArea(room) * effectiveCeilingHeight,
-        lighting_basis: "Floor",
+        volume: conditionedFloorArea * effectiveCeilingHeight,
+        lighting_basis: lightingBasis,
         room_type: room.roomType ?? "plain",
         ...(room.peopleOverride != null ? { people_override: room.peopleOverride } : {}),
         ...(room.applianceWattsOverride != null ? { appliance_watts_override: room.applianceWattsOverride } : {}),
