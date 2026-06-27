@@ -230,14 +230,6 @@ const roomTypeOptions: Array<{ id: TakeoffRoomType; label: string; shortLabel: s
   { id: "entertainment", label: "Entertainment (250 W + 1 person)", shortLabel: "Entertainment" },
   { id: "laundry", label: "Laundry (200 W)", shortLabel: "Laundry" },
 ];
-const planReviewModes: Array<{ id: PlanReviewMode; label: string; tooltip: string }> = [
-  { id: "plan", label: "Plan", tooltip: "Show the editable plan-tracing view." },
-  { id: "alignment", label: "Align", tooltip: "Show only floor plan references for multi-floor alignment." },
-  { id: "floor", label: "Floor", tooltip: "Review floor load areas by room." },
-  { id: "ceiling", label: "Ceiling", tooltip: "Review ceiling surfaces and height changes." },
-  { id: "walls", label: "Walls", tooltip: "Review wall exposure and opening assignments." },
-  { id: "elevation", label: "3D QA", tooltip: "Open the 3D quality-assurance view." },
-];
 type SavedTakeoffRow = {
   id: number;
   calculation_id?: number | null;
@@ -4074,6 +4066,17 @@ export function TakeoffApp() {
     setPlanReviewMode(mode);
   }
 
+  function open2DPlanView() {
+    setPlanReviewMode("plan");
+    setWorkflowStep("trace");
+    setTraceTool("select");
+    setRoomDrawMode(false);
+    setRoomPolygonMode(false);
+    setAdjacentDrawMode(false);
+    setSubtractMode(false);
+    stopOpeningPlacement();
+  }
+
   const floor = floors.find((candidate) => candidate.id === activeFloorId) ?? floors[0] ?? makeInitialFloor();
   const referenceUrl = referenceUrls[floor.id] ?? "";
   const activeFloorViewOptions = floorViewOptions[floor.id] ?? defaultFloorViewOptions();
@@ -4187,6 +4190,7 @@ export function TakeoffApp() {
     !subtractMode &&
     !openingModeActive &&
     !(traceTool === "exterior" && !floor.perimeterLocked);
+  const show2DDraftingPanels = planReviewMode === "plan" && workflowStep === "trace";
   const projectInfoComplete = projectName.trim().length > 0 && location.trim().length > 0;
   const hasReference = Boolean(floor.reference);
   const hasHorizontalScale = floor.calibration.lines.some((line) => line.orientation === "horizontal" && scaleLineHasKnownDimension(line));
@@ -7842,11 +7846,14 @@ export function TakeoffApp() {
         body: "Review exterior exposure, wall components, windows, doors, and no-load boundaries created by conditioned adjacent space.",
       };
     }
-    return {
-      tone: "neutral" as const,
-      title: "Trace mode enabled",
-      body: "Draw or edit the exterior, rooms, adjacent spaces, and openings. Validation will guide you to any missing wall or opening assignments.",
-    };
+    if (traceTool === "exterior" && !floor.perimeterLocked) {
+      return {
+        tone: "active" as const,
+        title: "Exterior trace enabled",
+        body: "Click the grid corners around the conditioned exterior. Lock the trace when the outline is complete.",
+      };
+    }
+    return null;
   })();
 
   return (
@@ -8074,6 +8081,13 @@ export function TakeoffApp() {
                 The reference is shown under the grid. Upload one floor-plan page at a time, up to 7 MB.
               </p>
             )}
+            <div className="takeoff-form-actions">
+              <button className={planReviewMode === "plan" && workflowStep === "trace" ? "toolbar-primary" : ""} onClick={open2DPlanView}>2D Plan</button>
+              {floor.reference && <button className={workflowStep === "crop" ? "toolbar-primary" : ""} onClick={enterCropMode}>Crop PDF</button>}
+              {canAlignCurrentReference && (
+                <button className={planReviewMode === "alignment" ? "toolbar-primary" : ""} onClick={continueToAlignment}>Align PDF</button>
+              )}
+            </div>
           </details>
 
           {floor.reference && (
@@ -8266,38 +8280,60 @@ export function TakeoffApp() {
                   <span>{Math.round(zoom * 100)}%</span>
                   <button data-tooltip="Zoom in one step." aria-label="Zoom in one step" onClick={() => stepPlanZoom(planZoomStep)}>+</button>
                 </div>
-                <div className="takeoff-review-mode-group" aria-label="Plan review mode">
-                  {planReviewModes.map((mode) => (
-                    <button
-                      key={mode.id}
-                      className={planReviewMode === mode.id ? "toolbar-primary" : ""}
-                      data-tooltip={mode.tooltip}
-                      aria-label={mode.tooltip}
-                      onClick={() => openPlanReviewMode(mode.id)}
-                    >
-                      {mode.label}
-                    </button>
-                  ))}
+                <div className="takeoff-review-mode-group" aria-label="View mode">
+                  <button
+                    className={planReviewMode !== "elevation" ? "toolbar-primary" : ""}
+                    data-tooltip="Show the editable 2D floor plan."
+                    aria-label="Show the editable 2D floor plan"
+                    onClick={open2DPlanView}
+                  >
+                    2D
+                  </button>
+                  <button
+                    className={planReviewMode === "elevation" ? "toolbar-primary" : ""}
+                    data-tooltip="Show the 3D quality-assurance model."
+                    aria-label="Show the 3D quality-assurance model"
+                    onClick={() => openPlanReviewMode("elevation")}
+                  >
+                    3D
+                  </button>
                 </div>
+                {planReviewMode !== "elevation" && (
+                  <div className="takeoff-stage-floor-chips" aria-label="Active floor">
+                    {orderedFloors.map((entry, index) => (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        className={entry.id === floor.id ? "toolbar-primary" : ""}
+                        aria-pressed={entry.id === floor.id}
+                        onClick={() => switchActiveFloor(entry.id)}
+                      >
+                        {entry.name || `Floor ${index + 1}`}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
 
-          <div className={`takeoff-mode-guidance takeoff-mode-guidance--${modeGuidance.tone}`}>
-            <div>
-              <strong>{modeGuidance.title}</strong>
-              <span>{modeGuidance.body}</span>
-            </div>
-            {modeGuidance.action && modeGuidance.actionLabel && (
-              <button onClick={modeGuidance.action}>{modeGuidance.actionLabel}</button>
-            )}
-            {workflowStep === "crop" && floor.reference && (
-              <div className="takeoff-mode-guidance-actions">
-                <button type="button" className="toolbar-primary" onClick={enterCropMode}>Crop</button>
-                <button type="button" onClick={proceedWithoutCropping}>Proceed without cropping</button>
+          {modeGuidance && (
+            <div className={`takeoff-mode-guidance takeoff-mode-guidance--${modeGuidance.tone}`}>
+              <div>
+                <strong>{modeGuidance.title}</strong>
+                <span>{modeGuidance.body}</span>
               </div>
-            )}
-          </div>
+              {modeGuidance.action && modeGuidance.actionLabel && (
+                <button onClick={modeGuidance.action}>{modeGuidance.actionLabel}</button>
+              )}
+              {workflowStep === "crop" && floor.reference && (
+                <div className="takeoff-mode-guidance-actions">
+                  <button type="button" className="toolbar-primary" onClick={enterCropMode}>Crop</button>
+                  <button type="button" onClick={proceedWithoutCropping}>Proceed without cropping</button>
+                </div>
+              )}
+            </div>
+          )}
 
           {planReviewMode === "alignment" && (
             <div className="takeoff-alignment-floating-controls">
@@ -9654,100 +9690,104 @@ export function TakeoffApp() {
             </div>
           </section>
 
-          <details className="takeoff-panel takeoff-right-details">
-            <summary>Drawing Tools</summary>
-            <div className="takeoff-form-actions">
-              <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
-              <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
-              <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setAdjacentDrawMode(false); setTraceTool("select"); }}>Subtract</button>
-              {roomPolygonDraft.length >= 3 && <button className="toolbar-primary" onClick={() => finishPolygonRoom()}>Finish Polygon</button>}
-              {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
-            </div>
-            {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle.</p>}
-            {roomPolygonMode && <p className="takeoff-note">Click room corners. After 3 points, use Finish Polygon, press Enter, or click the Close marker on the first point.</p>}
-            {subtractMode && (
-              <>
-                <label>
-                  Subtract from
-                  <select value={subtractRoomId || floor.rooms[0]?.id || ""} onChange={(event) => setSubtractRoomId(event.target.value)}>
-                    {floor.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+          {show2DDraftingPanels && (
+            <>
+              <details className="takeoff-panel takeoff-right-details">
+                <summary>Drawing Tools</summary>
+                <div className="takeoff-form-actions">
+                  <button className={roomDrawMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomDrawMode((current) => !current); setRoomPolygonMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Rect</button>
+                  <button className={roomPolygonMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setRoomPolygonMode((current) => !current); setRoomDrawMode(false); setAdjacentDrawMode(false); setSubtractMode(false); setTraceTool("select"); }}>Draw Polygon</button>
+                  <button className={subtractMode ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("trace"); setSubtractMode((current) => !current); setRoomDrawMode(false); setRoomPolygonMode(false); setAdjacentDrawMode(false); setTraceTool("select"); }}>Subtract</button>
+                  {roomPolygonDraft.length >= 3 && <button className="toolbar-primary" onClick={() => finishPolygonRoom()}>Finish Polygon</button>}
+                  {roomPolygonDraft.length > 0 && <button onClick={() => setRoomPolygonDraft([])}>Clear Points</button>}
+                </div>
+                {roomDrawMode && <p className="takeoff-note">Drag over the plan to create a room rectangle.</p>}
+                {roomPolygonMode && <p className="takeoff-note">Click room corners. After 3 points, use Finish Polygon, press Enter, or click the Close marker on the first point.</p>}
+                {subtractMode && (
+                  <>
+                    <label>
+                      Subtract from
+                      <select value={subtractRoomId || floor.rooms[0]?.id || ""} onChange={(event) => setSubtractRoomId(event.target.value)}>
+                        {floor.rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+                      </select>
+                    </label>
+                    <p className="takeoff-note">Drag a subtraction shape across the selected room to cut it away.</p>
+                  </>
+                )}
+                <div className="takeoff-room-form takeoff-room-form--rail">
+                  <label>Name<input value={draftRoom.name} onChange={(event) => setDraftRoom({ ...draftRoom, name: event.target.value })} /></label>
+                  <label>X ft<input type="number" value={draftRoom.x} onChange={(event) => setDraftRoom({ ...draftRoom, x: Number(event.target.value) })} /></label>
+                  <label>Y ft<input type="number" value={draftRoom.y} onChange={(event) => setDraftRoom({ ...draftRoom, y: Number(event.target.value) })} /></label>
+                  <label>Width<input type="number" min="0" value={draftRoom.width} onChange={(event) => setDraftRoom({ ...draftRoom, width: Number(event.target.value) })} /></label>
+                  <label>Depth<input type="number" min="0" value={draftRoom.depth} onChange={(event) => setDraftRoom({ ...draftRoom, depth: Number(event.target.value) })} /></label>
+                  <label>Height<input type="number" min="0" step="0.5" value={draftRoom.ceilingHeight} onChange={(event) => setDraftRoom({ ...draftRoom, ceilingHeight: Number(event.target.value) })} /></label>
+                </div>
+                <div className="takeoff-form-actions">
+                  <button className="toolbar-primary" onClick={addRoom}>Add Room</button>
+                  <button onClick={moveDraftRoomToOpenSpot}>Find Open Spot</button>
+                </div>
+                {message && <p className="takeoff-message">{message}</p>}
+              </details>
+
+              <details className="takeoff-panel takeoff-right-details takeoff-adjacent-details">
+                <summary>Adjacent Spaces</summary>
+                <div className="takeoff-form-actions">
+                  <select value={adjacentSpaceKind} onChange={(event) => setAdjacentSpaceKind(event.target.value as TakeoffAdjacentSpaceKind)}>
+                    {adjacentSpaceKinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}
                   </select>
-                </label>
-                <p className="takeoff-note">Drag a subtraction shape across the selected room to cut it away.</p>
-              </>
-            )}
-            <div className="takeoff-room-form takeoff-room-form--rail">
-              <label>Name<input value={draftRoom.name} onChange={(event) => setDraftRoom({ ...draftRoom, name: event.target.value })} /></label>
-              <label>X ft<input type="number" value={draftRoom.x} onChange={(event) => setDraftRoom({ ...draftRoom, x: Number(event.target.value) })} /></label>
-              <label>Y ft<input type="number" value={draftRoom.y} onChange={(event) => setDraftRoom({ ...draftRoom, y: Number(event.target.value) })} /></label>
-              <label>Width<input type="number" min="0" value={draftRoom.width} onChange={(event) => setDraftRoom({ ...draftRoom, width: Number(event.target.value) })} /></label>
-              <label>Depth<input type="number" min="0" value={draftRoom.depth} onChange={(event) => setDraftRoom({ ...draftRoom, depth: Number(event.target.value) })} /></label>
-              <label>Height<input type="number" min="0" step="0.5" value={draftRoom.ceilingHeight} onChange={(event) => setDraftRoom({ ...draftRoom, ceilingHeight: Number(event.target.value) })} /></label>
-            </div>
-            <div className="takeoff-form-actions">
-              <button className="toolbar-primary" onClick={addRoom}>Add Room</button>
-              <button onClick={moveDraftRoomToOpenSpot}>Find Open Spot</button>
-            </div>
-            {message && <p className="takeoff-message">{message}</p>}
-          </details>
-
-          <details className="takeoff-panel takeoff-right-details takeoff-adjacent-details">
-            <summary>Adjacent Spaces</summary>
-            <div className="takeoff-form-actions">
-              <select value={adjacentSpaceKind} onChange={(event) => setAdjacentSpaceKind(event.target.value as TakeoffAdjacentSpaceKind)}>
-                {adjacentSpaceKinds.map((kind) => <option key={kind.id} value={kind.id}>{kind.label}</option>)}
-              </select>
-              <button
-                className={adjacentDrawMode ? "toolbar-primary" : ""}
-                onClick={() => {
-                  setWorkflowStep("trace");
-                  setAdjacentDrawMode((current) => !current);
-                  setRoomDrawMode(false);
-                  setRoomPolygonMode(false);
-                  setSubtractMode(false);
-                  setTraceTool("select");
-                }}
-              >
-                {adjacentDrawMode ? "Stop Drawing" : "Draw Adjacent"}
-              </button>
-            </div>
-            {adjacentDrawMode ? (
-              <p className="takeoff-note">Drag a rectangle along the outside of conditioned space. Corners snap within 5 ft; hold Shift for precise placement, then release Shift during the drag to resume snapping.</p>
-            ) : (
-              <p className="takeoff-muted">Adjacent spaces tag exterior wall treatment without adding conditioned room area.</p>
-            )}
-            {(floor.adjacentSpaces ?? []).length > 0 && (
-              <div className="takeoff-adjacent-list">
-                {(floor.adjacentSpaces ?? []).map((space) => (
-                  <div key={space.id} className="takeoff-adjacent-row">
-                    <div className="takeoff-adjacent-row-main">
-                      <span><strong>{space.name}</strong> · {Math.round(polygonArea(adjacentSpaceCorners(space)))} sf · {adjacentSpaceLabel(space.kind)}</span>
-                      <button className={selectedRoomId === space.id ? "toolbar-primary" : ""} onClick={() => setSelectedRoomId(space.id)}>Select</button>
-                      <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
-                    </div>
-                    <p className="takeoff-muted">Select this shaded space to edit its ceiling / roof geometry in the Rooms panel.</p>
+                  <button
+                    className={adjacentDrawMode ? "toolbar-primary" : ""}
+                    onClick={() => {
+                      setWorkflowStep("trace");
+                      setAdjacentDrawMode((current) => !current);
+                      setRoomDrawMode(false);
+                      setRoomPolygonMode(false);
+                      setSubtractMode(false);
+                      setTraceTool("select");
+                    }}
+                  >
+                    {adjacentDrawMode ? "Stop Drawing" : "Draw Adjacent"}
+                  </button>
+                </div>
+                {adjacentDrawMode ? (
+                  <p className="takeoff-note">Drag a rectangle along the outside of conditioned space. Corners snap within 5 ft; hold Shift for precise placement, then release Shift during the drag to resume snapping.</p>
+                ) : (
+                  <p className="takeoff-muted">Adjacent spaces tag exterior wall treatment without adding conditioned room area.</p>
+                )}
+                {(floor.adjacentSpaces ?? []).length > 0 && (
+                  <div className="takeoff-adjacent-list">
+                    {(floor.adjacentSpaces ?? []).map((space) => (
+                      <div key={space.id} className="takeoff-adjacent-row">
+                        <div className="takeoff-adjacent-row-main">
+                          <span><strong>{space.name}</strong> · {Math.round(polygonArea(adjacentSpaceCorners(space)))} sf · {adjacentSpaceLabel(space.kind)}</span>
+                          <button className={selectedRoomId === space.id ? "toolbar-primary" : ""} onClick={() => setSelectedRoomId(space.id)}>Select</button>
+                          <button onClick={() => removeAdjacentSpace(space.id)}>Remove</button>
+                        </div>
+                        <p className="takeoff-muted">Select this shaded space to edit its ceiling / roof geometry in the Rooms panel.</p>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
-          </details>
+                )}
+              </details>
 
-          <details className="takeoff-panel takeoff-right-details">
-            <summary>Openings</summary>
-            <div className="takeoff-form-actions takeoff-openings-actions">
-              <button className={openingModeActive ? "toolbar-primary" : ""} onClick={() => (openingModeActive ? stopOpeningPlacement() : startOpeningPlacement())}>
-                {openingModeActive ? "Stop Placing" : "Place Opening"}
-              </button>
-              <button onClick={openComponentSchedule}>Component Schedule</button>
-            </div>
-            {openingModeActive ? (
-              <p className="takeoff-note">
-                Click the plan on an exterior wall. The tool will identify the room and wall facing, then ask which door or glass component to place.
-              </p>
-            ) : (
-              <p className="takeoff-muted">Openings are assigned from the plan grid and must land on exterior/load-bearing room edges.</p>
-            )}
-          </details>
+              <details className="takeoff-panel takeoff-right-details">
+                <summary>Openings</summary>
+                <div className="takeoff-form-actions takeoff-openings-actions">
+                  <button className={openingModeActive ? "toolbar-primary" : ""} onClick={() => (openingModeActive ? stopOpeningPlacement() : startOpeningPlacement())}>
+                    {openingModeActive ? "Stop Placing" : "Place Opening"}
+                  </button>
+                  <button onClick={openComponentSchedule}>Component Schedule</button>
+                </div>
+                {openingModeActive ? (
+                  <p className="takeoff-note">
+                    Click the plan on an exterior wall. The tool will identify the room and wall facing, then ask which door or glass component to place.
+                  </p>
+                ) : (
+                  <p className="takeoff-muted">Openings are assigned from the plan grid and must land on exterior/load-bearing room edges.</p>
+                )}
+              </details>
+            </>
+          )}
 
           {selectedRoom && (
             <section className="takeoff-panel">
