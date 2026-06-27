@@ -3676,10 +3676,8 @@ export function TakeoffApp() {
   const alignmentReferenceUrl = alignmentReferenceFloor ? referenceUrls[alignmentReferenceFloor.id] ?? "" : "";
   const alignmentReferenceDisplay = alignmentReferenceFloor ? referenceDisplayRectForFloor(alignmentReferenceFloor) : null;
   const alignmentPointPairs = floor.alignment?.pointPairs ?? [];
-  const alignmentInheritedScale = alignmentReferenceFloor
-    ? Math.max(0.25, Math.min(4, (alignmentReferenceFloor.calibration.appliedFactor || 1) / (floor.calibration.appliedFactor || 1)))
-    : 1;
-  const alignmentTransform = { ...defaultAlignmentTransform(alignmentInheritedScale), ...(floor.alignment?.transform ?? {}) };
+  const alignmentReferenceScaleFactor = alignmentReferenceFloor?.calibration.appliedFactor || 1;
+  const alignmentTransform = { ...defaultAlignmentTransform(), ...(floor.alignment?.transform ?? {}) };
   const canAlignCurrentReference = floors.length > 1 && Boolean(floor.alignment?.referenceFloorId && floor.reference && alignmentReferenceFloor?.reference);
   const alignmentEffectiveScale = alignmentTransform.scale;
   const unassignedCells = useMemo(() => {
@@ -3877,23 +3875,19 @@ export function TakeoffApp() {
   }
 
   function setAlignmentReferenceFloor(referenceFloorId: string) {
-    const nextReferenceFloor = floors.find((entry) => entry.id === referenceFloorId);
-    const nextInheritedScale = nextReferenceFloor
-      ? Math.max(0.25, Math.min(4, (nextReferenceFloor.calibration.appliedFactor || 1) / (floor.calibration.appliedFactor || 1)))
-      : 1;
     updateFloor({
       alignment: {
         ...(floor.alignment ?? {}),
         referenceFloorId,
         pointPairs: floor.alignment?.pointPairs ?? [],
-        transform: defaultAlignmentTransform(nextInheritedScale),
+        transform: defaultAlignmentTransform(),
       },
     });
   }
 
   function updateAlignmentTransform(patch: Partial<AlignmentTransform>) {
     setFloor((current) => {
-      const currentTransform = { ...defaultAlignmentTransform(alignmentInheritedScale), ...(current.alignment?.transform ?? {}) };
+      const currentTransform = { ...defaultAlignmentTransform(), ...(current.alignment?.transform ?? {}) };
       const nextTransform = {
         ...currentTransform,
         ...patch,
@@ -3923,8 +3917,8 @@ export function TakeoffApp() {
   }
 
   function resetAlignmentTransform() {
-    updateAlignmentTransform(defaultAlignmentTransform(alignmentInheritedScale));
-    setMessage("Alignment preview reset to the selected reference floor scale.");
+    updateAlignmentTransform(defaultAlignmentTransform());
+    setMessage("Alignment preview reset.");
   }
 
   function alignmentLocalToReferencePoint(point: TakeoffPoint) {
@@ -5829,16 +5823,24 @@ export function TakeoffApp() {
       setFloor((current) => ({
         ...current,
         reference: current.reference ? { ...current.reference, crop } : current.reference,
+        calibration: {
+          ...current.calibration,
+          lines: [],
+          linesVisible: false,
+          confirmed: true,
+          appliedFactor: alignmentReferenceScaleFactor,
+          areaConfirmed: false,
+        },
         alignment: {
           ...(current.alignment ?? {}),
           referenceFloorId: current.alignment?.referenceFloorId ?? alignmentReferenceFloor?.id,
           pointPairs: current.alignment?.pointPairs ?? [],
-          transform: defaultAlignmentTransform(alignmentInheritedScale),
+          transform: defaultAlignmentTransform(),
         },
       }));
       setWorkflowStep("trace");
       setPlanReviewMode("alignment");
-      setMessage("Crop applied. The active floor inherited the selected reference floor scale; use the alignment controls for fine adjustment.");
+      setMessage("Crop applied. The active floor inherited the selected reference floor's scale metadata; use the alignment controls for fine adjustment.");
       return;
     }
     setFloor((current) => ({
@@ -5857,6 +5859,7 @@ export function TakeoffApp() {
         : current.reference,
     }));
     setWorkflowStep("crop");
+    setPlanReviewMode("plan");
     setMessage("Crop reset. Drag a new crop around the plan area.");
   }
 
@@ -7150,14 +7153,15 @@ export function TakeoffApp() {
             <summary>Import Scale</summary>
             <p className="takeoff-muted">
                 {canAlignCurrentReference
-                  ? "Crop to the floor plan you wish to align. Sizing markers are not needed for upper-floor alignment."
+                  ? "Crop to the floor plan you wish to align. Sizing markers are not needed for floor-to-floor alignment."
                   : workflowStep === "calibrate"
                     ? "Click two endpoints for known dimensions on the preview."
                     : "Scale setup complete."}
               </p>
               <div className="takeoff-form-actions">
-                <button className={workflowStep === "crop" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("crop"); setRoomDrawMode(false); }}>Crop</button>
+                <button className={workflowStep === "crop" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("crop"); setPlanReviewMode("plan"); setRoomDrawMode(false); }}>Crop</button>
                 <button onClick={useWholeReference}>Use Whole Page</button>
+                <button onClick={clearCrop}>Undo Crop</button>
                 {canAlignCurrentReference && <button className="toolbar-primary" onClick={continueToAlignment}>Align Floors</button>}
                 {!canAlignCurrentReference && (
                   <>
@@ -7430,6 +7434,7 @@ export function TakeoffApp() {
                 <button type="button" onClick={() => stepAlignmentScale(0.005)} aria-label="Scale active plan up">+</button>
                 <button type="button" onClick={resetAlignmentTransform}>Reset</button>
               </div>
+              <button type="button" onClick={clearCrop}>Undo Crop</button>
               <button type="button" className="toolbar-primary" onClick={acceptAlignment}>Accept Alignment</button>
             </div>
           )}
