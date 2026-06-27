@@ -2732,6 +2732,12 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
   const depth = Math.max(floor.designGrid.depth, 1);
   const crop = floor.reference?.crop;
   const display = referenceDisplayRectForFloor(floor);
+  const transform = { ...defaultAlignmentTransform(), ...(floor.alignment?.transform ?? {}) };
+  const displayScale = Math.max(0.0001, transform.scale || 1);
+  const displayWidth = display.width * displayScale;
+  const displayDepth = display.depth * displayScale;
+  const displayX = display.x + transform.translateX;
+  const displayY = display.y + transform.translateY;
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
@@ -2751,10 +2757,10 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
     side: THREE.DoubleSide,
     transparent: true,
   });
-  const geometry = new THREE.PlaneGeometry(Math.max(display.width, 1), Math.max(display.depth, 1));
+  const geometry = new THREE.PlaneGeometry(Math.max(displayWidth, 1), Math.max(displayDepth, 1));
   geometry.rotateX(-Math.PI / 2);
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.set(display.x + display.width / 2 - center.x, -0.08, display.y + display.depth / 2 - center.y);
+  mesh.position.set(displayX + displayWidth / 2 - center.x, -0.08, displayY + displayDepth / 2 - center.y);
   return mesh;
 }
 
@@ -4562,6 +4568,15 @@ export function TakeoffApp() {
   function rejectRoomTypeSuggestion(roomId: string, suggestion: NonNullable<ReturnType<typeof inferredRoomTypeFromName>>) {
     updateRoom(roomId, { roomType: "plain", roomTypeSuggestionDismissedKey: suggestion.key });
     setActiveValidationTarget(null);
+  }
+
+  function recheckValidation() {
+    setFloors((current) => current.map((entry) => ({
+      ...entry,
+      rooms: entry.rooms.map((room) => ({ ...room, roomTypeSuggestionDismissedKey: undefined })),
+    })));
+    setActiveValidationTarget(null);
+    setMessage("Validation rechecked. Previously dismissed room-type suggestions can appear again.");
   }
 
   function updateRoomCeilingGeometry(roomId: string, patch: Partial<TakeoffRectRoom>) {
@@ -9577,6 +9592,7 @@ export function TakeoffApp() {
           <section className="takeoff-panel">
             <div className="takeoff-panel-head">
               <h2>Validation</h2>
+              <button type="button" onClick={recheckValidation}>Recheck Validation</button>
             </div>
             {validation.length === 0 ? (
               <p className="takeoff-ok">Ready for payload preview.</p>
@@ -9602,11 +9618,6 @@ export function TakeoffApp() {
                             <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "slice")}>Slice wall</button>
                             <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "whole-section")}>Whole section</button>
                             <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "ignore")}>Keep exterior</button>
-                          </div>
-                        )}
-                        {issue.surfaceTreatmentSuggestion && issue.target?.roomId && (
-                          <div className="takeoff-boundary-actions">
-                            <button className="toolbar-primary" onClick={() => applySurfaceTreatmentSuggestion(issue)}>Apply Change</button>
                           </div>
                         )}
                       </div>
