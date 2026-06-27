@@ -3671,6 +3671,10 @@ export function TakeoffApp() {
   const alignmentPointPairs = floor.alignment?.pointPairs ?? [];
   const alignmentTransform = { ...defaultAlignmentTransform(), ...(floor.alignment?.transform ?? {}) };
   const canAlignCurrentReference = floors.length > 1 && Boolean(floor.alignment?.referenceFloorId && floor.reference && alignmentReferenceFloor?.reference);
+  const alignmentAutoScale = alignmentReferenceDisplay && referenceDisplay.width > 0
+    ? alignmentReferenceDisplay.width / referenceDisplay.width
+    : 1;
+  const alignmentEffectiveScale = alignmentAutoScale * alignmentTransform.scale;
   const unassignedCells = useMemo(() => {
     if (floor.exteriorPolygon.length < 3 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
@@ -3880,18 +3884,32 @@ export function TakeoffApp() {
   function alignmentLocalToReferencePoint(point: TakeoffPoint) {
     const display = referenceDisplayRectForFloor(floor);
     return {
-      x: display.x + alignmentTransform.translateX + (point.x - display.x) * alignmentTransform.scale,
-      y: display.y + alignmentTransform.translateY + (point.y - display.y) * alignmentTransform.scale,
+      x: display.x + alignmentTransform.translateX + (point.x - display.x) * alignmentEffectiveScale,
+      y: display.y + alignmentTransform.translateY + (point.y - display.y) * alignmentEffectiveScale,
     };
   }
 
   function alignmentReferenceToLocalPoint(point: TakeoffPoint) {
     const display = referenceDisplayRectForFloor(floor);
-    const nextScale = Math.max(0.0001, alignmentTransform.scale);
+    const nextScale = Math.max(0.0001, alignmentEffectiveScale);
     return {
       x: Number(Math.min(floor.designGrid.width, Math.max(0, display.x + (point.x - display.x - alignmentTransform.translateX) / nextScale)).toFixed(3)),
       y: Number(Math.min(floor.designGrid.depth, Math.max(0, display.y + (point.y - display.y - alignmentTransform.translateY) / nextScale)).toFixed(3)),
     };
+  }
+
+  function acceptAlignment() {
+    setPlanReviewMode("plan");
+    setWorkflowStep("trace");
+    setTraceTool(floor.perimeterLocked ? "select" : "exterior");
+    setRoomDrawMode(false);
+    setAdjacentDrawMode(false);
+    setOpeningModeActive(false);
+    setMessage(
+      alignmentPointPairs.length > 0
+        ? `Alignment accepted with ${alignmentPointPairs.length} point pair${alignmentPointPairs.length === 1 ? "" : "s"}. Trace this floor's exterior next.`
+        : "Alignment preview accepted. Trace this floor's exterior next.",
+    );
   }
 
   function addSameScreenAlignmentPair(point: TakeoffPoint) {
@@ -7287,6 +7305,43 @@ export function TakeoffApp() {
             )}
           </div>
 
+          {planReviewMode === "alignment" && (
+            <div className="takeoff-alignment-floating-controls">
+              <div className="takeoff-alignment-control-main">
+                <label>
+                  Reference floor
+                  <select
+                    value={alignmentReferenceFloor?.id ?? ""}
+                    onChange={(event) => setAlignmentReferenceFloor(event.target.value)}
+                    disabled={floors.length <= 1}
+                  >
+                    {floors.filter((entry) => entry.id !== floor.id).map((entry) => (
+                      <option key={entry.id} value={entry.id}>{entry.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <span>{alignmentPointPairs.length} point pair{alignmentPointPairs.length === 1 ? "" : "s"}</span>
+                <button type="button" onClick={clearAlignmentPairs} disabled={alignmentPointPairs.length === 0}>Clear Pairs</button>
+              </div>
+              <div className="takeoff-alignment-dpad" aria-label="Move active floor reference">
+                <button type="button" className="takeoff-alignment-dpad-up" onClick={() => nudgeAlignment(0, -0.25)} aria-label="Move active plan up">Up</button>
+                <button type="button" className="takeoff-alignment-dpad-left" onClick={() => nudgeAlignment(-0.25, 0)} aria-label="Move active plan left">Left</button>
+                <button type="button" className="takeoff-alignment-dpad-right" onClick={() => nudgeAlignment(0.25, 0)} aria-label="Move active plan right">Right</button>
+                <button type="button" className="takeoff-alignment-dpad-down" onClick={() => nudgeAlignment(0, 0.25)} aria-label="Move active plan down">Down</button>
+              </div>
+              <div className="takeoff-alignment-scale-controls" aria-label="Scale active floor reference">
+                <button type="button" onClick={() => stepAlignmentScale(-0.005)} aria-label="Scale active plan down">-</button>
+                <span>
+                  {Math.round(alignmentTransform.scale * 1000) / 10}%
+                  {Math.abs(alignmentAutoScale - 1) > 0.001 ? ` fit ${Math.round(alignmentAutoScale * 1000) / 10}%` : ""}
+                </span>
+                <button type="button" onClick={() => stepAlignmentScale(0.005)} aria-label="Scale active plan up">+</button>
+                <button type="button" onClick={resetAlignmentTransform}>Reset</button>
+              </div>
+              <button type="button" className="toolbar-primary" onClick={acceptAlignment}>Accept Alignment</button>
+            </div>
+          )}
+
           <div className="takeoff-canvas-scroll" ref={canvasScrollRef}>
             {planReviewMode === "elevation" ? (
               <TakeoffModelPreview
@@ -7304,32 +7359,6 @@ export function TakeoffApp() {
               />
             ) : planReviewMode === "alignment" ? (
               <div className="takeoff-drawing-layer takeoff-alignment-layer" style={{ width: drawingWidth, height: drawingHeight }}>
-                <div className="takeoff-alignment-toolbar">
-                  <label>
-                    Reference floor
-                    <select
-                      value={alignmentReferenceFloor?.id ?? ""}
-                      onChange={(event) => setAlignmentReferenceFloor(event.target.value)}
-                      disabled={floors.length <= 1}
-                    >
-                      {floors.filter((entry) => entry.id !== floor.id).map((entry) => (
-                        <option key={entry.id} value={entry.id}>{entry.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <span>{alignmentPointPairs.length} point pair{alignmentPointPairs.length === 1 ? "" : "s"}</span>
-                  <button type="button" onClick={clearAlignmentPairs} disabled={alignmentPointPairs.length === 0}>Clear Pairs</button>
-                  <div className="takeoff-alignment-adjustments" aria-label="Active floor alignment controls">
-                    <button type="button" onClick={() => nudgeAlignment(0, -0.25)}>Up</button>
-                    <button type="button" onClick={() => nudgeAlignment(-0.25, 0)}>Left</button>
-                    <button type="button" onClick={() => nudgeAlignment(0.25, 0)}>Right</button>
-                    <button type="button" onClick={() => nudgeAlignment(0, 0.25)}>Down</button>
-                    <button type="button" onClick={() => stepAlignmentScale(-0.005)}>-</button>
-                    <span>{Math.round(alignmentTransform.scale * 1000) / 10}%</span>
-                    <button type="button" onClick={() => stepAlignmentScale(0.005)}>+</button>
-                    <button type="button" onClick={resetAlignmentTransform}>Reset</button>
-                  </div>
-                </div>
                 {alignmentReferenceFloor && alignmentReferenceUrl && alignmentReferenceDisplay && alignmentReferenceFloor.reference && (
                   <div
                     className="takeoff-reference-layer takeoff-reference-layer--alignment-base"
@@ -7360,7 +7389,7 @@ export function TakeoffApp() {
                       top: offsetY + referenceDisplay.y * scale,
                       width: referenceDisplay.width * scale,
                       height: referenceDisplay.depth * scale,
-                      transform: `translate(${alignmentTransform.translateX * scale}px, ${alignmentTransform.translateY * scale}px) scale(${alignmentTransform.scale})`,
+                      transform: `translate(${alignmentTransform.translateX * scale}px, ${alignmentTransform.translateY * scale}px) scale(${alignmentEffectiveScale})`,
                       transformOrigin: "top left",
                     }}
                   >
