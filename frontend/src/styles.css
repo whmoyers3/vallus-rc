@@ -2175,6 +2175,18 @@ button.toolbar-primary:hover {
   gap: 6px;
 }
 
+.takeoff-tools-sidebar .takeoff-validation-panel {
+  overflow: hidden;
+}
+
+.takeoff-validation-panel .takeoff-issue-list {
+  max-height: clamp(180px, 36vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
 .takeoff-issue-stack {
   display: flex;
   flex-direction: column;

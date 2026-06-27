@@ -10241,7 +10241,7 @@ export function TakeoffApp() {
             </section>
           )}
 
-          <section className="takeoff-panel">
+          <section className="takeoff-panel takeoff-validation-panel">
             <div className="takeoff-panel-head">
               <h2>Validation</h2>
               <button type="button" onClick={recheckValidation}>Recheck Validation</button>
