@@ -291,6 +291,7 @@ function makeInitialFloor(): TakeoffFloor {
     elevation: 0,
     floorToFloorHeight: 10,
     bandJoistHeight: 1,
+    floorAlignmentSnapEnabled: true,
     alignment: undefined,
     referencePoints: [],
     designGrid: { width: 60, depth: 45 },
@@ -713,6 +714,10 @@ function roomSurfaceNoLoad(room: TakeoffRectRoom, surface: TakeoffRoomComponent[
 
 function expectedSurfaceArea(room: TakeoffRectRoom, surface: "floor" | "ceiling") {
   return surface === "ceiling" ? ceilingGeometryInfo(room).slopedCeilingArea : rectArea(room);
+}
+
+function verticalSurfaceTolerance(planArea: number) {
+  return clamp(planArea * 0.01, 3, 12);
 }
 
 function roomLightingBasis(room: TakeoffRectRoom): "Floor" | "Ceiling" {
@@ -2013,7 +2018,8 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const ceilingLoadArea = componentLoadAreaTotal(room, "ceiling");
     const noFloorLoad = roomSurfaceNoLoad(room, "floor");
     const noCeilingLoad = roomSurfaceNoLoad(room, "ceiling");
-    const surfaceTolerance = 0.5;
+    const planSurfaceTolerance = verticalSurfaceTolerance(roomArea);
+    const ceilingSurfaceTolerance = planSurfaceTolerance * ceilingSurfaceRatio;
     const conditionedBelowArea = conditionedOverlapArea(room, floorBelow);
     const conditionedAboveArea = conditionedOverlapArea(room, floorAbove);
     const exposedFloorArea = Math.max(0, roomArea - conditionedBelowArea);
@@ -2024,10 +2030,10 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const exposedCeilingPanelPolygons = floorAbove ? exposedPanelPolygons(room, floorAbove) : [];
     const conditionedFloorPanelPolygons = floorBelow ? conditionedPanelPolygons(room, floorBelow) : [];
     const conditionedCeilingPanelPolygons = floorAbove ? conditionedPanelPolygons(room, floorAbove) : [];
-    const hasConditionedBelow = conditionedBelowArea > surfaceTolerance;
-    const hasConditionedAbove = conditionedAboveArea > surfaceTolerance;
-    const fullyConditionedBelow = hasConditionedBelow && exposedFloorArea <= surfaceTolerance;
-    const fullyConditionedAbove = hasConditionedAbove && exposedCeilingPlanArea <= surfaceTolerance;
+    const hasConditionedBelow = conditionedBelowArea > planSurfaceTolerance;
+    const hasConditionedAbove = conditionedAboveArea > planSurfaceTolerance;
+    const fullyConditionedBelow = hasConditionedBelow && exposedFloorArea <= planSurfaceTolerance;
+    const fullyConditionedAbove = hasConditionedAbove && exposedCeilingPlanArea <= planSurfaceTolerance;
     if (fullyConditionedBelow && room.floorType !== "none") {
       issues.push({
         severity: "warning",
@@ -2044,7 +2050,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
-    if (!fullyConditionedBelow && hasConditionedBelow && (noFloorLoad || room.floorType === "slab" || Math.abs(floorLoadArea - exposedFloorArea) > surfaceTolerance)) {
+    if (!fullyConditionedBelow && hasConditionedBelow && (noFloorLoad || room.floorType === "slab" || Math.abs(floorLoadArea - exposedFloorArea) > planSurfaceTolerance)) {
       issues.push({
         severity: "warning",
         message: `${room.name || "Room"} is partially covered by conditioned space below on ${floorBelow?.name || "the floor below"}: about ${Math.round(conditionedBelowArea)} sf conditioned and ${Math.round(exposedFloorArea)} sf exposed. Apply the split if only the exposed portion should carry floor load.`,
@@ -2106,7 +2112,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
-    if (!fullyConditionedAbove && hasConditionedAbove && (noCeilingLoad || Math.abs(ceilingLoadArea - exposedCeilingArea) > surfaceTolerance)) {
+    if (!fullyConditionedAbove && hasConditionedAbove && (noCeilingLoad || Math.abs(ceilingLoadArea - exposedCeilingArea) > ceilingSurfaceTolerance)) {
       issues.push({
         severity: "warning",
         message: `${room.name || "Room"} is partially covered by conditioned space above on ${floorAbove?.name || "the floor above"}: about ${Math.round(conditionedCeilingSurfaceArea)} sf conditioned ceiling surface and ${Math.round(exposedCeilingArea)} sf exposed to attic/roof. Apply the split if only the exposed portion should carry ceiling load.`,
@@ -2418,6 +2424,7 @@ function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFlo
     elevation: rawFloor.elevation ?? fallback.elevation,
     floorToFloorHeight: rawFloor.floorToFloorHeight ?? fallback.floorToFloorHeight,
     bandJoistHeight: rawFloor.bandJoistHeight ?? fallback.bandJoistHeight,
+    floorAlignmentSnapEnabled: rawFloor.floorAlignmentSnapEnabled ?? fallback.floorAlignmentSnapEnabled,
     alignment: rawFloor.alignment,
     referencePoints: rawFloor.referencePoints ?? [],
     designGrid: { ...fallback.designGrid, ...(rawFloor.designGrid ?? {}) },
@@ -6226,26 +6233,41 @@ export function TakeoffApp() {
     return { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
   }
 
-  function snapToExistingGeometry(point: TakeoffPoint) {
-    const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
-    let best = { point, distance: threshold };
+  function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean } = {}) {
+    const localThreshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
+    const floorAlignmentThreshold = Math.max(3, floor.scale.gridSnapInches / 12);
+    let best = { point, distance: Number.POSITIVE_INFINITY };
+    const considerSegmentSet = (points: TakeoffPoint[], threshold: number) => {
+      if (points.length < 2) return;
+      for (let index = 0; index < points.length; index += 1) {
+        const start = points[index];
+        const end = points[(index + 1) % points.length];
+        const startDistance = distance(point, start);
+        if (startDistance <= threshold && startDistance <= best.distance) best = { point: start, distance: startDistance };
+        const projected = closestPointOnSegment(point, start, end);
+        const projectedDistance = distance(point, projected);
+        if (projectedDistance <= threshold && projectedDistance <= best.distance) best = { point: projected, distance: projectedDistance };
+      }
+    };
     const segmentSets = [
       floor.exteriorPolygon,
       ...floor.rooms.map((room) => roomCorners(room)),
     ].filter((points) => points.length >= 2);
 
     for (const points of segmentSets) {
-      for (let index = 0; index < points.length; index += 1) {
-        const start = points[index];
-        const end = points[(index + 1) % points.length];
-        if (distance(point, start) <= best.distance) best = { point: start, distance: distance(point, start) };
-        const projected = closestPointOnSegment(point, start, end);
-        const projectedDistance = distance(point, projected);
-        if (projectedDistance <= best.distance) best = { point: projected, distance: projectedDistance };
+      considerSegmentSet(points, localThreshold);
+    }
+
+    if (options.includeFloorAlignment && floor.floorAlignmentSnapEnabled !== false) {
+      for (const entry of [nearestFloorByElevation(floor, floors, "below"), nearestFloorByElevation(floor, floors, "above")]) {
+        if (!entry) continue;
+        const exteriorPoints = exteriorRingPoints(entry);
+        if (polygonArea(exteriorPoints) > 0.5) considerSegmentSet(exteriorPoints, floorAlignmentThreshold);
       }
     }
 
-    return { x: Number(best.point.x.toFixed(3)), y: Number(best.point.y.toFixed(3)) };
+    const snapped = Number.isFinite(best.distance) ? best.point : point;
+    return { x: Number(snapped.x.toFixed(3)), y: Number(snapped.y.toFixed(3)) };
   }
 
   function constrainPointToAngle(previous: TakeoffPoint | undefined, point: TakeoffPoint) {
@@ -6261,8 +6283,8 @@ export function TakeoffApp() {
     };
   }
 
-  function prepareCornerPoint(point: TakeoffPoint, previous: TakeoffPoint | undefined, constrainAngle: boolean) {
-    const snapped = snapToExistingGeometry(point);
+  function prepareCornerPoint(point: TakeoffPoint, previous: TakeoffPoint | undefined, constrainAngle: boolean, includeFloorAlignment = false) {
+    const snapped = snapToExistingGeometry(point, { includeFloorAlignment });
     return constrainAngle ? constrainPointToAngle(previous, snapped) : snapped;
   }
 
@@ -6312,7 +6334,7 @@ export function TakeoffApp() {
 
   function movePoint(target: MovablePointTarget | undefined, point: TakeoffPoint) {
     if (!target) return;
-    const snapped = snapToExistingGeometry(point);
+    const snapped = snapToExistingGeometry(point, { includeFloorAlignment: target.type === "exterior" });
     setFloor((current) => {
       if (target.type === "exterior") {
         return {
@@ -7062,7 +7084,7 @@ export function TakeoffApp() {
     }
     if (traceTool === "exterior" && !floor.perimeterLocked) {
       event.preventDefault();
-      addExteriorPoint(prepareCornerPoint(point, floor.exteriorPolygon[floor.exteriorPolygon.length - 1], event.shiftKey));
+      addExteriorPoint(prepareCornerPoint(point, floor.exteriorPolygon[floor.exteriorPolygon.length - 1], event.shiftKey, true));
       suppressNextCanvasClickRef.current = true;
     }
   }
@@ -8071,6 +8093,14 @@ export function TakeoffApp() {
                 value={floor.scale.gridSnapInches}
                 onChange={(event) => updateFloor({ scale: { ...floor.scale, gridSnapInches: Number(event.target.value) } })}
               />
+            </label>
+            <label className="check-field">
+              <input
+                type="checkbox"
+                checked={floor.floorAlignmentSnapEnabled !== false}
+                onChange={(event) => updateFloor({ floorAlignmentSnapEnabled: event.target.checked })}
+              />
+              Snap exterior to nearby floors
             </label>
             <div className="takeoff-advanced-subsection">
               <h3>Fallback Footprint</h3>
