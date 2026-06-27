@@ -4830,12 +4830,13 @@ export function TakeoffApp() {
   const suggestedVentilationCfm = ventilationCfmForBedrooms(taggedBedroomCount);
   const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
   const serializedTakeoff = useMemo(() => takeoffSnapshot(persistableTakeoff), [persistableTakeoff]);
-  const isDirty = takeoffId === null || serializedTakeoff !== savedSnapshot;
+  const hasSaveWorthyChanges = serializedTakeoff !== savedSnapshot;
+  const isDirty = takeoffId === null || hasSaveWorthyChanges;
   useEffect(() => registerUnsavedNavigationGuard({
     id: "takeoff",
-    hasUnsavedChanges: () => isDirty,
+    hasUnsavedChanges: () => hasSaveWorthyChanges,
     message: "This takeoff has unsaved changes. Select OK to leave without saving, or Cancel to stay and save your work.",
-  }), [isDirty]);
+  }), [hasSaveWorthyChanges]);
   const computedFootprintArea = footprintArea(floor);
   const assignedArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
   const unassignedArea = computedFootprintArea - assignedArea;
@@ -8469,7 +8470,7 @@ export function TakeoffApp() {
   }
 
   function requestTakeoffSessionExit(label: string, action: PendingSessionExit["action"], navigates = false) {
-    if (!isDirty) {
+    if (!hasSaveWorthyChanges) {
       void action();
       return;
     }
@@ -8801,7 +8802,7 @@ export function TakeoffApp() {
         </div>
         <div className="takeoff-toolbar-actions">
           <button onClick={() => requestTakeoffSessionExit("start a new takeoff", resetToNewTakeoff)}>New</button>
-          <button onClick={openTakeoffList}>Open</button>
+          <button onClick={() => requestTakeoffSessionExit("open saved takeoffs", openTakeoffList)}>Open</button>
           <button onClick={undoLastTakeoffChange} disabled={undoStack.length === 0} title={undoStack[0] ? `Undo ${undoStack[0].label}` : "Nothing to undo"}>
             Undo
           </button>
@@ -11655,10 +11656,7 @@ export function TakeoffApp() {
                       <td>{row.description || "-"}</td>
                       <td>{formatTimestamp(row.updated_at) || "-"}</td>
                       <td>
-                        <button
-                          className="toolbar-primary"
-                          onClick={() => requestTakeoffSessionExit(`open ${row.name || "another takeoff"}`, () => loadTakeoff(row.id))}
-                        >
+                        <button className="toolbar-primary" onClick={() => loadTakeoff(row.id)}>
                           Open
                         </button>
                       </td>
