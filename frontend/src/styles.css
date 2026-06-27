@@ -1822,6 +1822,46 @@ button.toolbar-primary:hover {
   line-height: 1.2;
 }
 
+.takeoff-room-card-title {
+  align-items: center;
+  display: flex !important;
+  gap: 6px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.takeoff-room-card-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.takeoff-room-validation-badge {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 900;
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  width: 18px;
+}
+
+.takeoff-room-validation-badge--error {
+  background: #fdecec;
+  border: 1px solid #d26565;
+  color: #a13939;
+}
+
+.takeoff-room-validation-badge--warning {
+  background: #fff5df;
+  border: 1px solid #c48933;
+  color: #815a15;
+}
+
 .takeoff-room-tile span {
   color: #647486;
   font-size: 12px;

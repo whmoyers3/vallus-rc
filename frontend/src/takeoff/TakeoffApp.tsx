@@ -346,6 +346,11 @@ type AlignmentTransform = {
 };
 
 type DimensionInputMode = NonNullable<TakeoffProject["dimensionInputMode"]>;
+type UndoSnapshot = {
+  label: string;
+  snapshot: string;
+  activeFloorId: string;
+};
 
 function defaultFloorViewOptions(): FloorViewOptions {
   return { visible: true, reference: true, exterior: true, rooms: true };
@@ -4538,6 +4543,8 @@ export function TakeoffApp() {
   const [activeValidationTarget, setActiveValidationTarget] = useState<ActiveValidationTarget | null>(null);
   const [dismissedValidationKeys, setDismissedValidationKeys] = useState<Set<string>>(() => new Set());
   const [activeSketchTarget, setActiveSketchTarget] = useState<SketchTarget | null>(null);
+  const [undoStack, setUndoStack] = useState<UndoSnapshot[]>([]);
+  const undoRestoreInProgressRef = useRef(false);
   const [takeoffId, setTakeoffId] = useState<number | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState(() => takeoffSnapshot(makeTakeoffProject("Takeoff V1 Draft", "", "decimal", false, 0, "S", makeInitialFloor(), defaultComponentSchedule)));
   const [saveLoading, setSaveLoading] = useState(false);
@@ -4653,6 +4660,7 @@ export function TakeoffApp() {
   }, [canOpen3DView, planReviewMode]);
 
   function setFloor(update: React.SetStateAction<TakeoffFloor>) {
+    pushUndoSnapshot("floor edit");
     setFloors((currentFloors) => {
       const targetId = currentFloors.some((candidate) => candidate.id === activeFloorId)
         ? activeFloorId
@@ -4741,6 +4749,47 @@ export function TakeoffApp() {
     () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule),
     [componentSchedule, dimensionInputMode, floors, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
   );
+  const currentUndoSnapshot = useMemo(() => takeoffSnapshot(persistableTakeoffProject(takeoffProject)), [takeoffProject]);
+  function pushUndoSnapshot(label: string) {
+    if (undoRestoreInProgressRef.current) return;
+    const snapshot = currentUndoSnapshot;
+    setUndoStack((current) => {
+      if (current[0]?.snapshot === snapshot) return current;
+      return [{ label, snapshot, activeFloorId }, ...current].slice(0, 2);
+    });
+  }
+  function restoreProjectFromSnapshot(snapshot: UndoSnapshot) {
+    const restored = normalizeTakeoffProject(JSON.parse(snapshot.snapshot));
+    const restoredFloors = restored.floors.length ? restored.floors : [makeInitialFloor()];
+    setProjectName(restored.name);
+    setLocation(restored.location ?? "");
+    setDimensionInputMode(restored.dimensionInputMode ?? "decimal");
+    setMechanicalVentilation(Boolean(restored.mechanicalVentilation));
+    setVentilationCfm(Number(restored.ventilationCfm ?? 0));
+    setFrontDoorFaces(restored.frontDoorFaces);
+    setComponentSchedule(restored.componentSchedule?.length ? restored.componentSchedule : defaultComponentSchedule);
+    setFloors(restoredFloors);
+    setFloorViewOptions((current) => {
+      return Object.fromEntries(restoredFloors.map((entry) => [entry.id, current[entry.id] ?? defaultFloorViewOptions()]));
+    });
+    setActiveFloorId(restoredFloors.some((entry) => entry.id === snapshot.activeFloorId)
+      ? snapshot.activeFloorId
+      : restoredFloors[0]?.id ?? "floor-1");
+    setActiveValidationTarget(null);
+    setDismissedValidationKeys(new Set());
+    resetTransientFloorTools();
+  }
+  function undoLastTakeoffChange() {
+    const latest = undoStack[0];
+    if (!latest) return;
+    undoRestoreInProgressRef.current = true;
+    restoreProjectFromSnapshot(latest);
+    setUndoStack((current) => current.slice(1));
+    window.requestAnimationFrame(() => {
+      undoRestoreInProgressRef.current = false;
+    });
+    setMessage(`Undid ${latest.label}.`);
+  }
   const taggedBedroomCount = Math.max(floors.reduce((sum, entry) => sum + entry.rooms.filter((room) => room.roomType === "bedroom").length, 0), 1);
   const suggestedVentilationCfm = ventilationCfmForBedrooms(taggedBedroomCount);
   const persistableTakeoff = useMemo(() => persistableTakeoffProject(takeoffProject), [takeoffProject]);
@@ -4904,6 +4953,34 @@ export function TakeoffApp() {
     () => projectValidation.filter((entry) => !dismissedValidationKeys.has(entry.key)),
     [dismissedValidationKeys, projectValidation],
   );
+  const roomValidationSummary = useMemo(() => {
+    const summary = new Map<string, { errors: number; warnings: number }>();
+    for (const entry of visibleProjectValidation) {
+      const roomId = entry.issue.target?.roomId;
+      if (!roomId) continue;
+      const key = `${entry.floor.id}:${roomId}`;
+      const current = summary.get(key) ?? { errors: 0, warnings: 0 };
+      if (entry.issue.severity === "error") current.errors += 1;
+      else current.warnings += 1;
+      summary.set(key, current);
+    }
+    return summary;
+  }, [visibleProjectValidation]);
+  const roomValidationBadge = (floorId: string, roomId: string) => {
+    const summary = roomValidationSummary.get(`${floorId}:${roomId}`);
+    if (!summary || (!summary.errors && !summary.warnings)) return null;
+    const count = summary.errors + summary.warnings;
+    const label = `${count} validation ${count === 1 ? "flag" : "flags"}${summary.errors ? `, ${summary.errors} fix required` : ""}`;
+    return (
+      <span
+        className={`takeoff-room-validation-badge ${summary.errors ? "takeoff-room-validation-badge--error" : "takeoff-room-validation-badge--warning"}`}
+        aria-label={label}
+        title={label}
+      >
+        !
+      </span>
+    );
+  };
   const polygonDraftActive = roomPolygonMode && roomPolygonDraft.length > 0;
 
   useEffect(() => {
@@ -5033,6 +5110,7 @@ export function TakeoffApp() {
   }
 
   function addFloor() {
+    pushUndoSnapshot("add floor");
     const floorNumber = floors.length + 1;
     const previousTop = floors.reduce((maxElevation, entry) => Math.max(maxElevation, (entry.elevation ?? 0) + (entry.floorToFloorHeight ?? 10)), 0);
     const base = floor;
@@ -5056,6 +5134,7 @@ export function TakeoffApp() {
   }
 
   function addFloorBelow() {
+    pushUndoSnapshot("add floor below");
     const floorNumber = floors.length + 1;
     const base = floor;
     const existingNames = new Set(floors.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean));
@@ -5090,6 +5169,7 @@ export function TakeoffApp() {
     const target = floor;
     const confirmed = window.confirm(`Remove ${target.name || "this floor"}? This will delete its PDF reference, rooms, exterior trace, and alignment points. This cannot be undone.`);
     if (!confirmed) return;
+    pushUndoSnapshot("remove floor");
 
     if (referenceUrls[target.id]) revokeReferenceUrl(referenceUrls[target.id]);
     const remainingFloors = floors
@@ -6420,6 +6500,7 @@ export function TakeoffApp() {
       setMessage("That boundary warning is no longer current.");
       return;
     }
+    pushUndoSnapshot("boundary suggestion");
     const kneeWallArea = resolution === "whole-section" ? candidate.wholeSectionArea : candidate.area;
     const exteriorOverlapArea = resolution === "whole-section" ? candidate.wholeSectionArea : candidate.existingWallOverlapArea;
     setFloors((currentFloors) => currentFloors.map((entry) => {
@@ -7281,6 +7362,7 @@ export function TakeoffApp() {
       "Mirror the modeled plan left/right?\n\nThis mirrors every floor, the imported plan PDFs, rooms, adjacent spaces, openings, and directional load components. Compass directions such as E/W will be remapped. This can be reversed by running Mirror Model again, but review surfaces and validations afterward."
     );
     if (!ok) return;
+    pushUndoSnapshot("mirror model");
     setFloors((current) => current.map(mirrorFloorHorizontal));
     setFrontDoorFaces((current) => mirrorCompassHorizontal(current) as typeof current);
     setMessage("Modeled plan mirrored left/right. Review validation flags, wall directions, glass exposure, and plan PDF alignment.");
@@ -8317,6 +8399,7 @@ export function TakeoffApp() {
       setFrontDoorFaces(loadedProject.frontDoorFaces);
       setComponentSchedule(loadedProject.componentSchedule?.length ? loadedProject.componentSchedule : defaultComponentSchedule);
       setFloors(loadedProject.floors.length ? loadedProject.floors : [firstLoadedFloor]);
+      setUndoStack([]);
       setFloorViewOptions(Object.fromEntries((loadedProject.floors.length ? loadedProject.floors : [firstLoadedFloor]).map((entry) => [entry.id, defaultFloorViewOptions()])));
       setActiveFloorId(firstLoadedFloor.id);
       setTakeoffId(id);
@@ -8593,6 +8676,9 @@ export function TakeoffApp() {
         </div>
         <div className="takeoff-toolbar-actions">
           <button onClick={openTakeoffList}>Open</button>
+          <button onClick={undoLastTakeoffChange} disabled={undoStack.length === 0} title={undoStack[0] ? `Undo ${undoStack[0].label}` : "Nothing to undo"}>
+            Undo
+          </button>
           <button className="toolbar-primary" onClick={saveTakeoff} disabled={saveLoading}>
             {saveLoading ? "Saving..." : takeoffId ? "Save" : "Save Draft"}
           </button>
@@ -9761,7 +9847,10 @@ export function TakeoffApp() {
                         className={`takeoff-room-tile ${selectedRoomId === room.id ? "takeoff-room-tile--selected" : ""}`}
                         onClick={() => setSelectedRoomId(room.id)}
                       >
-                        <strong>{room.name}</strong>
+                        <span className="takeoff-room-card-title">
+                          <strong>{room.name}</strong>
+                          {roomValidationBadge(floor.id, room.id)}
+                        </span>
                         <span>{metric.value} {metric.label}</span>
                         {room.roomType && room.roomType !== "plain" && (
                           <em>{roomTypeLabel(room.roomType)}</em>
@@ -10687,7 +10776,10 @@ export function TakeoffApp() {
                   onClick={() => setSelectedRoomId(room.id)}
                 >
                   <div>
-                    <strong>{room.name}</strong>
+                    <span className="takeoff-room-card-title">
+                      <strong>{room.name}</strong>
+                      {roomValidationBadge(floor.id, room.id)}
+                    </span>
                     <span>
                       {Math.round(rectArea(room))} sf · {room.ceilingHeight} ft ·
                       floor {Math.round(componentAreaTotal(room, "floor"))} sf ·
