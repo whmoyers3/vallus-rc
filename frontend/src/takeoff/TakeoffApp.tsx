@@ -2343,6 +2343,17 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
       issues.push({
         severity: "warning",
         message: `${room.name || "Room"} is on the highest modeled floor with no ceiling treatment. Review ceiling treatment; choose flat/vaulted ceiling or attic/roof treatment as appropriate.`,
+        issueType: "surface-treatment-suggestion",
+        surfaceTreatmentSuggestion: {
+          surface: "ceiling",
+          action: "full",
+          roomArea: ceilingExpectedArea,
+          conditionedArea: 0,
+          exposedArea: ceilingExpectedArea,
+          assembly: "C1",
+          label: "Flat ceiling",
+          panelPolygons: exposedCeilingPanelPolygons,
+        },
         target: roomTarget,
       });
     }
