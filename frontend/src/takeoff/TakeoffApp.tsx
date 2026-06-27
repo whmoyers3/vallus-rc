@@ -843,7 +843,16 @@ function openingAreaByDirection(room: TakeoffRectRoom) {
   return openings;
 }
 
-function wallAreaByDirection(room: TakeoffRectRoom) {
+function assignedWallAreaByDirection(room: TakeoffRectRoom) {
+  const walls = new Map<(typeof directionOptions)[number], number>();
+  for (const component of roomComponents(room)) {
+    if (component.surface !== "wall" || !isCompassDirection(component.direction) || componentIsGeneratedCeilingWall(component)) continue;
+    walls.set(component.direction, (walls.get(component.direction) ?? 0) + Math.max(0, component.area || 0));
+  }
+  return walls;
+}
+
+function openingHostWallAreaByDirection(room: TakeoffRectRoom) {
   const walls = new Map<(typeof directionOptions)[number], number>();
   for (const component of roomComponents(room)) {
     if (component.surface !== "wall" || !isCompassDirection(component.direction) || !wallCanHostOpenings(component)) continue;
@@ -863,7 +872,7 @@ function componentAreaBySurfaceAndDirection(room: TakeoffRectRoom, surface: Take
 
 function roomWallReconciliation(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const suggested = new Map(roomExteriorWallSuggestions(floor, room).map((entry) => [entry.direction, entry.area]));
-  const assignedWalls = wallAreaByDirection(room);
+  const assignedWalls = assignedWallAreaByDirection(room);
   const windows = componentAreaBySurfaceAndDirection(room, "glass");
   const doors = componentAreaBySurfaceAndDirection(room, "door");
   const adjacent = adjacentKindsByDirection(floor, room);
@@ -2160,7 +2169,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     }
     const exteriorDirections = roomExteriorDirections(floor, room);
     const openingAreas = openingAreaByDirection(room);
-    const wallAreas = wallAreaByDirection(room);
+    const openingHostWallAreas = openingHostWallAreaByDirection(room);
     const missingSuggestedWalls = missingSuggestedExteriorWalls(floor, room);
     if (missingSuggestedWalls.length > 0) {
       issues.push({
@@ -2235,7 +2244,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
       }
     }
     for (const [direction, openingArea] of openingAreas) {
-      const wallArea = wallAreas.get(direction) ?? 0;
+      const wallArea = openingHostWallAreas.get(direction) ?? 0;
       if (openingArea > wallArea + 0.5) {
         issues.push({
           severity: "error",
