@@ -2618,6 +2618,8 @@ function TakeoffModelPreview({
   componentSchedule,
   selectedRoomId,
   onSelectRoom,
+  onUpdateFloorViewOptions,
+  onSetAllFloorViewOptions,
   onAssignSurfaceComponent,
 }: {
   floor: TakeoffFloor;
@@ -2629,6 +2631,8 @@ function TakeoffModelPreview({
   componentSchedule: TakeoffComponentDefinition[];
   selectedRoomId: string | null;
   onSelectRoom: (roomId: string) => void;
+  onUpdateFloorViewOptions: (floorId: string, patch: Partial<FloorViewOptions>) => void;
+  onSetAllFloorViewOptions: (patch: Partial<FloorViewOptions>) => void;
   onAssignSurfaceComponent: (selection: ModelSurfaceSelection, assembly: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -3240,7 +3244,7 @@ function TakeoffModelPreview({
       )}
       <div className="takeoff-model-layer-controls" aria-label="3D layer controls">
         {([
-          ["floors", "Floors"],
+          ["floors", "Floor plates"],
           ["ceilings", "Ceilings"],
           ["walls", "Exterior walls"],
           ["interiorWalls", "Interior walls"],
@@ -3275,6 +3279,59 @@ function TakeoffModelPreview({
         >
           All layers
         </button>
+      </div>
+      <div className="takeoff-model-floor-controls" aria-label="3D floor visibility controls">
+        <div className="takeoff-model-control-title">Floor Visibility</div>
+        <div className="takeoff-model-floor-actions">
+          <button type="button" onClick={() => onSetAllFloorViewOptions({ visible: true })}>Show all</button>
+          <button type="button" onClick={() => onSetAllFloorViewOptions({ visible: false })}>Hide all</button>
+          <button type="button" onClick={() => onSetAllFloorViewOptions({ reference: false })}>Hide PDFs</button>
+        </div>
+        <div className="takeoff-model-floor-list">
+          {floors.map((entry) => {
+            const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
+            return (
+              <fieldset key={entry.id}>
+                <legend>{entry.name}{entry.id === activeFloorId ? " · active" : ""}</legend>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={options.visible}
+                    onChange={(event) => onUpdateFloorViewOptions(entry.id, { visible: event.target.checked })}
+                  />
+                  <span>Floor</span>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={options.reference}
+                    disabled={!options.visible}
+                    onChange={(event) => onUpdateFloorViewOptions(entry.id, { reference: event.target.checked })}
+                  />
+                  <span>PDF</span>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={options.exterior}
+                    disabled={!options.visible}
+                    onChange={(event) => onUpdateFloorViewOptions(entry.id, { exterior: event.target.checked })}
+                  />
+                  <span>Exterior</span>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={options.rooms}
+                    disabled={!options.visible}
+                    onChange={(event) => onUpdateFloorViewOptions(entry.id, { rooms: event.target.checked })}
+                  />
+                  <span>Rooms</span>
+                </label>
+              </fieldset>
+            );
+          })}
+        </div>
       </div>
       {selectedSurface && (
         <div className="takeoff-model-surface-panel">
@@ -7591,6 +7648,8 @@ export function TakeoffApp() {
                 componentSchedule={componentSchedule}
                 selectedRoomId={selectedRoomId}
                 onSelectRoom={setSelectedRoomId}
+                onUpdateFloorViewOptions={updateFloorViewOptions}
+                onSetAllFloorViewOptions={setAllFloorViewOptions}
                 onAssignSurfaceComponent={assignModelSurfaceComponent}
               />
             ) : planReviewMode === "alignment" ? (
