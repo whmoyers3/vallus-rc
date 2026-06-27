@@ -6535,6 +6535,7 @@ export function TakeoffApp() {
   async function handleReference(file: File | undefined) {
     if (!file) return;
     const kind = file.type.includes("pdf") ? "pdf" : "image";
+    const shouldOpenAlignmentView = floors.length > 1 && Boolean(alignmentReferenceFloor?.reference);
     if (file.size > takeoffReferenceMaxBytes) {
       setMessage("Plan reference files are capped at 7 MB. Please upload a single extracted floor-plan page.");
       return;
@@ -6580,7 +6581,11 @@ export function TakeoffApp() {
       setMessage(error instanceof Error ? error.message : "Could not store the plan reference.");
       return;
     }
-    setWorkflowStep("crop");
+    setWorkflowStep(shouldOpenAlignmentView ? "trace" : "crop");
+    if (shouldOpenAlignmentView) {
+      setPlanReviewMode("alignment");
+      setMessage("Reference uploaded. Use the clean overlay to confirm alignment points between floors.");
+    }
     setTraceTool("select");
     setRoomDrawMode(false);
     setAdjacentDrawMode(false);
@@ -6909,7 +6914,16 @@ export function TakeoffApp() {
             </div>
             <label>
               Reference
-              <input id="takeoff-reference-input" type="file" accept=".pdf,image/*" onChange={(event) => handleReference(event.target.files?.[0])} />
+              <input
+                key={`takeoff-reference-input-${floor.id}`}
+                id="takeoff-reference-input"
+                type="file"
+                accept=".pdf,image/*"
+                onChange={(event) => {
+                  void handleReference(event.target.files?.[0]);
+                  event.currentTarget.value = "";
+                }}
+              />
             </label>
             {floor.reference && (
               <p className="takeoff-muted">
