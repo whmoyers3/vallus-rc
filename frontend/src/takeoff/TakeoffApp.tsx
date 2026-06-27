@@ -3920,6 +3920,10 @@ function validationSectionElementId(roomId: string, section: ValidationSection) 
   return `validation-target-${roomId}-${section}`;
 }
 
+function activeValidationElementId(roomId: string) {
+  return `active-validation-target-${roomId}`;
+}
+
 function scaleLineHasKnownDimension(line: TakeoffScaleLine) {
   return line.knownFeet > 0 && lineLength(scaleLineSourcePoints(line)) > 0;
 }
@@ -4272,6 +4276,24 @@ export function TakeoffApp() {
     const stillPresent = validation.some((issue, index) => validationIssueKey(issue, index) === activeValidationTarget.key);
     if (!stillPresent) setActiveValidationTarget(null);
   }, [activeValidationTarget, validation]);
+
+  useEffect(() => {
+    if (!activeRoomValidationTarget || !selectedRoom) return;
+    const section = activeRoomValidationTarget.section;
+    if (section === "floor-components") {
+      setRoomWorkbenchSections((current) => ({ ...current, floor: true }));
+    }
+    if (section === "ceiling-components" || section === "ceiling-geometry") {
+      setRoomWorkbenchSections((current) => ({ ...current, ceiling: true }));
+    }
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const sectionTarget = document.getElementById(validationSectionElementId(selectedRoom.id, section));
+        const activeTarget = document.getElementById(activeValidationElementId(selectedRoom.id));
+        (activeTarget ?? sectionTarget)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+  }, [activeRoomValidationTarget?.key, activeRoomValidationTarget?.roomId, activeRoomValidationTarget?.section, selectedRoom?.id]);
 
   useEffect(() => {
     if (!pendingInlineRoomNameSelectId || editingRoomId !== pendingInlineRoomNameSelectId) return;
@@ -6967,7 +6989,6 @@ export function TakeoffApp() {
       setRightPanelOpen(true);
       const room = floor.rooms.find((candidate) => candidate.id === issue.target?.roomId);
       setMessage(room ? `${room.name} selected from validation.` : "Room selected from validation.");
-      scrollToValidationSection(issue.target.roomId, section);
       return;
     }
     if (issue.target.type === "unassigned") {
@@ -8958,7 +8979,7 @@ export function TakeoffApp() {
                             target: { type: "room", roomId: selectedRoom.id },
                           };
                           return (
-                            <div className={`takeoff-active-validation takeoff-active-validation--${activeRoomValidationTarget.severity}`}>
+                            <div id={activeValidationElementId(selectedRoom.id)} className={`takeoff-active-validation takeoff-active-validation--${activeRoomValidationTarget.severity}`}>
                               <div>
                                 <strong>{activeRoomValidationTarget.severity === "error" ? "Fix required" : "Review suggestion"}</strong>
                                 <span>{validationSectionLabel(activeRoomValidationTarget.section)}</span>
