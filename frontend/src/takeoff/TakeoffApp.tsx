@@ -164,6 +164,7 @@ type ActiveValidationTarget = {
   section: ValidationSection;
   message: string;
   issueType?: TakeoffValidationIssue["issueType"];
+  surfaceTreatmentSuggestion?: TakeoffValidationIssue["surfaceTreatmentSuggestion"];
 };
 type SketchTarget = {
   roomId: string;
@@ -700,6 +701,12 @@ function componentAreaTotal(room: TakeoffRectRoom, surface: TakeoffRoomComponent
   return roomSurfaceComponents(room, surface).reduce((sum, component) => sum + Math.max(0, component.area || 0), 0);
 }
 
+function componentLoadAreaTotal(room: TakeoffRectRoom, surface: TakeoffRoomComponent["surface"]) {
+  return roomSurfaceComponents(room, surface)
+    .filter((component) => !component.loadExempt)
+    .reduce((sum, component) => sum + Math.max(0, component.area || 0), 0);
+}
+
 function roomSurfaceNoLoad(room: TakeoffRectRoom, surface: TakeoffRoomComponent["surface"]) {
   return (surface === "floor" && room.floorType === "none") || (surface === "ceiling" && room.ceilingType === "none");
 }
@@ -913,6 +920,7 @@ function payloadDirectionForComponent(component: TakeoffRoomComponent) {
 function payloadComponentsForRoom(room: TakeoffRectRoom) {
   const remainingOpenings = new Map(openingAreaByDirection(room));
   return roomComponents(room)
+    .filter((component) => !component.loadExempt)
     .map((component) => {
       if (component.surface !== "wall" || !isCompassDirection(component.direction) || !wallCanHostOpenings(component)) return exportedWallComponent(component);
       const remaining = remainingOpenings.get(component.direction) ?? 0;
@@ -1729,11 +1737,30 @@ function roomOverlapArea(a: TakeoffRectRoom, b: TakeoffRectRoom) {
   return width * depth;
 }
 
-function conditionedOverlapRatio(room: TakeoffRectRoom, otherFloor: TakeoffFloor | undefined) {
+function conditionedOverlapArea(room: TakeoffRectRoom, otherFloor: TakeoffFloor | undefined) {
   const roomArea = rectArea(room);
   if (!otherFloor || roomArea <= 0.25) return 0;
   const overlapArea = otherFloor.rooms.reduce((sum, otherRoom) => sum + roomOverlapArea(room, otherRoom), 0);
-  return clamp(overlapArea / roomArea, 0, 1);
+  return clamp(overlapArea, 0, roomArea);
+}
+
+function exposedPanelPolygons(room: TakeoffRectRoom, otherFloor: TakeoffFloor | undefined) {
+  let exposed: MultiPolygon = [roomToClipPolygon(room)];
+  const blockers = otherFloor?.rooms.map((otherRoom) => roomToClipPolygon(otherRoom)) ?? [];
+  if (blockers.length > 0) exposed = difference(exposed, ...blockers);
+  return simplePolygonsFromMultiPolygon(exposed)
+    .map(({ polygon }) => clipPolygonToPoints(polygon))
+    .filter((points) => polygonArea(points) > 0.5);
+}
+
+function conditionedPanelPolygons(room: TakeoffRectRoom, otherFloor: TakeoffFloor | undefined) {
+  const blockers = otherFloor?.rooms.map((otherRoom) => roomToClipPolygon(otherRoom)) ?? [];
+  if (blockers.length === 0) return [];
+  const [firstBlocker, ...remainingBlockers] = blockers;
+  const conditioned = intersection([roomToClipPolygon(room)], union(firstBlocker, ...remainingBlockers));
+  return simplePolygonsFromMultiPolygon(conditioned)
+    .map(({ polygon }) => clipPolygonToPoints(polygon))
+    .filter((points) => polygonArea(points) > 0.5);
 }
 
 function nearestFloorByElevation(floor: TakeoffFloor, floors: TakeoffFloor[], direction: "above" | "below") {
@@ -1946,16 +1973,56 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const roomArea = rectArea(room);
     const floorArea = componentAreaTotal(room, "floor");
     const ceilingArea = componentAreaTotal(room, "ceiling");
+    const floorLoadArea = componentLoadAreaTotal(room, "floor");
+    const ceilingLoadArea = componentLoadAreaTotal(room, "ceiling");
     const noFloorLoad = roomSurfaceNoLoad(room, "floor");
     const noCeilingLoad = roomSurfaceNoLoad(room, "ceiling");
-    const conditionedBelowRatio = conditionedOverlapRatio(room, floorBelow);
-    const conditionedAboveRatio = conditionedOverlapRatio(room, floorAbove);
-    const hasConditionedBelow = conditionedBelowRatio >= 0.5;
-    const hasConditionedAbove = conditionedAboveRatio >= 0.5;
-    if (hasConditionedBelow && room.floorType !== "none") {
+    const surfaceTolerance = 0.5;
+    const conditionedBelowArea = conditionedOverlapArea(room, floorBelow);
+    const conditionedAboveArea = conditionedOverlapArea(room, floorAbove);
+    const exposedFloorArea = Math.max(0, roomArea - conditionedBelowArea);
+    const exposedCeilingArea = Math.max(0, roomArea - conditionedAboveArea);
+    const exposedFloorPanelPolygons = floorBelow ? exposedPanelPolygons(room, floorBelow) : [];
+    const exposedCeilingPanelPolygons = floorAbove ? exposedPanelPolygons(room, floorAbove) : [];
+    const conditionedFloorPanelPolygons = floorBelow ? conditionedPanelPolygons(room, floorBelow) : [];
+    const conditionedCeilingPanelPolygons = floorAbove ? conditionedPanelPolygons(room, floorAbove) : [];
+    const hasConditionedBelow = conditionedBelowArea > surfaceTolerance;
+    const hasConditionedAbove = conditionedAboveArea > surfaceTolerance;
+    const fullyConditionedBelow = hasConditionedBelow && exposedFloorArea <= surfaceTolerance;
+    const fullyConditionedAbove = hasConditionedAbove && exposedCeilingArea <= surfaceTolerance;
+    if (fullyConditionedBelow && room.floorType !== "none") {
       issues.push({
         severity: "warning",
-        message: `${room.name || "Room"} overlaps conditioned space below on ${floorBelow?.name || "the floor below"}. Review floor treatment; it likely should be no floor load instead of ${room.floorType === "framed" ? "framed/exposed floor" : "slab"}.`,
+        message: `${room.name || "Room"} is covered by conditioned space below on ${floorBelow?.name || "the floor below"}. Review floor treatment; it likely should be no floor load instead of ${room.floorType === "framed" ? "framed/exposed floor" : "slab"}.`,
+        issueType: "surface-treatment-suggestion",
+        surfaceTreatmentSuggestion: {
+          surface: "floor",
+          action: "none",
+          roomArea,
+          conditionedArea: conditionedBelowArea,
+          exposedArea: 0,
+          adjacentFloorName: floorBelow?.name,
+        },
+        target: roomTarget,
+      });
+    }
+    if (!fullyConditionedBelow && hasConditionedBelow && (noFloorLoad || room.floorType === "slab" || Math.abs(floorLoadArea - exposedFloorArea) > surfaceTolerance)) {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} is partially covered by conditioned space below on ${floorBelow?.name || "the floor below"}: about ${Math.round(conditionedBelowArea)} sf conditioned and ${Math.round(exposedFloorArea)} sf exposed. Apply the split if only the exposed portion should carry floor load.`,
+        issueType: "surface-treatment-suggestion",
+        surfaceTreatmentSuggestion: {
+          surface: "floor",
+          action: "partial",
+          roomArea,
+          conditionedArea: conditionedBelowArea,
+          exposedArea: exposedFloorArea,
+          adjacentFloorName: floorBelow?.name,
+          assembly: "F1",
+          label: "Framed/exposed floor",
+          panelPolygons: exposedFloorPanelPolygons,
+          conditionedPanelPolygons: conditionedFloorPanelPolygons,
+        },
         target: roomTarget,
       });
     }
@@ -1963,6 +2030,18 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
       issues.push({
         severity: "warning",
         message: `${room.name || "Room"} does not overlap conditioned space below on ${floorBelow.name || "the floor below"}. Review floor treatment; choose slab or framed/exposed floor as appropriate.`,
+        issueType: "surface-treatment-suggestion",
+        surfaceTreatmentSuggestion: {
+          surface: "floor",
+          action: "full",
+          roomArea,
+          conditionedArea: 0,
+          exposedArea: roomArea,
+          adjacentFloorName: floorBelow.name,
+          assembly: "F1",
+          label: "Framed/exposed floor",
+          panelPolygons: exposedFloorPanelPolygons,
+        },
         target: roomTarget,
       });
     }
@@ -1973,10 +2052,39 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
-    if (hasConditionedAbove && (room.ceilingType ?? "flat") !== "none") {
+    if (fullyConditionedAbove && (room.ceilingType ?? "flat") !== "none") {
       issues.push({
         severity: "warning",
-        message: `${room.name || "Room"} overlaps conditioned space above on ${floorAbove?.name || "the floor above"}. Review ceiling treatment; it likely should be no ceiling load instead of ${(room.ceilingType ?? "flat") === "vaulted" ? "vaulted" : "flat"} ceiling.`,
+        message: `${room.name || "Room"} is covered by conditioned space above on ${floorAbove?.name || "the floor above"}. Review ceiling treatment; it likely should be no ceiling load instead of ${(room.ceilingType ?? "flat") === "vaulted" ? "vaulted" : "flat"} ceiling.`,
+        issueType: "surface-treatment-suggestion",
+        surfaceTreatmentSuggestion: {
+          surface: "ceiling",
+          action: "none",
+          roomArea,
+          conditionedArea: conditionedAboveArea,
+          exposedArea: 0,
+          adjacentFloorName: floorAbove?.name,
+        },
+        target: roomTarget,
+      });
+    }
+    if (!fullyConditionedAbove && hasConditionedAbove && (noCeilingLoad || Math.abs(ceilingLoadArea - exposedCeilingArea) > surfaceTolerance)) {
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} is partially covered by conditioned space above on ${floorAbove?.name || "the floor above"}: about ${Math.round(conditionedAboveArea)} sf conditioned and ${Math.round(exposedCeilingArea)} sf exposed to attic/roof. Apply the split if only the exposed portion should carry ceiling load.`,
+        issueType: "surface-treatment-suggestion",
+        surfaceTreatmentSuggestion: {
+          surface: "ceiling",
+          action: "partial",
+          roomArea,
+          conditionedArea: conditionedAboveArea,
+          exposedArea: exposedCeilingArea,
+          adjacentFloorName: floorAbove?.name,
+          assembly: "C1",
+          label: "Ceiling exposed to attic/roof",
+          panelPolygons: exposedCeilingPanelPolygons,
+          conditionedPanelPolygons: conditionedCeilingPanelPolygons,
+        },
         target: roomTarget,
       });
     }
@@ -1984,6 +2092,18 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
       issues.push({
         severity: "warning",
         message: `${room.name || "Room"} does not overlap conditioned space above on ${floorAbove.name || "the floor above"}. Review ceiling treatment; choose flat/vaulted ceiling or attic/roof treatment as appropriate.`,
+        issueType: "surface-treatment-suggestion",
+        surfaceTreatmentSuggestion: {
+          surface: "ceiling",
+          action: "full",
+          roomArea,
+          conditionedArea: 0,
+          exposedArea: roomArea,
+          adjacentFloorName: floorAbove.name,
+          assembly: "C1",
+          label: "Flat ceiling",
+          panelPolygons: exposedCeilingPanelPolygons,
+        },
         target: roomTarget,
       });
     }
@@ -2967,7 +3087,17 @@ function TakeoffModelPreview({
               scene.add(part.mesh);
             }
           } else {
-            scene.add(createHorizontalShapeMesh(points, center, yOffset + room.ceilingHeight, passiveCeilingMaterial));
+            const ceilingComponents = roomSurfaceComponents(room, "ceiling").filter((component) => !component.loadExempt);
+            const panelComponents = ceilingComponents.filter((component) => component.panelPolygons?.length);
+            if (panelComponents.length > 0) {
+              for (const component of panelComponents) {
+                for (const panel of component.panelPolygons ?? []) {
+                  scene.add(createHorizontalShapeMesh(panel, center, yOffset + room.ceilingHeight, passiveCeilingMaterial));
+                }
+              }
+            } else if (ceilingComponents.length > 0) {
+              scene.add(createHorizontalShapeMesh(points, center, yOffset + room.ceilingHeight, passiveCeilingMaterial));
+            }
           }
           const ridge = roomRidgePoints(room, center, otherFloor.defaultCeilingHeight ?? 9);
           if (ridge) {
@@ -3138,18 +3268,40 @@ function TakeoffModelPreview({
             scene.add(part.mesh);
           }
         } else {
-          const ceilingMesh = createHorizontalShapeMesh(points, center, activeFloorYOffset + room.ceilingHeight, roomCeilingMaterial);
-          ceilingMesh.userData.roomId = room.id;
-          ceilingMesh.userData.modelSurface = {
-            roomId: room.id,
-            roomName: room.name,
-            kind: "ceiling",
-            label: "Ceiling surface",
-            surface: "ceiling",
-            area: Number(rectArea(room).toFixed(3)),
-            assembly: roomSurfaceComponents(room, "ceiling")[0]?.assembly,
-          } satisfies ModelSurfaceSelection;
-          scene.add(ceilingMesh);
+          const ceilingComponents = roomSurfaceComponents(room, "ceiling").filter((component) => !component.loadExempt);
+          const panelComponents = ceilingComponents.filter((component) => component.panelPolygons?.length);
+          if (panelComponents.length > 0) {
+            for (const component of panelComponents) {
+              for (const panel of component.panelPolygons ?? []) {
+                const panelMesh = createHorizontalShapeMesh(panel, center, activeFloorYOffset + room.ceilingHeight, roomCeilingMaterial);
+                panelMesh.userData.roomId = room.id;
+                panelMesh.userData.modelSurface = {
+                  roomId: room.id,
+                  roomName: room.name,
+                  kind: "ceiling",
+                  label: component.label || "Ceiling surface",
+                  surface: "ceiling",
+                  area: Number(polygonArea(panel).toFixed(3)),
+                  assembly: component.assembly,
+                  componentId: component.id,
+                } satisfies ModelSurfaceSelection;
+                scene.add(panelMesh);
+              }
+            }
+          } else if (ceilingComponents.length > 0) {
+            const ceilingMesh = createHorizontalShapeMesh(points, center, activeFloorYOffset + room.ceilingHeight, roomCeilingMaterial);
+            ceilingMesh.userData.roomId = room.id;
+            ceilingMesh.userData.modelSurface = {
+              roomId: room.id,
+              roomName: room.name,
+              kind: "ceiling",
+              label: "Ceiling surface",
+              surface: "ceiling",
+              area: Number(rectArea(room).toFixed(3)),
+              assembly: ceilingComponents[0]?.assembly,
+            } satisfies ModelSurfaceSelection;
+            scene.add(ceilingMesh);
+          }
         }
       }
 
@@ -4796,8 +4948,10 @@ export function TakeoffApp() {
             ? wallAdjacencyLabel(component.adjacency ?? "outside")
             : surface === "glass"
               ? component.solarDirection ?? "Wall direction"
-              : "—";
-          const assemblyLabel = selectedDefinition ? `${selectedDefinition.code} - ${selectedDefinition.description}` : component.assembly;
+              : component.loadExempt ? "Conditioned" : "—";
+          const assemblyLabel = component.loadExempt
+            ? "NO_LOAD - Conditioned"
+            : selectedDefinition ? `${selectedDefinition.code} - ${selectedDefinition.description}` : component.assembly;
           return (
             <div key={component.id} className={`takeoff-component-row takeoff-component-row--workbench ${isEditingComponent ? "takeoff-component-row--editing" : "takeoff-component-row--readonly"} ${componentNeedsDirection(surface) ? "takeoff-component-row--directional" : ""} ${isStaleCeilingWall ? "takeoff-component-row--stale" : ""} ${isActiveComponentRow ? "takeoff-component-row--active" : ""}`}>
               <span className="takeoff-component-kind">{componentSurfaceLabel(surface)}</span>
@@ -4806,8 +4960,10 @@ export function TakeoffApp() {
                   <select
                     value={component.assembly}
                     className="takeoff-component-assembly"
+                    disabled={component.loadExempt}
                     onChange={(event) => updateRoomComponentAssembly(room.id, component.id, surface, event.target.value)}
                   >
+                    {component.loadExempt ? <option value={component.assembly}>NO_LOAD - Conditioned</option> : null}
                     {options.map((option) => (
                       <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
                     ))}
@@ -4897,10 +5053,11 @@ export function TakeoffApp() {
               <p className="takeoff-component-meta">
                 <strong>{selectedDefinition?.code ?? component.assembly}</strong>
                 {sourceLabel ? <em>{sourceLabel}</em> : null}
+                {component.loadExempt ? <em>No load</em> : null}
                 {isStaleCeilingWall ? " · Stale ceiling-generated wall" : ""}
                 {component.surface === "glass" && component.solarDirection ? ` · Solar ${component.solarDirection}` : ""}
                 {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
-                {" · "}{componentThermalSummary(selectedDefinition)}
+                {component.loadExempt ? "" : <>{" · "}{componentThermalSummary(selectedDefinition)}</>}
               </p>
             </div>
           );
@@ -5195,10 +5352,12 @@ export function TakeoffApp() {
       ...current,
       rooms: current.rooms.map((room) => {
         if (room.id !== roomId) return room;
-        const existing = roomSurfaceComponents(room, surface)[0];
+        const existing = roomSurfaceComponents(room, surface).find((component) => !component.loadExempt);
         const component = {
           ...(existing ?? defaultComponent(surface, rectArea(room))),
           area: Number(rectArea(room).toFixed(3)),
+          loadExempt: false,
+          panelPolygons: undefined,
         };
         return {
           ...room,
@@ -5242,6 +5401,67 @@ export function TakeoffApp() {
       }
     }
     setMessage(`${componentSurfaceLabel(surface)} load marked as none for this room.`);
+  }
+
+  function applySurfaceTreatmentSuggestion(issue: TakeoffValidationIssue) {
+    const suggestion = issue.surfaceTreatmentSuggestion;
+    const roomId = issue.target?.roomId;
+    if (!suggestion || !roomId) return;
+
+    if (suggestion.action === "none" || suggestion.exposedArea <= 0.5) {
+      setRoomSurfaceNoLoad(roomId, suggestion.surface);
+      return;
+    }
+
+    const surface = suggestion.surface;
+    const componentArea = Number(Math.max(0, suggestion.exposedArea).toFixed(3));
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        const existing = roomSurfaceComponents(room, surface).find((component) => !component.loadExempt);
+        const loadComponent: TakeoffRoomComponent = {
+          ...(existing ?? defaultComponent(surface, componentArea)),
+          surface,
+          assembly: suggestion.assembly || existing?.assembly || (surface === "ceiling" ? "C1" : "F1"),
+          area: componentArea,
+          label: suggestion.label || existing?.label || (surface === "ceiling" ? "Ceiling exposed to attic/roof" : "Framed/exposed floor"),
+          loadExempt: false,
+          panelPolygons: suggestion.panelPolygons?.length ? suggestion.panelPolygons : undefined,
+        };
+        const conditionedArea = Number(Math.max(0, suggestion.conditionedArea).toFixed(3));
+        const conditionedComponent: TakeoffRoomComponent | null = suggestion.action === "partial" && conditionedArea > 0.5
+          ? {
+              ...defaultComponent(surface, conditionedArea),
+              assembly: "NO_LOAD",
+              area: conditionedArea,
+              label: surface === "ceiling" ? "Conditioned space above - no load" : "Conditioned space below - no load",
+              loadExempt: true,
+              panelPolygons: suggestion.conditionedPanelPolygons?.length ? suggestion.conditionedPanelPolygons : undefined,
+            }
+          : null;
+        return {
+          ...room,
+          floorType: surface === "floor" ? (loadComponent.assembly === "F2" ? "slab" : "framed") : room.floorType,
+          ceilingType: surface === "ceiling" ? "flat" : room.ceilingType,
+          ceilingGeometryApproved: surface === "ceiling" ? false : room.ceilingGeometryApproved,
+          ceilingLowHeight: surface === "ceiling" ? undefined : room.ceilingLowHeight,
+          ceilingPeakHeight: surface === "ceiling" ? undefined : room.ceilingPeakHeight,
+          ceilingRidgeDirection: surface === "ceiling" ? undefined : room.ceilingRidgeDirection,
+          ceilingRidgeOffset: surface === "ceiling" ? undefined : room.ceilingRidgeOffset,
+          components: [
+            ...roomComponents(room).filter((entry) => entry.surface !== surface),
+            loadComponent,
+            ...(conditionedComponent ? [conditionedComponent] : []),
+          ],
+        };
+      }),
+    }));
+    setMessage(
+      suggestion.action === "partial"
+        ? `${componentSurfaceLabel(surface)} split applied: ${Math.round(suggestion.conditionedArea)} sf conditioned, ${Math.round(componentArea)} sf exposed.`
+        : `${componentSurfaceLabel(surface)} set to ${Math.round(componentArea)} sf.`,
+    );
   }
 
   function updateRoomCeilingType(roomId: string, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>) {
@@ -6592,6 +6812,7 @@ export function TakeoffApp() {
       section,
       message: issue.message,
       issueType: issue.issueType,
+      surfaceTreatmentSuggestion: issue.surfaceTreatmentSuggestion,
     });
     if (issue.target?.roomId) {
       const sketchSurface = sketchSurfaceForSection(section);
@@ -6953,7 +7174,7 @@ export function TakeoffApp() {
       }
     }
     const allFloorValidation = floors.flatMap((entry) =>
-      buildValidation(entry, entry.id === floor.id ? unassignedRegions : []).map((issue, index) => ({ floor: entry, issue, index }))
+      buildValidation(entry, entry.id === floor.id ? unassignedRegions : [], floors).map((issue, index) => ({ floor: entry, issue, index }))
     );
     const blockingEntry = allFloorValidation.find((entry) => entry.issue.severity === "error") ?? null;
     const blockingIssue = blockingEntry?.issue ?? null;
@@ -8570,9 +8791,17 @@ export function TakeoffApp() {
                           const roomTypeSuggestion = activeRoomValidationTarget.issueType === "room-type-suggestion"
                             ? inferredRoomTypeFromName(selectedRoom.name)
                             : null;
+                          const surfaceTreatmentSuggestion = activeRoomValidationTarget.surfaceTreatmentSuggestion;
                           const suggestedLabel = roomTypeSuggestion
                             ? roomTypeOptions.find((option) => option.id === roomTypeSuggestion.type)?.shortLabel ?? roomTypeLabel(roomTypeSuggestion.type)
                             : "";
+                          const activeValidationIssue: TakeoffValidationIssue = {
+                            severity: activeRoomValidationTarget.severity,
+                            message: activeRoomValidationTarget.message,
+                            issueType: activeRoomValidationTarget.issueType,
+                            surfaceTreatmentSuggestion,
+                            target: { type: "room", roomId: selectedRoom.id },
+                          };
                           return (
                             <div className={`takeoff-active-validation takeoff-active-validation--${activeRoomValidationTarget.severity}`}>
                               <div>
@@ -8586,6 +8815,8 @@ export function TakeoffApp() {
                                     <button className="toolbar-primary" onClick={() => acceptRoomTypeSuggestion(selectedRoom.id, roomTypeSuggestion)}>Use {suggestedLabel}</button>
                                     <button onClick={() => rejectRoomTypeSuggestion(selectedRoom.id, roomTypeSuggestion)}>Keep Plain</button>
                                   </>
+                                ) : surfaceTreatmentSuggestion ? (
+                                  <button className="toolbar-primary" onClick={() => applySurfaceTreatmentSuggestion(activeValidationIssue)}>Apply Change</button>
                                 ) : (
                                   <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
                                 )}
@@ -9231,6 +9462,11 @@ export function TakeoffApp() {
                             <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "slice")}>Slice wall</button>
                             <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "whole-section")}>Whole section</button>
                             <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "ignore")}>Keep exterior</button>
+                          </div>
+                        )}
+                        {issue.surfaceTreatmentSuggestion && issue.target?.roomId && (
+                          <div className="takeoff-boundary-actions">
+                            <button className="toolbar-primary" onClick={() => applySurfaceTreatmentSuggestion(issue)}>Apply Change</button>
                           </div>
                         )}
                       </div>

@@ -37,10 +37,12 @@ export type TakeoffRoomComponent = {
   adjacency?: TakeoffWallAdjacency;
   boundary?: TakeoffBoundaryType;
   geometryLabel?: string;
+  loadExempt?: boolean;
   spanStart?: number;
   spanEnd?: number;
   zMin?: number;
   zMax?: number;
+  panelPolygons?: TakeoffPoint[][];
   solarDirection?: "Shaded" | "Skylight";
 };
 
@@ -217,11 +219,25 @@ export type TakeoffProject = {
   floors: TakeoffFloor[];
 };
 
+export type TakeoffSurfaceTreatmentSuggestion = {
+  surface: "floor" | "ceiling";
+  action: "none" | "partial" | "full";
+  roomArea: number;
+  conditionedArea: number;
+  exposedArea: number;
+  adjacentFloorName?: string;
+  assembly?: string;
+  label?: string;
+  panelPolygons?: TakeoffPoint[][];
+  conditionedPanelPolygons?: TakeoffPoint[][];
+};
+
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
-  issueType?: "room-type-suggestion" | "boundary-candidate";
+  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion";
   boundaryCandidateId?: string;
+  surfaceTreatmentSuggestion?: TakeoffSurfaceTreatmentSuggestion;
   target?: {
     type: "room" | "unassigned";
     roomId?: string;
