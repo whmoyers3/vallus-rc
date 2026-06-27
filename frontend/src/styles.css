@@ -781,6 +781,10 @@ button.toolbar-primary:hover {
   top: 12px;
 }
 
+.takeoff-tools-sidebar .takeoff-panel {
+  overflow: visible;
+}
+
 .takeoff-sidebar--collapsed {
   min-height: 360px;
 }
@@ -843,7 +847,23 @@ button.toolbar-primary:hover {
 }
 
 .takeoff-right-details {
+  overflow: visible;
   padding: 0;
+}
+
+.takeoff-tools-head {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d9e0e6;
+  border-radius: 7px;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.takeoff-tools-head h2 {
+  font-size: 13px;
+  margin: 0;
 }
 
 .takeoff-left-details {
@@ -872,6 +892,7 @@ button.toolbar-primary:hover {
 }
 
 .takeoff-right-details[open] {
+  overflow: visible;
   padding: 0 12px 12px;
 }
 
@@ -892,6 +913,11 @@ button.toolbar-primary:hover {
 
 .takeoff-tools-sidebar .takeoff-export-panel .takeoff-form-actions {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.takeoff-tools-sidebar .takeoff-adjacent-list {
+  max-height: none;
+  overflow: visible;
 }
 
 .takeoff-advanced-subsection {

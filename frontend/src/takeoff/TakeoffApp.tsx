@@ -3018,6 +3018,12 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
   if (!component.placement) return null;
   const width = Math.max(1.5, component.width ?? Math.sqrt(Math.max(component.area, 1) * 0.6));
   const height = Math.max(2, component.height ?? Math.max(2, component.area / width));
+  const wallHeight = Math.max(0.5, room.ceilingHeight);
+  const topPadding = 0.25;
+  const bottomPadding = 0.25;
+  const visibleHeight = component.surface === "door"
+    ? Math.min(height, Math.max(0.5, wallHeight - topPadding))
+    : Math.min(height, Math.max(0.5, wallHeight - topPadding - bottomPadding));
   const edge = nearestRoomEdge(component.placement, room);
   if (!edge) return null;
   const dx = edge.b.x - edge.a.x;
@@ -3034,14 +3040,17 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
     ? normalA
     : normalB;
   const verticalCenter = component.surface === "door"
-    ? height / 2
-    : Math.min(Math.max(3 + height / 2, height / 2), Math.max(height / 2, room.ceilingHeight - 0.4));
+    ? visibleHeight / 2
+    : Math.min(
+        Math.max(3 + visibleHeight / 2, bottomPadding + visibleHeight / 2),
+        Math.max(bottomPadding + visibleHeight / 2, wallHeight - topPadding - visibleHeight / 2),
+      );
   const group = new THREE.Group();
   group.position.set(edge.point.x + outward.x * 0.16 - center.x, verticalCenter, edge.point.y + outward.y * 0.16 - center.y);
   group.rotation.y = -Math.atan2(dz, dx);
-  const frame = new THREE.Mesh(new THREE.PlaneGeometry(width + 0.22, height + 0.22), frameMaterial);
+  const frame = new THREE.Mesh(new THREE.PlaneGeometry(width + 0.22, visibleHeight + 0.22), frameMaterial);
   frame.position.z = -0.01;
-  const fill = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+  const fill = new THREE.Mesh(new THREE.PlaneGeometry(width, visibleHeight), material);
   fill.position.z = 0.01;
   group.add(frame);
   group.add(fill);
@@ -10113,17 +10122,19 @@ export function TakeoffApp() {
             <button className="takeoff-rail-toggle" onClick={() => setRightPanelOpen(true)} aria-label="Show tools panel">Tools</button>
           ) : (
           <>
-          <section className="takeoff-panel takeoff-export-panel">
-            <div className="takeoff-panel-head">
-              <h2>Export</h2>
-              <button className="takeoff-icon-button" onClick={() => setRightPanelOpen(false)} aria-label="Hide tools panel">Hide</button>
-            </div>
+          <div className="takeoff-tools-head">
+            <h2>Tools</h2>
+            <button className="takeoff-icon-button" onClick={() => setRightPanelOpen(false)} aria-label="Hide tools panel">Hide</button>
+          </div>
+
+          <details className="takeoff-panel takeoff-right-details takeoff-export-panel">
+            <summary>Export</summary>
             <div className="takeoff-form-actions">
               <button onClick={exportTakeoffJson}>Takeoff JSON</button>
               <button onClick={exportPayloadJson}>Payload JSON</button>
               <button onClick={exportDiagnosticReport}>Diagnostic Report JSON</button>
             </div>
-          </section>
+          </details>
 
           {show2DDraftingPanels && (
             <>
