@@ -711,8 +711,12 @@ function roomSurfaceNoLoad(room: TakeoffRectRoom, surface: TakeoffRoomComponent[
   return (surface === "floor" && room.floorType === "none") || (surface === "ceiling" && room.ceilingType === "none");
 }
 
+function expectedSurfaceArea(room: TakeoffRectRoom, surface: "floor" | "ceiling") {
+  return surface === "ceiling" ? ceilingGeometryInfo(room).slopedCeilingArea : rectArea(room);
+}
+
 function roomAreaReconciliation(room: TakeoffRectRoom, surface: "floor" | "ceiling") {
-  const roomArea = rectArea(room);
+  const roomArea = expectedSurfaceArea(room, surface);
   const assignedArea = componentAreaTotal(room, surface);
   const noLoad = roomSurfaceNoLoad(room, surface);
   return {
@@ -1971,6 +1975,8 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
       });
     }
     const roomArea = rectArea(room);
+    const ceilingExpectedArea = expectedSurfaceArea(room, "ceiling");
+    const ceilingSurfaceRatio = roomArea > 0.5 ? ceilingExpectedArea / roomArea : 1;
     const floorArea = componentAreaTotal(room, "floor");
     const ceilingArea = componentAreaTotal(room, "ceiling");
     const floorLoadArea = componentLoadAreaTotal(room, "floor");
@@ -1981,7 +1987,9 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const conditionedBelowArea = conditionedOverlapArea(room, floorBelow);
     const conditionedAboveArea = conditionedOverlapArea(room, floorAbove);
     const exposedFloorArea = Math.max(0, roomArea - conditionedBelowArea);
-    const exposedCeilingArea = Math.max(0, roomArea - conditionedAboveArea);
+    const exposedCeilingPlanArea = Math.max(0, roomArea - conditionedAboveArea);
+    const conditionedCeilingSurfaceArea = conditionedAboveArea * ceilingSurfaceRatio;
+    const exposedCeilingArea = exposedCeilingPlanArea * ceilingSurfaceRatio;
     const exposedFloorPanelPolygons = floorBelow ? exposedPanelPolygons(room, floorBelow) : [];
     const exposedCeilingPanelPolygons = floorAbove ? exposedPanelPolygons(room, floorAbove) : [];
     const conditionedFloorPanelPolygons = floorBelow ? conditionedPanelPolygons(room, floorBelow) : [];
@@ -1989,7 +1997,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const hasConditionedBelow = conditionedBelowArea > surfaceTolerance;
     const hasConditionedAbove = conditionedAboveArea > surfaceTolerance;
     const fullyConditionedBelow = hasConditionedBelow && exposedFloorArea <= surfaceTolerance;
-    const fullyConditionedAbove = hasConditionedAbove && exposedCeilingArea <= surfaceTolerance;
+    const fullyConditionedAbove = hasConditionedAbove && exposedCeilingPlanArea <= surfaceTolerance;
     if (fullyConditionedBelow && room.floorType !== "none") {
       issues.push({
         severity: "warning",
@@ -2060,8 +2068,8 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         surfaceTreatmentSuggestion: {
           surface: "ceiling",
           action: "none",
-          roomArea,
-          conditionedArea: conditionedAboveArea,
+          roomArea: ceilingExpectedArea,
+          conditionedArea: conditionedCeilingSurfaceArea,
           exposedArea: 0,
           adjacentFloorName: floorAbove?.name,
         },
@@ -2071,17 +2079,17 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     if (!fullyConditionedAbove && hasConditionedAbove && (noCeilingLoad || Math.abs(ceilingLoadArea - exposedCeilingArea) > surfaceTolerance)) {
       issues.push({
         severity: "warning",
-        message: `${room.name || "Room"} is partially covered by conditioned space above on ${floorAbove?.name || "the floor above"}: about ${Math.round(conditionedAboveArea)} sf conditioned and ${Math.round(exposedCeilingArea)} sf exposed to attic/roof. Apply the split if only the exposed portion should carry ceiling load.`,
+        message: `${room.name || "Room"} is partially covered by conditioned space above on ${floorAbove?.name || "the floor above"}: about ${Math.round(conditionedCeilingSurfaceArea)} sf conditioned ceiling surface and ${Math.round(exposedCeilingArea)} sf exposed to attic/roof. Apply the split if only the exposed portion should carry ceiling load.`,
         issueType: "surface-treatment-suggestion",
         surfaceTreatmentSuggestion: {
           surface: "ceiling",
           action: "partial",
-          roomArea,
-          conditionedArea: conditionedAboveArea,
+          roomArea: ceilingExpectedArea,
+          conditionedArea: conditionedCeilingSurfaceArea,
           exposedArea: exposedCeilingArea,
           adjacentFloorName: floorAbove?.name,
-          assembly: "C1",
-          label: "Ceiling exposed to attic/roof",
+          assembly: ceilingInfo.ceilingType === "vaulted" ? "C2" : "C1",
+          label: ceilingInfo.ceilingType === "vaulted" ? "Vaulted ceiling exposed to attic/roof" : "Ceiling exposed to attic/roof",
           panelPolygons: exposedCeilingPanelPolygons,
           conditionedPanelPolygons: conditionedCeilingPanelPolygons,
         },
@@ -2096,12 +2104,12 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         surfaceTreatmentSuggestion: {
           surface: "ceiling",
           action: "full",
-          roomArea,
+          roomArea: ceilingExpectedArea,
           conditionedArea: 0,
-          exposedArea: roomArea,
+          exposedArea: ceilingExpectedArea,
           adjacentFloorName: floorAbove.name,
-          assembly: "C1",
-          label: "Flat ceiling",
+          assembly: ceilingInfo.ceilingType === "vaulted" ? "C2" : "C1",
+          label: ceilingInfo.ceilingType === "vaulted" ? "Vaulted ceiling" : "Flat ceiling",
           panelPolygons: exposedCeilingPanelPolygons,
         },
         target: roomTarget,
@@ -2136,8 +2144,8 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     if (!noFloorLoad && floorArea > roomArea + 0.5) {
       issues.push({ severity: "error", message: `${room.name || "Room"} floor components exceed room area by ${Math.round(floorArea - roomArea)} sf.`, target: roomTarget });
     }
-    if (!noCeilingLoad && ceilingArea > roomArea + 0.5 && !(ceilingInfo.ceilingType === "vaulted" && room.ceilingGeometryApproved)) {
-      issues.push({ severity: "error", message: `${room.name || "Room"} ceiling components exceed room area by ${Math.round(ceilingArea - roomArea)} sf.`, target: roomTarget });
+    if (!noCeilingLoad && ceilingArea > ceilingExpectedArea + 0.5) {
+      issues.push({ severity: "error", message: `${room.name || "Room"} ceiling components exceed expected ${ceilingInfo.ceilingType === "vaulted" ? "vaulted ceiling" : "ceiling"} area by ${Math.round(ceilingArea - ceilingExpectedArea)} sf.`, target: roomTarget });
     }
     for (const component of roomComponents(room)) {
       if (!component.assembly) {
@@ -2203,8 +2211,8 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     if (!noFloorLoad && floorArea < roomArea - 0.5) {
       issues.push({ severity: "warning", message: `${room.name || "Room"} floor components leave ${Math.round(roomArea - floorArea)} sf unassigned.`, target: roomTarget });
     }
-    if (!noCeilingLoad && ceilingArea < roomArea - 0.5) {
-      issues.push({ severity: "warning", message: `${room.name || "Room"} ceiling components leave ${Math.round(roomArea - ceilingArea)} sf unassigned.`, target: roomTarget });
+    if (!noCeilingLoad && ceilingArea < ceilingExpectedArea - 0.5) {
+      issues.push({ severity: "warning", message: `${room.name || "Room"} ceiling components leave ${Math.round(ceilingExpectedArea - ceilingArea)} sf unassigned.`, target: roomTarget });
     }
   }
 
@@ -3272,7 +3280,11 @@ function TakeoffModelPreview({
           const panelComponents = ceilingComponents.filter((component) => component.panelPolygons?.length);
           if (panelComponents.length > 0) {
             for (const component of panelComponents) {
+              const componentPanelArea = (component.panelPolygons ?? []).reduce((sum, panel) => sum + polygonArea(panel), 0);
               for (const panel of component.panelPolygons ?? []) {
+                const panelArea = componentPanelArea > 0.5
+                  ? (component.area || 0) * (polygonArea(panel) / componentPanelArea)
+                  : polygonArea(panel);
                 const panelMesh = createHorizontalShapeMesh(panel, center, activeFloorYOffset + room.ceilingHeight, roomCeilingMaterial);
                 panelMesh.userData.roomId = room.id;
                 panelMesh.userData.modelSurface = {
@@ -3281,7 +3293,7 @@ function TakeoffModelPreview({
                   kind: "ceiling",
                   label: component.label || "Ceiling surface",
                   surface: "ceiling",
-                  area: Number(polygonArea(panel).toFixed(3)),
+                  area: Number(panelArea.toFixed(3)),
                   assembly: component.assembly,
                   componentId: component.id,
                 } satisfies ModelSurfaceSelection;
@@ -5067,7 +5079,7 @@ export function TakeoffApp() {
   }
 
   function renderAreaWorkspace(room: TakeoffRectRoom, surface: "floor" | "ceiling") {
-    const roomArea = rectArea(room);
+    const roomArea = expectedSurfaceArea(room, surface);
     const assigned = componentAreaTotal(room, surface);
     const delta = roomArea - assigned;
     const areaCheck = roomAreaReconciliation(room, surface);
@@ -5097,7 +5109,7 @@ export function TakeoffApp() {
                   : `${componentSurfaceLabel(surface)} area has ${Math.round(areaCheck.openArea)} sf unassigned.`}
           </p>
           <div className="takeoff-quick-actions">
-            <button onClick={() => setRoomSurfaceFullArea(room.id, surface)}>Set = room area</button>
+            <button onClick={() => setRoomSurfaceFullArea(room.id, surface)}>Set = {surface === "ceiling" ? "ceiling area" : "room area"}</button>
             <button onClick={() => setRoomSurfaceNoLoad(room.id, surface)}>No {componentSurfaceLabel(surface)} load</button>
           </div>
         </div>
@@ -5154,19 +5166,25 @@ export function TakeoffApp() {
         components: roomComponents(room).filter((component) => component.surface !== "ceiling"),
       };
     }
-    const ceilingComponents = roomSurfaceComponents(room, "ceiling");
-    const defaultCeiling = defaultComponent("ceiling", rectArea(room));
-    const normalizedCeiling = ceilingComponents.length > 0
-      ? ceilingComponents.map((component) => ({ ...component, area: Number((component.area || rectArea(room)).toFixed(3)) }))
-      : [{ ...defaultCeiling, assembly: "C1" }];
-    return {
+    const nextRoom = {
       ...room,
       ceilingType,
-      ceilingGeometryApproved: false,
       ceilingLowHeight: ceilingType === "vaulted" ? room.ceilingLowHeight ?? room.ceilingHeight : undefined,
       ceilingPeakHeight: ceilingType === "vaulted" ? room.ceilingPeakHeight ?? Math.max(room.ceilingHeight, room.ceilingHeight + 1) : undefined,
       ceilingRidgeDirection: ceilingType === "vaulted" ? room.ceilingRidgeDirection ?? "E-W" : undefined,
       ceilingRidgeOffset: ceilingType === "vaulted" ? room.ceilingRidgeOffset ?? 0 : undefined,
+    };
+    const expectedCeilingArea = expectedSurfaceArea(nextRoom, "ceiling");
+    const defaultCeiling = defaultComponent("ceiling", expectedCeilingArea);
+    const normalizedCeiling = [{
+      ...defaultCeiling,
+      assembly: ceilingType === "vaulted" ? "C2" : "C1",
+      label: ceilingType === "vaulted" ? "Vaulted ceiling" : "Flat ceiling",
+      area: Number(expectedCeilingArea.toFixed(3)),
+    }];
+    return {
+      ...nextRoom,
+      ceilingGeometryApproved: false,
       components: [
         ...roomComponents(room).filter((component) => component.surface !== "ceiling"),
         ...normalizedCeiling,
@@ -5259,7 +5277,7 @@ export function TakeoffApp() {
       ...current,
       rooms: current.rooms.map((room) => {
         if (room.id !== roomId) return room;
-        const roomArea = rectArea(room);
+        const roomArea = surface === "floor" || surface === "ceiling" ? expectedSurfaceArea(room, surface) : rectArea(room);
         const assignedArea = componentAreaTotal(room, surface);
         const remainingArea = Math.max(0, roomArea - assignedArea);
         const components = roomComponents(room);
@@ -5353,9 +5371,10 @@ export function TakeoffApp() {
       rooms: current.rooms.map((room) => {
         if (room.id !== roomId) return room;
         const existing = roomSurfaceComponents(room, surface).find((component) => !component.loadExempt);
+        const expectedArea = expectedSurfaceArea(room, surface);
         const component = {
-          ...(existing ?? defaultComponent(surface, rectArea(room))),
-          area: Number(rectArea(room).toFixed(3)),
+          ...(existing ?? defaultComponent(surface, expectedArea)),
+          area: Number(expectedArea.toFixed(3)),
           loadExempt: false,
           panelPolygons: undefined,
         };
@@ -5368,7 +5387,7 @@ export function TakeoffApp() {
         };
       }),
     }));
-    setMessage(`${componentSurfaceLabel(surface)} set to full room area.`);
+    setMessage(`${componentSurfaceLabel(surface)} set to full ${surface === "ceiling" ? "ceiling" : "room"} area.`);
   }
 
   function setRoomSurfaceNoLoad(roomId: string, surface: "floor" | "ceiling") {
@@ -8697,6 +8716,7 @@ export function TakeoffApp() {
               {selectedRoom ? (
                 (() => {
                   const roomArea = rectArea(selectedRoom);
+                  const ceilingSurfaceArea = expectedSurfaceArea(selectedRoom, "ceiling");
                   const suggestions = roomExteriorWallSuggestions(floor, selectedRoom);
                   const reconciliation = roomWallReconciliation(floor, selectedRoom);
                   const totals = reconciliation.reduce(
@@ -8925,7 +8945,7 @@ export function TakeoffApp() {
                           onClick={() => setRoomWorkbenchSections((current) => ({ ...current, ceiling: !current.ceiling }))}
                         >
                           <span>Ceiling</span>
-                          <strong>{Math.round(componentAreaTotal(selectedRoom, "ceiling"))} assigned / {Math.round(roomArea)} sf</strong>
+                          <strong>{Math.round(componentAreaTotal(selectedRoom, "ceiling"))} assigned / {Math.round(ceilingSurfaceArea)} sf</strong>
                           <em>{roomWorkbenchSections.ceiling ? "Hide" : "Show"}</em>
                         </button>
                         {roomWorkbenchSections.ceiling && (
@@ -9734,10 +9754,10 @@ export function TakeoffApp() {
                   </p>
                 </div>
                 {(["floor", "ceiling", "wall", "glass", "door"] as const).map((surface) => {
-                  const roomArea = rectArea(selectedRoom);
+                  const isAreaChecked = surface === "floor" || surface === "ceiling";
+                  const roomArea = isAreaChecked ? expectedSurfaceArea(selectedRoom, surface) : rectArea(selectedRoom);
                   const assigned = componentAreaTotal(selectedRoom, surface);
                   const delta = roomArea - assigned;
-                  const isAreaChecked = surface === "floor" || surface === "ceiling";
                   const areaSurface = isAreaChecked ? surface as "floor" | "ceiling" : null;
                   const areaCheck = areaSurface ? roomAreaReconciliation(selectedRoom, areaSurface) : null;
                   const options = scheduleOptionsBySurface[surface];
