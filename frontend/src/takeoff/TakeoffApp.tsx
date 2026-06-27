@@ -2192,6 +2192,27 @@ function conditionedOverlapArea(room: TakeoffRectRoom, otherFloor: TakeoffFloor 
   return clamp(overlapArea, 0, roomArea);
 }
 
+function adjacentOverlapByKind(room: TakeoffRectRoom, otherFloor: TakeoffFloor | undefined) {
+  const byKind = new Map<TakeoffAdjacentSpaceKind, number>();
+  if (!otherFloor) return byKind;
+  for (const space of otherFloor.adjacentSpaces ?? []) {
+    const overlapArea = roomOverlapArea(room, adjacentSpaceAsRoom(space, otherFloor.defaultCeilingHeight ?? 9));
+    if (overlapArea <= 0.5) continue;
+    byKind.set(space.kind, (byKind.get(space.kind) ?? 0) + overlapArea);
+  }
+  return byKind;
+}
+
+function adjacentOverlapDescription(byKind: Map<TakeoffAdjacentSpaceKind, number>) {
+  const entries = Array.from(byKind.entries())
+    .filter(([kind, area]) => kind !== "conditioned_addition" && area > 0.5)
+    .sort((first, second) => second[1] - first[1]);
+  if (entries.length === 0) return null;
+  const totalArea = entries.reduce((sum, [, area]) => sum + area, 0);
+  const labels = entries.map(([kind, area]) => `${Math.round(area)} sf ${adjacentSpaceLabel(kind).toLowerCase()}`);
+  return `${Math.round(totalArea)} sf over ${labels.join(", ")}`;
+}
+
 function exposedPanelPolygons(room: TakeoffRectRoom, otherFloor: TakeoffFloor | undefined) {
   let exposed: MultiPolygon = [roomToClipPolygon(room)];
   const blockers = otherFloor?.rooms.map((otherRoom) => roomToClipPolygon(otherRoom)) ?? [];
@@ -2491,6 +2512,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const conditionedAboveArea = conditionedOverlapArea(room, floorAbove);
     const exposedFloorArea = Math.max(0, roomArea - conditionedBelowArea);
     const exposedCeilingPlanArea = Math.max(0, roomArea - conditionedAboveArea);
+    const adjacentBelowDescription = adjacentOverlapDescription(adjacentOverlapByKind(room, floorBelow));
     const conditionedCeilingSurfaceArea = conditionedAboveArea * ceilingSurfaceRatio;
     const exposedCeilingArea = exposedCeilingPlanArea * ceilingSurfaceRatio;
     const exposedFloorPanelPolygons = floorBelow ? exposedPanelPolygons(room, floorBelow) : [];
@@ -2537,10 +2559,17 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
-    if (!hasConditionedBelow && floorBelow && room.floorType === "none") {
+    if (!hasConditionedBelow && floorBelow && (room.floorType !== "framed" || Math.abs(floorLoadArea - roomArea) > planSurfaceTolerance)) {
+      const currentFloorTreatment = room.floorType === "none"
+        ? "no floor load"
+        : room.floorType === "framed"
+          ? `${Math.round(floorLoadArea)} sf framed/exposed floor`
+          : "slab";
       issues.push({
         severity: "warning",
-        message: `${room.name || "Room"} does not overlap conditioned space below on ${floorBelow.name || "the floor below"}. Review floor treatment; choose slab or framed/exposed floor as appropriate.`,
+        message: adjacentBelowDescription
+          ? `${room.name || "Room"} has ${adjacentBelowDescription} on ${floorBelow.name || "the floor below"}. Apply framed/exposed floor if this area should carry an F1 floor load instead of ${currentFloorTreatment}.`
+          : `${room.name || "Room"} does not overlap conditioned space below on ${floorBelow.name || "the floor below"}. Apply framed/exposed floor if this area should carry an F1 floor load instead of ${currentFloorTreatment}.`,
         issueType: "surface-treatment-suggestion",
         surfaceTreatmentSuggestion: {
           surface: "floor",
