@@ -803,9 +803,11 @@ button.toolbar-primary:hover {
   display: flex;
   gap: 10px;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .takeoff-panel-head {
+  flex-wrap: wrap;
   margin-bottom: 10px;
 }
 
@@ -886,6 +888,10 @@ button.toolbar-primary:hover {
 .takeoff-export-panel .takeoff-form-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
+}
+
+.takeoff-tools-sidebar .takeoff-export-panel .takeoff-form-actions {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .takeoff-advanced-subsection {
@@ -1099,6 +1105,48 @@ button.toolbar-primary:hover {
   min-width: 32px;
   padding: 5px 8px;
   position: relative;
+}
+
+.takeoff-review-mode-group button.toolbar-primary {
+  background: #e8f2fb;
+  border-color: #8eb8dc;
+  color: #1f5d92;
+  font-weight: 800;
+}
+
+.takeoff-review-mode-group button.toolbar-primary:hover {
+  background: #d7eaf8;
+  border-color: #73a7d0;
+  color: #184f7d;
+}
+
+.takeoff-stage-floor-chip {
+  min-width: 0;
+}
+
+.takeoff-stage-floor-chip--active {
+  background: #1f6fb2;
+  border-color: #1f6fb2;
+  box-shadow: 0 0 0 2px rgba(31, 111, 178, 0.14);
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.takeoff-stage-floor-chip--active:hover {
+  background: #185d96;
+  border-color: #185d96;
+  color: #ffffff;
+}
+
+.takeoff-stage-floor-chip--active::after {
+  background: #ffffff;
+  border-radius: 999px;
+  bottom: 3px;
+  content: "";
+  height: 3px;
+  left: 10px;
+  position: absolute;
+  right: 10px;
 }
 
 .takeoff-stage-tools button[data-tooltip]::before,
@@ -1958,6 +2006,16 @@ button.toolbar-primary:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
+}
+
+.takeoff-tools-sidebar .takeoff-form-actions > button,
+.takeoff-tools-sidebar .takeoff-form-actions > select {
+  min-width: 0;
+}
+
+.takeoff-tools-sidebar .takeoff-form-actions > button {
+  flex: 1 1 120px;
 }
 
 .takeoff-openings-actions {
@@ -2095,8 +2153,10 @@ button.toolbar-primary:hover {
   border-top: 1px solid #d9e2ea;
   color: #536273;
   display: flex;
+  flex-wrap: wrap;
   font-size: 11px;
   font-weight: 700;
+  gap: 6px;
   justify-content: space-between;
   margin-top: 4px;
   padding-top: 8px;
@@ -2212,6 +2272,7 @@ button.toolbar-primary:hover {
 .takeoff-active-validation > div:first-child {
   align-items: baseline;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: space-between;
 }
@@ -2236,6 +2297,7 @@ button.toolbar-primary:hover {
 
 .takeoff-active-validation-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -2406,6 +2468,7 @@ button.toolbar-primary:hover {
   display: grid;
   gap: 8px;
   margin: 10px 0;
+  min-width: 0;
   padding: 8px;
 }
 
@@ -2416,7 +2479,18 @@ button.toolbar-primary:hover {
 .takeoff-room-sketch-actions {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.takeoff-room-sketch-actions h3 {
+  min-width: 0;
+}
+
+.takeoff-room-sketch-actions button {
+  flex: 0 0 auto;
 }
 
 .takeoff-room-sketch svg {
@@ -2426,6 +2500,27 @@ button.toolbar-primary:hover {
   display: block;
   min-height: 170px;
   width: 100%;
+}
+
+.takeoff-tools-sidebar .takeoff-room-sketch {
+  gap: 6px;
+  padding: 7px;
+}
+
+.takeoff-tools-sidebar .takeoff-room-sketch-actions {
+  align-items: flex-start;
+}
+
+.takeoff-tools-sidebar .takeoff-room-sketch svg {
+  min-height: 130px;
+}
+
+.takeoff-tools-sidebar .takeoff-room-sketch text {
+  font-size: 8px;
+}
+
+.takeoff-tools-sidebar .takeoff-room-sketch-opening text {
+  font-size: 7px;
 }
 
 .takeoff-room-sketch--ceiling svg {

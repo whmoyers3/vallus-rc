@@ -8628,7 +8628,7 @@ export function TakeoffApp() {
                       <button
                         key={entry.id}
                         type="button"
-                        className={entry.id === floor.id ? "toolbar-primary" : ""}
+                        className={`takeoff-stage-floor-chip${entry.id === floor.id ? " takeoff-stage-floor-chip--active" : ""}`}
                         aria-pressed={entry.id === floor.id}
                         onClick={() => switchActiveFloor(entry.id)}
                       >
