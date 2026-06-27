@@ -1164,6 +1164,29 @@ button.toolbar-primary:hover {
   z-index: 15;
 }
 
+.takeoff-floor-visibility-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.takeoff-floor-visibility-actions button {
+  background: #f6f9fb;
+  border: 1px solid #d4dee6;
+  border-radius: 5px;
+  color: #34495e;
+  cursor: pointer;
+  flex: 1;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 28px;
+  padding: 5px 8px;
+}
+
+.takeoff-floor-visibility-actions button:hover {
+  background: #ffffff;
+  border-color: #9cafbf;
+}
+
 .takeoff-floor-visibility fieldset {
   border: 1px solid #e8edf1;
   border-radius: 5px;
@@ -1334,6 +1357,25 @@ button.toolbar-primary:hover {
   font-size: 10px;
   font-weight: 900;
   line-height: 1;
+}
+
+.takeoff-model-layer-all {
+  background: #f6f9fb;
+  border: 1px solid #d4dee6;
+  border-radius: 5px;
+  color: #34495e;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  margin-top: 3px;
+  min-height: 28px;
+  padding: 5px 8px;
+  width: 100%;
+}
+
+.takeoff-model-layer-all:hover {
+  background: #ffffff;
+  border-color: #9cafbf;
 }
 
 .takeoff-model-surface-panel {

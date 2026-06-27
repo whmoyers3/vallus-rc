@@ -96,7 +96,7 @@ type EditingOpeningTarget = OpeningMoveTarget | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
 type UnassignedCell = { x: number; y: number; width: number; depth: number; polygon?: TakeoffPoint[]; area?: number };
 type ModelViewPreset = "iso" | "front" | "rear" | "left" | "right";
-type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "interiorWalls";
+type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "interiorWalls" | "adjacentSpaces";
 type ModelSurfaceKind = "floor" | "ceiling" | "load-wall" | "interior-wall" | "knee-wall" | "window" | "door";
 type FloorViewOptions = {
   visible: boolean;
@@ -2643,6 +2643,7 @@ function TakeoffModelPreview({
     floors: true,
     walls: true,
     interiorWalls: false,
+    adjacentSpaces: true,
   });
   const [selectedSurface, setSelectedSurface] = useState<ModelSurfaceSelection | null>(null);
   const [hoveredSurface, setHoveredSurface] = useState<ModelSurfaceSelection | null>(null);
@@ -2756,6 +2757,12 @@ function TakeoffModelPreview({
     const ghostReferenceMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6070, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
     const ghostRoomMaterial = new THREE.MeshPhongMaterial({ color: 0x8799a8, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
     const ghostExteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x5f7f9b, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
+    const passiveWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6f8797, depthWrite: false, transparent: true, opacity: 0.24, side: THREE.DoubleSide });
+    const passiveInteriorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x7e8a94, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
+    const passiveCeilingMaterial = new THREE.MeshPhongMaterial({ color: 0xaebfc8, depthWrite: false, transparent: true, opacity: 0.14, side: THREE.DoubleSide });
+    const passiveKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0x8f6658, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
+    const passiveGlassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
+    const passiveDoorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.36, side: THREE.DoubleSide });
 
     for (const otherFloor of floors) {
       if (otherFloor.id === activeFloorId) continue;
@@ -2768,7 +2775,7 @@ function TakeoffModelPreview({
         const plane = referencePlaneForFloor(otherFloor, center, texture);
         plane.position.y += yOffset;
         scene.add(plane);
-      } else if (options.reference) {
+      } else if (visibleLayers.reference && options.reference) {
         const display = referenceDisplayRectForFloor(otherFloor);
         const geometry = new THREE.PlaneGeometry(Math.max(display.width, 1), Math.max(display.depth, 1));
         geometry.rotateX(-Math.PI / 2);
@@ -2776,7 +2783,7 @@ function TakeoffModelPreview({
         mesh.position.set(display.x + display.width / 2 - center.x, yOffset - 0.08, display.y + display.depth / 2 - center.y);
         scene.add(mesh);
       }
-      if (options.exterior) {
+      if (options.exterior && visibleLayers.floors) {
         const otherExteriorPoints = exteriorRingPoints(otherFloor);
         if (otherExteriorPoints.length >= 3) {
           const mesh = createHorizontalShapeMesh(otherExteriorPoints, center, yOffset - 0.015, ghostExteriorMaterial);
@@ -2787,7 +2794,94 @@ function TakeoffModelPreview({
         for (const room of otherFloor.rooms) {
           const points = cleanPolygonPointsForRender(roomCorners(room));
           if (points.length < 3) continue;
-          scene.add(createHorizontalShapeMesh(points, center, yOffset + 0.025, ghostRoomMaterial));
+          if (visibleLayers.floors) scene.add(createHorizontalShapeMesh(points, center, yOffset + 0.025, ghostRoomMaterial));
+          if (visibleLayers.walls) {
+            for (const segment of roomExteriorSegments(otherFloor, room)) {
+              const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(room.ceilingHeight, 0.1), passiveWallMaterial);
+              wallMesh.position.y += yOffset;
+              scene.add(wallMesh);
+            }
+            const ceilingInfo = ceilingGeometryInfo(room, otherFloor.defaultCeilingHeight ?? 9);
+            const generatedWallParts = ceilingInfo.ceilingType === "vaulted"
+              ? vaultedWallMeshPartsForRoom(room, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial)
+              : raisedWallMeshPartsForRoom(room, center, otherFloor.defaultCeilingHeight ?? 9, room.ceilingHeight, passiveKneeWallMaterial);
+            for (const part of generatedWallParts) {
+              part.mesh.position.y += yOffset;
+              scene.add(part.mesh);
+            }
+          }
+          if (visibleLayers.interiorWalls) {
+            const exposedSegments = roomExteriorSegments(otherFloor, room);
+            const tolerance = Math.max(0.35, otherFloor.scale.feetPerGrid * 0.35);
+            for (const edge of pointsToEdges(points)) {
+              const isLoadWall = exposedSegments.some((segment) => sharedSegmentLength(edge, segment, tolerance) > 0.25);
+              if (isLoadWall) continue;
+              const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), passiveInteriorWallMaterial);
+              wallMesh.position.y += yOffset;
+              scene.add(wallMesh);
+            }
+          }
+          if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
+            const ceilingInfo = ceilingGeometryInfo(room, otherFloor.defaultCeilingHeight ?? 9);
+            if (ceilingInfo.ceilingType === "vaulted") {
+              for (const part of slopedCeilingMeshPartsForRoom(room, center, otherFloor.defaultCeilingHeight ?? 9, passiveCeilingMaterial)) {
+                part.mesh.position.y += yOffset;
+                scene.add(part.mesh);
+              }
+            } else {
+              scene.add(createHorizontalShapeMesh(points, center, yOffset + room.ceilingHeight, passiveCeilingMaterial));
+            }
+            const ridge = roomRidgePoints(room, center, otherFloor.defaultCeilingHeight ?? 9);
+            if (ridge) {
+              const ridgeLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial);
+              ridgeLine.position.y += yOffset;
+              scene.add(ridgeLine);
+            }
+          }
+          for (const component of roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door"))) {
+            if (component.surface === "glass" && !visibleLayers.windows) continue;
+            if (component.surface === "door" && !visibleLayers.doors) continue;
+            const openingMesh = openingMeshForComponent(component, room, center, component.surface === "glass" ? passiveGlassMaterial : passiveDoorMaterial, openingFrameMaterial);
+            if (openingMesh) {
+              openingMesh.position.y += yOffset;
+              scene.add(openingMesh);
+            }
+          }
+        }
+      }
+      if (visibleLayers.adjacentSpaces && options.rooms) {
+        for (const space of otherFloor.adjacentSpaces ?? []) {
+          const sourceRoom = adjacentSpaceAsRoom(space, otherFloor.defaultCeilingHeight ?? 9);
+          const rawPoints = roomCorners(sourceRoom);
+          const points = cleanPolygonPointsForRender(rawPoints);
+          if (points.length < 3) continue;
+          const room = points.length !== rawPoints.length ? { ...sourceRoom, polygon: points } : sourceRoom;
+          const ceilingInfo = ceilingGeometryInfo(room, otherFloor.defaultCeilingHeight ?? 9);
+          const adjacentWallHeight = ceilingInfo.ceilingType === "vaulted" ? ceilingInfo.lowHeight : room.ceilingHeight;
+          if (visibleLayers.floors) scene.add(createHorizontalShapeMesh(roomCorners(room), center, yOffset + 0.02, adjacentFloorMaterial));
+          if (visibleLayers.walls) {
+            for (const edge of pointsToEdges(roomCorners(room))) {
+              const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(adjacentWallHeight, 0.1), adjacentWallMaterial);
+              wallMesh.position.y += yOffset;
+              scene.add(wallMesh);
+            }
+          }
+          if (visibleLayers.ceilings && (room.ceilingType ?? "flat") !== "none") {
+            if (ceilingInfo.ceilingType === "vaulted") {
+              for (const part of slopedCeilingMeshPartsForRoom(room, center, otherFloor.defaultCeilingHeight ?? 9, adjacentCeilingMaterial)) {
+                part.mesh.position.y += yOffset;
+                scene.add(part.mesh);
+              }
+            } else {
+              scene.add(createHorizontalShapeMesh(roomCorners(room), center, yOffset + room.ceilingHeight, adjacentCeilingMaterial));
+            }
+            const ridge = roomRidgePoints(room, center, otherFloor.defaultCeilingHeight ?? 9);
+            if (ridge) {
+              const ridgeLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(ridge), lineMaterial);
+              ridgeLine.position.y += yOffset;
+              scene.add(ridgeLine);
+            }
+          }
         }
       }
     }
@@ -2942,7 +3036,7 @@ function TakeoffModelPreview({
       }
     }
 
-    for (const space of activeOptions.visible && activeOptions.rooms ? floor.adjacentSpaces ?? [] : []) {
+    for (const space of activeOptions.visible && activeOptions.rooms && visibleLayers.adjacentSpaces ? floor.adjacentSpaces ?? [] : []) {
       const sourceRoom = adjacentSpaceAsRoom(space, floor.defaultCeilingHeight ?? 9);
       const rawPoints = roomCorners(sourceRoom);
       const renderPoints = cleanPolygonPointsForRender(rawPoints);
@@ -3146,13 +3240,14 @@ function TakeoffModelPreview({
       )}
       <div className="takeoff-model-layer-controls" aria-label="3D layer controls">
         {([
-          ["reference", "Plan PDF"],
+          ["floors", "Floors"],
+          ["ceilings", "Ceilings"],
+          ["walls", "Exterior walls"],
+          ["interiorWalls", "Interior walls"],
+          ["adjacentSpaces", "Adjacent spaces"],
+          ["reference", "Plan PDFs"],
           ["windows", "Windows"],
           ["doors", "Doors"],
-          ["ceilings", "Ceilings"],
-          ["floors", "Floors"],
-          ["walls", "Load walls"],
-          ["interiorWalls", "Interior walls"],
         ] as Array<[ModelLayerKey, string]>).map(([key, label]) => (
           <label key={key}>
             <input
@@ -3164,6 +3259,22 @@ function TakeoffModelPreview({
             {label}
           </label>
         ))}
+        <button
+          type="button"
+          className="takeoff-model-layer-all"
+          onClick={() => setVisibleLayers({
+            reference: true,
+            windows: true,
+            doors: true,
+            ceilings: true,
+            floors: true,
+            walls: true,
+            interiorWalls: true,
+            adjacentSpaces: true,
+          })}
+        >
+          All layers
+        </button>
       </div>
       {selectedSurface && (
         <div className="takeoff-model-surface-panel">
@@ -3816,6 +3927,15 @@ export function TakeoffApp() {
       ...current,
       [floorId]: { ...(current[floorId] ?? defaultFloorViewOptions()), ...patch },
     }));
+  }
+
+  function setAllFloorViewOptions(patch: Partial<FloorViewOptions>) {
+    setFloorViewOptions((current) =>
+      Object.fromEntries(floors.map((entry) => [
+        entry.id,
+        { ...(current[entry.id] ?? defaultFloorViewOptions()), ...patch },
+      ]))
+    );
   }
 
   function addFloor() {
@@ -7342,8 +7462,12 @@ export function TakeoffApp() {
                   ))}
                 </div>
                 <details className="takeoff-floor-visibility">
-                  <summary>Floors</summary>
+                  <summary>Floor filters</summary>
                   <div className="takeoff-floor-visibility-list">
+                    <div className="takeoff-floor-visibility-actions">
+                      <button type="button" onClick={() => setAllFloorViewOptions({ visible: true })}>Show all floors</button>
+                      <button type="button" onClick={() => setAllFloorViewOptions({ visible: false })}>Hide all floors</button>
+                    </div>
                     {floors.map((entry) => {
                       const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
                       return (
