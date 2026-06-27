@@ -937,6 +937,11 @@ button.toolbar-primary:hover {
   white-space: nowrap;
 }
 
+.takeoff-mode-guidance-actions {
+  display: flex !important;
+  gap: 6px !important;
+}
+
 .takeoff-mode-guidance--warning {
   background: #fff8e8;
   box-shadow: inset 4px 0 0 #d18b20;

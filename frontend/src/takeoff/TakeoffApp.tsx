@@ -5983,9 +5983,16 @@ export function TakeoffApp() {
     setMessage("Crop reset. Drag a new crop around the plan area.");
   }
 
-  function useWholeReference() {
+  function proceedWithoutCropping() {
     const fullCrop = { x: 0, y: 0, width: floor.designGrid.width, depth: floor.designGrid.depth };
     applyCrop(fullCrop);
+  }
+
+  function enterCropMode() {
+    setWorkflowStep("crop");
+    setPlanReviewMode("plan");
+    setRoomDrawMode(false);
+    setMessage("Crop mode enabled. Drag a rectangle around the plan area, or proceed without cropping.");
   }
 
   function continueToAlignment() {
@@ -6921,8 +6928,8 @@ export function TakeoffApp() {
     setZoom(1);
     setMessage(
       shouldCropForAlignment
-        ? "Reference uploaded. Crop this floor plan, or use the whole page, then continue to alignment."
-        : "Reference uploaded. Drag a crop around the plan area, then continue to scale setup.",
+        ? "Reference uploaded. Crop this floor plan, or proceed without cropping, then continue to alignment."
+        : "Reference uploaded. Drag a crop around the plan area, or proceed without cropping to continue to scale setup.",
     );
   }
 
@@ -6988,7 +6995,7 @@ export function TakeoffApp() {
       return {
         tone: "info" as const,
         title: "Ready to upload a PDF",
-        body: "Upload one floor-plan page. After upload, the tool will enter crop mode so you can focus on the plan and measurement markers.",
+        body: "Upload one floor-plan page. After upload, crop to the plan area or proceed without cropping.",
         actionLabel: "Upload PDF",
         action: () => document.getElementById("takeoff-reference-input")?.click(),
       };
@@ -6998,8 +7005,8 @@ export function TakeoffApp() {
         tone: "active" as const,
         title: "Crop mode enabled",
         body: canAlignCurrentReference
-          ? "Crop to the portion of the page containing the floor plan you wish to align. You do not need sizing markers; scale is inherited from the selected reference floor."
-          : "Select the area of the plan you want to focus on. Include the measurement markers you plan to use for scaling, and leave a little space around the floor plan.",
+          ? "Crop to the portion of the page containing the floor plan you wish to align, or proceed without cropping. You do not need sizing markers; scale is inherited from the selected reference floor."
+          : "Select the area of the plan you want to focus on, or proceed without cropping. Include measurement markers if you crop before scaling.",
       };
     }
     if (!location.trim()) {
@@ -7273,14 +7280,16 @@ export function TakeoffApp() {
             <summary>Import Scale</summary>
             <p className="takeoff-muted">
                 {canAlignCurrentReference
-                  ? "Crop to the floor plan you wish to align. Sizing markers are not needed for floor-to-floor alignment."
+                  ? "Crop to the floor plan you wish to align, or proceed without cropping. Sizing markers are not needed for floor-to-floor alignment."
                   : workflowStep === "calibrate"
                     ? "Click two endpoints for known dimensions on the preview."
-                    : "Scale setup complete."}
+                    : workflowStep === "crop"
+                      ? "Crop to the plan area, or proceed without cropping to use the full page."
+                      : "Scale setup complete."}
               </p>
               <div className="takeoff-form-actions">
-                <button className={workflowStep === "crop" ? "toolbar-primary" : ""} onClick={() => { setWorkflowStep("crop"); setPlanReviewMode("plan"); setRoomDrawMode(false); }}>Crop</button>
-                <button onClick={useWholeReference}>Use Whole Page</button>
+                <button className={workflowStep === "crop" ? "toolbar-primary" : ""} onClick={enterCropMode}>Crop</button>
+                <button onClick={proceedWithoutCropping}>Proceed without cropping</button>
                 <button onClick={clearCrop}>Undo Crop</button>
                 {canAlignCurrentReference && <button className="toolbar-primary" onClick={continueToAlignment}>Align Floors</button>}
                 {!canAlignCurrentReference && (
@@ -7525,6 +7534,12 @@ export function TakeoffApp() {
             </div>
             {modeGuidance.action && modeGuidance.actionLabel && (
               <button onClick={modeGuidance.action}>{modeGuidance.actionLabel}</button>
+            )}
+            {workflowStep === "crop" && floor.reference && (
+              <div className="takeoff-mode-guidance-actions">
+                <button type="button" className="toolbar-primary" onClick={enterCropMode}>Crop</button>
+                <button type="button" onClick={proceedWithoutCropping}>Proceed without cropping</button>
+              </div>
             )}
           </div>
 
