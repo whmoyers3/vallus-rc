@@ -243,6 +243,16 @@ export type TakeoffSurfaceTreatmentSuggestion = {
   adjacentFloorName?: string;
   assembly?: string;
   label?: string;
+  adjacency?: TakeoffWallAdjacency;
+  boundary?: TakeoffBoundaryType;
+  loadComponents?: Array<{
+    area: number;
+    assembly?: string;
+    label?: string;
+    adjacency?: TakeoffWallAdjacency;
+    boundary?: TakeoffBoundaryType;
+    panelPolygons?: TakeoffPoint[][];
+  }>;
   panelPolygons?: TakeoffPoint[][];
   conditionedPanelPolygons?: TakeoffPoint[][];
 };

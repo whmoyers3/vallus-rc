@@ -21,6 +21,7 @@ import type {
   TakeoffRoomComponentSource,
   TakeoffRoomType,
   TakeoffScaleLine,
+  TakeoffSurfaceTreatmentSuggestion,
   TakeoffValidationIssue,
   TakeoffVerticalProfile,
   TakeoffWallAdjacency,
@@ -1253,6 +1254,14 @@ function wallCanHostOpenings(component: TakeoffRoomComponent) {
   return component.adjacency == null || component.adjacency === "outside" || component.adjacency === "garage" || component.adjacency === "unknown";
 }
 
+function componentIsFloorOverGarage(component: TakeoffRoomComponent) {
+  return component.surface === "floor" && (
+    component.boundary === "floor_over_garage" ||
+    component.adjacency === "garage" ||
+    /garage/i.test(component.label ?? "")
+  );
+}
+
 function componentThermalSummary(component: TakeoffComponentDefinition | undefined) {
   if (!component) return "No schedule values found.";
   const values = [`U-value ${component.uValue ?? "-"}`, `U-factor ${component.uValue ?? "-"}`];
@@ -1371,10 +1380,34 @@ function payloadDirectionForComponent(component: TakeoffRoomComponent) {
   return component.direction;
 }
 
-function payloadComponentsForRoom(room: TakeoffRectRoom) {
+function payloadFloorComponentsForRoom(
+  floor: TakeoffFloor,
+  floors: TakeoffFloor[],
+  room: TakeoffRectRoom,
+  component: TakeoffRoomComponent,
+) {
+  if (component.surface !== "floor" || component.assembly !== "F1" || component.boundary || component.adjacency) return [component];
+  const floorBelow = nearestFloorByElevation(floor, floors, "below");
+  const adjacentBelowByKind = adjacentOverlapByKind(room, floorBelow);
+  if ((adjacentBelowByKind.get("garage") ?? 0) <= 0.5) return [component];
+  const floorComponents = floorLoadComponentsForExposure(room, floorBelow, component.area || 0, adjacentBelowByKind);
+  if (!floorComponents.some((entry) => entry.boundary === "floor_over_garage")) return [component];
+  return floorComponents.map((entry) => ({
+    ...component,
+    assembly: entry.assembly || component.assembly,
+    area: entry.area,
+    label: entry.label || component.label,
+    adjacency: entry.adjacency,
+    boundary: entry.boundary,
+    panelPolygons: entry.panelPolygons ?? component.panelPolygons,
+  }));
+}
+
+function payloadComponentsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom, floors: TakeoffFloor[]) {
   const remainingOpenings = new Map(openingAreaByDirection(room));
   return roomComponents(room)
     .filter((component) => !component.loadExempt)
+    .flatMap((component) => payloadFloorComponentsForRoom(floor, floors, room, component))
     .map((component) => {
       if (component.surface !== "wall" || !isCompassDirection(component.direction) || !wallCanHostOpenings(component)) return exportedWallComponent(component);
       const remaining = remainingOpenings.get(component.direction) ?? 0;
@@ -2219,6 +2252,66 @@ function adjacentOverlapDescription(byKind: Map<TakeoffAdjacentSpaceKind, number
   return `${Math.round(totalArea)} sf over ${labels.join(", ")}`;
 }
 
+type SurfaceLoadComponentSuggestion = NonNullable<TakeoffSurfaceTreatmentSuggestion["loadComponents"]>[number];
+
+function adjacentPanelPolygonsByKind(
+  room: TakeoffRectRoom,
+  otherFloor: TakeoffFloor | undefined,
+  kind: TakeoffAdjacentSpaceKind,
+) {
+  const adjacentPolygons = (otherFloor?.adjacentSpaces ?? [])
+    .filter((space) => space.kind === kind)
+    .map((space) => roomToClipPolygon(adjacentSpaceAsRoom(space, otherFloor?.defaultCeilingHeight ?? 9)));
+  if (adjacentPolygons.length === 0) return [];
+  const [firstAdjacent, ...remainingAdjacent] = adjacentPolygons;
+  let overlap = intersection([roomToClipPolygon(room)], union(firstAdjacent, ...remainingAdjacent));
+  const conditionedBlockers = otherFloor?.rooms.map((otherRoom) => roomToClipPolygon(otherRoom)) ?? [];
+  if (conditionedBlockers.length > 0) overlap = difference(overlap, ...conditionedBlockers);
+  return simplePolygonsFromMultiPolygon(overlap)
+    .map(({ polygon }) => clipPolygonToPoints(polygon))
+    .filter((points) => polygonArea(points) > 0.5);
+}
+
+function floorLoadComponentsForExposure(
+  room: TakeoffRectRoom,
+  floorBelow: TakeoffFloor | undefined,
+  exposedArea: number,
+  adjacentBelowByKind: Map<TakeoffAdjacentSpaceKind, number>,
+): SurfaceLoadComponentSuggestion[] {
+  const boundedExposedArea = Math.max(0, exposedArea);
+  if (boundedExposedArea <= 0.5) return [];
+  const tolerance = verticalSurfaceTolerance(boundedExposedArea);
+  const garageArea = clamp(adjacentBelowByKind.get("garage") ?? 0, 0, boundedExposedArea);
+  const garagePolygons = garageArea > 0.5 ? adjacentPanelPolygonsByKind(room, floorBelow, "garage") : [];
+  const garageComponent = (area: number): SurfaceLoadComponentSuggestion => ({
+    area,
+    assembly: "F1",
+    label: "Floor over garage",
+    adjacency: "garage",
+    boundary: "floor_over_garage",
+    panelPolygons: garagePolygons.length ? garagePolygons : undefined,
+  });
+  const framedComponent = (area: number): SurfaceLoadComponentSuggestion => ({
+    area,
+    assembly: "F1",
+    label: "Framed/exposed floor",
+    boundary: "framed_floor",
+  });
+
+  if (garageArea <= 0.5) return [framedComponent(boundedExposedArea)];
+  if (boundedExposedArea - garageArea <= tolerance) return [garageComponent(boundedExposedArea)];
+  return [
+    garageComponent(Number(garageArea.toFixed(3))),
+    framedComponent(Number(Math.max(0, boundedExposedArea - garageArea).toFixed(3))),
+  ].filter((component) => component.area > 0.5);
+}
+
+function floorLoadActionLabel(components: SurfaceLoadComponentSuggestion[]) {
+  if (components.length === 1) return (components[0].label || "framed/exposed floor").toLowerCase();
+  if (components.some((component) => component.boundary === "floor_over_garage")) return "garage/exposed floor";
+  return "floor exposure";
+}
+
 function exposedPanelPolygons(room: TakeoffRectRoom, otherFloor: TakeoffFloor | undefined) {
   let exposed: MultiPolygon = [roomToClipPolygon(room)];
   const blockers = otherFloor?.rooms.map((otherRoom) => roomToClipPolygon(otherRoom)) ?? [];
@@ -2509,6 +2602,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const floorArea = componentAreaTotal(room, "floor");
     const ceilingArea = componentAreaTotal(room, "ceiling");
     const floorLoadArea = componentLoadAreaTotal(room, "floor");
+    const currentFloorLoadComponents = roomSurfaceComponents(room, "floor").filter((component) => !component.loadExempt);
     const ceilingLoadArea = componentLoadAreaTotal(room, "ceiling");
     const noFloorLoad = roomSurfaceNoLoad(room, "floor");
     const noCeilingLoad = roomSurfaceNoLoad(room, "ceiling");
@@ -2518,7 +2612,17 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
     const conditionedAboveArea = conditionedOverlapArea(room, floorAbove);
     const exposedFloorArea = Math.max(0, roomArea - conditionedBelowArea);
     const exposedCeilingPlanArea = Math.max(0, roomArea - conditionedAboveArea);
-    const adjacentBelowDescription = adjacentOverlapDescription(adjacentOverlapByKind(room, floorBelow));
+    const adjacentBelowByKind = adjacentOverlapByKind(room, floorBelow);
+    const adjacentBelowDescription = adjacentOverlapDescription(adjacentBelowByKind);
+    const exposedFloorLoadComponents = floorLoadComponentsForExposure(room, floorBelow, exposedFloorArea, adjacentBelowByKind);
+    const floorLoadAction = floorLoadActionLabel(exposedFloorLoadComponents);
+    const expectedGarageFloorArea = exposedFloorLoadComponents
+      .filter((component) => component.boundary === "floor_over_garage")
+      .reduce((sum, component) => sum + component.area, 0);
+    const currentGarageFloorArea = currentFloorLoadComponents
+      .filter((component) => componentIsFloorOverGarage(component))
+      .reduce((sum, component) => sum + Math.max(0, component.area || 0), 0);
+    const garageFloorBoundaryMismatch = expectedGarageFloorArea > planSurfaceTolerance && Math.abs(expectedGarageFloorArea - currentGarageFloorArea) > planSurfaceTolerance;
     const conditionedCeilingSurfaceArea = conditionedAboveArea * ceilingSurfaceRatio;
     const exposedCeilingArea = exposedCeilingPlanArea * ceilingSurfaceRatio;
     const exposedFloorPanelPolygons = floorBelow ? exposedPanelPolygons(room, floorBelow) : [];
@@ -2545,10 +2649,10 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
-    if (!fullyConditionedBelow && hasConditionedBelow && (noFloorLoad || room.floorType === "slab" || Math.abs(floorLoadArea - exposedFloorArea) > planSurfaceTolerance)) {
+    if (!fullyConditionedBelow && hasConditionedBelow && (noFloorLoad || room.floorType === "slab" || Math.abs(floorLoadArea - exposedFloorArea) > planSurfaceTolerance || garageFloorBoundaryMismatch)) {
       issues.push({
         severity: "warning",
-        message: `${room.name || "Room"} is partially covered by conditioned space below on ${floorBelow?.name || "the floor below"}: about ${Math.round(conditionedBelowArea)} sf conditioned and ${Math.round(exposedFloorArea)} sf exposed. Apply the split if only the exposed portion should carry floor load.`,
+        message: `${room.name || "Room"} is partially covered by conditioned space below on ${floorBelow?.name || "the floor below"}: about ${Math.round(conditionedBelowArea)} sf conditioned and ${Math.round(exposedFloorArea)} sf exposed. Apply the ${floorLoadAction} split if only the exposed portion should carry floor load.`,
         issueType: "surface-treatment-suggestion",
         surfaceTreatmentSuggestion: {
           surface: "floor",
@@ -2557,15 +2661,18 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
           conditionedArea: conditionedBelowArea,
           exposedArea: exposedFloorArea,
           adjacentFloorName: floorBelow?.name,
-          assembly: "F1",
-          label: "Framed/exposed floor",
+          assembly: exposedFloorLoadComponents[0]?.assembly ?? "F1",
+          label: exposedFloorLoadComponents[0]?.label ?? "Framed/exposed floor",
+          adjacency: exposedFloorLoadComponents[0]?.adjacency,
+          boundary: exposedFloorLoadComponents[0]?.boundary,
+          loadComponents: exposedFloorLoadComponents,
           panelPolygons: exposedFloorPanelPolygons,
           conditionedPanelPolygons: conditionedFloorPanelPolygons,
         },
         target: roomTarget,
       });
     }
-    if (!hasConditionedBelow && floorBelow && (room.floorType !== "framed" || Math.abs(floorLoadArea - roomArea) > planSurfaceTolerance)) {
+    if (!hasConditionedBelow && floorBelow && (room.floorType !== "framed" || Math.abs(floorLoadArea - roomArea) > planSurfaceTolerance || garageFloorBoundaryMismatch)) {
       const currentFloorTreatment = room.floorType === "none"
         ? "no floor load"
         : room.floorType === "framed"
@@ -2574,7 +2681,7 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
       issues.push({
         severity: "warning",
         message: adjacentBelowDescription
-          ? `${room.name || "Room"} has ${adjacentBelowDescription} on ${floorBelow.name || "the floor below"}. Apply framed/exposed floor if this area should carry an F1 floor load instead of ${currentFloorTreatment}.`
+          ? `${room.name || "Room"} has ${adjacentBelowDescription} on ${floorBelow.name || "the floor below"}. Apply ${floorLoadAction} if this area should carry an F1 floor load instead of ${currentFloorTreatment}.`
           : `${room.name || "Room"} does not overlap conditioned space below on ${floorBelow.name || "the floor below"}. Apply framed/exposed floor if this area should carry an F1 floor load instead of ${currentFloorTreatment}.`,
         issueType: "surface-treatment-suggestion",
         surfaceTreatmentSuggestion: {
@@ -2584,8 +2691,11 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
           conditionedArea: 0,
           exposedArea: roomArea,
           adjacentFloorName: floorBelow.name,
-          assembly: "F1",
-          label: "Framed/exposed floor",
+          assembly: exposedFloorLoadComponents[0]?.assembly ?? "F1",
+          label: exposedFloorLoadComponents[0]?.label ?? "Framed/exposed floor",
+          adjacency: exposedFloorLoadComponents[0]?.adjacency,
+          boundary: exposedFloorLoadComponents[0]?.boundary,
+          loadComponents: exposedFloorLoadComponents,
           panelPolygons: exposedFloorPanelPolygons,
         },
         target: roomTarget,
@@ -2871,7 +2981,7 @@ function buildVrcPayload(project: TakeoffProject) {
       };
     });
     const lineItems = floor.rooms.flatMap((room) => {
-      return payloadComponentsForRoom(room).map((component) => ({
+      return payloadComponentsForRoom(floor, room, project.floors).map((component) => ({
         name: `${room.name} ${component.label || component.assembly}`,
         kind: componentPayloadKind(component.surface),
         room_name: room.name,
@@ -6357,16 +6467,33 @@ export function TakeoffApp() {
       ...current,
       rooms: current.rooms.map((room) => {
         if (room.id !== roomId) return room;
-        const existing = roomSurfaceComponents(room, surface).find((component) => !component.loadExempt);
-        const loadComponent: TakeoffRoomComponent = {
-          ...(existing ?? defaultComponent(surface, componentArea)),
-          surface,
-          assembly: suggestion.assembly || existing?.assembly || (surface === "ceiling" ? "C1" : "F1"),
-          area: componentArea,
-          label: suggestion.label || existing?.label || (surface === "ceiling" ? "Ceiling exposed to attic/roof" : "Framed/exposed floor"),
-          loadExempt: false,
-          panelPolygons: suggestion.panelPolygons?.length ? suggestion.panelPolygons : undefined,
-        };
+        const existingLoadComponents = roomSurfaceComponents(room, surface).filter((component) => !component.loadExempt);
+        const suggestedLoadComponents = suggestion.loadComponents?.length
+          ? suggestion.loadComponents
+          : [{
+              area: componentArea,
+              assembly: suggestion.assembly,
+              label: suggestion.label,
+              adjacency: suggestion.adjacency,
+              boundary: suggestion.boundary,
+              panelPolygons: suggestion.panelPolygons,
+            }];
+        const loadComponents: TakeoffRoomComponent[] = suggestedLoadComponents
+          .filter((component) => component.area > 0.5)
+          .map((component, index) => {
+            const existing = existingLoadComponents[index];
+            return {
+              ...(existing ?? defaultComponent(surface, component.area)),
+              surface,
+              assembly: component.assembly || existing?.assembly || (surface === "ceiling" ? "C1" : "F1"),
+              area: Number(Math.max(0, component.area).toFixed(3)),
+              label: component.label || existing?.label || (surface === "ceiling" ? "Ceiling exposed to attic/roof" : "Framed/exposed floor"),
+              adjacency: component.adjacency,
+              boundary: component.boundary,
+              loadExempt: false,
+              panelPolygons: component.panelPolygons?.length ? component.panelPolygons : undefined,
+            };
+          });
         const conditionedArea = Number(Math.max(0, suggestion.conditionedArea).toFixed(3));
         const conditionedComponent: TakeoffRoomComponent | null = suggestion.action === "partial" && conditionedArea > 0.5
           ? {
@@ -6380,7 +6507,7 @@ export function TakeoffApp() {
           : null;
         return {
           ...room,
-          floorType: surface === "floor" ? (loadComponent.assembly === "F2" ? "slab" : "framed") : room.floorType,
+          floorType: surface === "floor" ? (loadComponents.some((component) => component.assembly === "F2") ? "slab" : "framed") : room.floorType,
           ceilingType: surface === "ceiling" ? "flat" : room.ceilingType,
           ceilingGeometryApproved: surface === "ceiling" ? false : room.ceilingGeometryApproved,
           ceilingLowHeight: surface === "ceiling" ? undefined : room.ceilingLowHeight,
@@ -6389,7 +6516,7 @@ export function TakeoffApp() {
           ceilingRidgeOffset: surface === "ceiling" ? undefined : room.ceilingRidgeOffset,
           components: [
             ...roomComponents(room).filter((entry) => entry.surface !== surface),
-            loadComponent,
+            ...loadComponents,
             ...(conditionedComponent ? [conditionedComponent] : []),
           ],
         };
