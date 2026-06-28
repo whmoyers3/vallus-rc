@@ -2618,6 +2618,13 @@ function computedOpenToAboveHeight(sourceFloor: TakeoffFloor, room: TakeoffRectR
   return Math.max(room.ceilingHeight, verticalSpan + (targetFloor.defaultCeilingHeight ?? sourceFloor.defaultCeilingHeight ?? 9));
 }
 
+function roomWithComputedEnvelopeHeight(floor: TakeoffFloor, room: TakeoffRectRoom, floors: TakeoffFloor[]) {
+  const envelopeHeight = computedOpenToAboveHeight(floor, room, floors);
+  return Math.abs(envelopeHeight - room.ceilingHeight) > 0.001
+    ? { ...room, ceilingHeight: envelopeHeight }
+    : room;
+}
+
 type OpenToBelowReservation = {
   sourceFloor: TakeoffFloor;
   room: TakeoffRectRoom;
@@ -3236,10 +3243,9 @@ function buildValidation(
         target: roomTarget,
       });
     }
-    const envelopeRoomHeight = computedOpenToAboveHeight(floor, room, floors);
-    const envelopeRoom = Math.abs(envelopeRoomHeight - room.ceilingHeight) > 0.001
-      ? { ...room, ceilingHeight: envelopeRoomHeight }
-      : room;
+    const envelopeRoom = roomWithComputedEnvelopeHeight(floor, room, floors);
+    const includesOpenVolumeHeight = envelopeRoom.ceilingHeight > room.ceilingHeight + 0.5;
+    const openVolumeHeightLabel = includesOpenVolumeHeight ? ` including the open-volume height (${Number(envelopeRoom.ceilingHeight.toFixed(1))} ft)` : "";
     const exteriorDirections = roomExteriorDirections(floor, envelopeRoom);
     const openingAreas = openingAreaByDirection(room);
     const openingHostWallAreas = openingHostWallAreaByDirection(room);
@@ -3271,7 +3277,7 @@ function buildValidation(
       const recommendation = recommendedWallTreatment(reconciliation.adjacentKinds, component.assembly || "W1");
       issues.push({
         severity: "error",
-        message: `${room.name || "Room"} has ${Math.round(reconciliation.assignedGross)} sf assigned to ${reconciliation.direction} wall, but detected exterior/load-bearing area is ${Math.round(reconciliation.suggestedGross)} sf after the current footprint. Apply the detected wall slice.`,
+        message: `${room.name || "Room"} has ${Math.round(reconciliation.assignedGross)} sf assigned to ${reconciliation.direction} wall, but detected exterior/load-bearing area is ${Math.round(reconciliation.suggestedGross)} sf after the current footprint${openVolumeHeightLabel}. Apply the detected wall slice.`,
         issueType: "wall-component-geometry-suggestion",
         wallComponentGeometrySuggestion: {
           action: "resize",
@@ -9711,7 +9717,8 @@ export function TakeoffApp() {
 
   function roomTileMetricSummary(room: TakeoffRectRoom) {
     if (roomTileMetric === "wall") {
-      const netWallArea = roomWallReconciliation(floor, room).reduce((sum, entry) => sum + entry.netArea, 0);
+      const envelopeRoom = roomWithComputedEnvelopeHeight(floor, room, floors);
+      const netWallArea = roomWallReconciliation(floor, envelopeRoom).reduce((sum, entry) => sum + entry.netArea, 0);
       return { value: Math.round(netWallArea), label: "net wall sf" };
     }
     if (roomTileMetric === "glass") {
@@ -11105,8 +11112,9 @@ export function TakeoffApp() {
                 (() => {
                   const roomArea = rectArea(selectedRoom);
                   const ceilingSurfaceArea = expectedSurfaceArea(selectedRoom, "ceiling");
-                  const suggestions = roomExteriorWallSuggestions(floor, selectedRoom);
-                  const reconciliation = roomWallReconciliation(floor, selectedRoom);
+                  const envelopeRoom = roomWithComputedEnvelopeHeight(floor, selectedRoom, floors);
+                  const suggestions = roomExteriorWallSuggestions(floor, envelopeRoom);
+                  const reconciliation = roomWallReconciliation(floor, envelopeRoom);
                   const openToAboveLink = openToAboveLinkForRoom(selectedRoom);
                   const resolvedOpenToAboveFloor = resolvedOpenToAboveTargetFloor(floor, selectedRoom, floors);
                   const floorAboveForRoom = nearestFloorByElevation(floor, floors, "above");
@@ -11311,7 +11319,7 @@ export function TakeoffApp() {
                                 <span>
                                   <strong>{Math.round(suggestion.area)} sf</strong>
                                   <small>
-                                    {suggestion.direction} {wallAdjacencyLabel(selectedAdjacency).toLowerCase()} · {Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft
+                                    {suggestion.direction} {wallAdjacencyLabel(selectedAdjacency).toLowerCase()} · {Number(suggestion.length.toFixed(1))} lf x {Number((suggestion.area / Math.max(suggestion.length, 0.001)).toFixed(1))} ft
                                     {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")}` : ""}
                                   </small>
                                 </span>
@@ -12100,9 +12108,10 @@ export function TakeoffApp() {
             {selectedRoom ? (
               <>
                 {(() => {
-                  const suggestions = roomExteriorWallSuggestions(floor, selectedRoom);
+                  const envelopeRoom = roomWithComputedEnvelopeHeight(floor, selectedRoom, floors);
+                  const suggestions = roomExteriorWallSuggestions(floor, envelopeRoom);
                   const exteriorDirections = suggestions.map((suggestion) => suggestion.direction);
-                  const reconciliation = roomWallReconciliation(floor, selectedRoom);
+                  const reconciliation = roomWallReconciliation(floor, envelopeRoom);
                   const totals = reconciliation.reduce(
                     (sum, entry) => ({
                       grossArea: sum.grossArea + entry.grossArea,
@@ -12151,7 +12160,7 @@ export function TakeoffApp() {
                                 <span>
                                   Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
                                   <small>
-                                    {Number(suggestion.length.toFixed(1))} lf x {selectedRoom.ceilingHeight} ft
+                                    {Number(suggestion.length.toFixed(1))} lf x {Number((suggestion.area / Math.max(suggestion.length, 0.001)).toFixed(1))} ft
                                     {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")} · ${recommendation.assembly}` : ""}
                                   </small>
                                 </span>

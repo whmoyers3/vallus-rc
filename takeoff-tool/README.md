@@ -30,6 +30,7 @@ The goal is not full automatic plan recognition. The goal is a fast, accurate, a
 - Heavy offline desktop workflows.
 - General-purpose drafting tools.
 - Photorealistic 3D modeling.
+- AI-generated first-pass geometry or automatic 3D building-envelope compilation.
 
 ## Suggested Folder Shape When Implementation Starts
 
@@ -77,6 +78,11 @@ This `takeoff-tool/` folder is the planning and agent-instruction workspace. The
 13. Save linked calculation and editable takeoff JSON.
 ```
 
+The early workflow is intentionally manual-first. The user must create the modeled plan
+before any advanced automation tries to infer or render the building envelope. This ensures
+there is a deterministic place in the takeoff JSON for every room polygon, opening, boundary
+condition, vertical link, ceiling profile, connected volume, and exported load component.
+
 ## Input Modes
 
 The tool should support three authoring modes that all generate the same takeoff JSON:
@@ -94,6 +100,23 @@ This remains a good web-app fit. Browser canvas/SVG layers can handle PDF render
 ## Current Decision
 
 Build inside the existing Baseline project first. Keep the geometry model separate from the engine payload, and link takeoff projects to calculation records in Supabase.
+
+## Roadmap Staging
+
+**Now - deterministic takeoff engine.** Finish the manual authoring loop: calibration,
+floor alignment, exterior tracing, room slicing, openings, ceiling profiles, adjacent-space
+boundaries, validation, save/reopen, 3D QA, and generate-forward calculator handoff.
+
+**Next - complex geometry rule coverage.** Exercise the manual engine against difficult plan
+types and encode the rule set for vaulted ceilings, tray ceilings, gable/knee-wall panels,
+open-to-above and open-to-below spaces, shifted connected volumes, garage/porch/crawl
+adjacency, floor-over-garage, cantilevers, band joists, and ambiguous plan references.
+
+**Later - advanced AI plan compiler.** After the manual rule set is proven across a plan
+battery, add an AI-backed branch that analyzes plan sets and proposes takeoff JSON with
+source evidence, confidence scores, and a QA checklist. AI must write into the same
+validated takeoff model and may not bypass user verification before calculator import. See
+`docs/adr/0012-ai-plan-compiler-as-advanced-takeoff-branch.md`.
 
 ## Deployment And Verification
 
