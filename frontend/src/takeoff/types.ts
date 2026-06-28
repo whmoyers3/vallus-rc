@@ -7,7 +7,16 @@ export type TakeoffPoint = {
   y: number;
 };
 
-export type TakeoffRoomComponentSource = "manual" | "exterior-perimeter" | "opening-placement" | "raised-ceiling" | "vault-gable" | "tray-knee-wall" | "band-joist";
+export type TakeoffRoomComponentSource =
+  | "manual"
+  | "exterior-perimeter"
+  | "opening-placement"
+  | "raised-ceiling"
+  | "vault-gable"
+  | "tray-knee-wall"
+  | "band-joist"
+  | "open-to-above-envelope"
+  | "connected-volume";
 export type TakeoffWallAdjacency = "outside" | "attic" | "garage" | "crawlspace" | "conditioned" | "unknown";
 export type TakeoffBoundaryType =
   | "exterior"
@@ -66,11 +75,12 @@ export type TakeoffAdjacentSpace = {
   depth: number;
   polygon?: TakeoffPoint[];
   ceilingHeight?: number;
-  ceilingType?: "none" | "flat" | "vaulted" | "tray";
+  ceilingType?: "none" | "flat" | "vaulted" | "vault_flat_peak" | "tray";
   ceilingLowHeight?: number;
   ceilingPeakHeight?: number;
   ceilingRidgeDirection?: "E-W" | "N-S";
   ceilingRidgeOffset?: number;
+  ceilingFlatPeakWidth?: number;
   verticalProfile?: TakeoffVerticalProfile;
   closedCeilingBelow?: boolean;
   boundaryIntent?: TakeoffWallAdjacency;
@@ -96,13 +106,15 @@ export type TakeoffRectRoom = {
   width: number;
   depth: number;
   ceilingHeight: number;
-  ceilingType?: "none" | "flat" | "vaulted" | "tray";
+  ceilingType?: "none" | "flat" | "vaulted" | "vault_flat_peak" | "tray";
   ceilingLowHeight?: number;
   ceilingPeakHeight?: number;
   ceilingRidgeDirection?: "E-W" | "N-S";
   ceilingRidgeOffset?: number;
+  ceilingFlatPeakWidth?: number;
   ceilingTrayOffset?: number;
   ceilingTrayShape?: "rectangular" | "clipped";
+  ceilingTrayMode?: "follow_room" | "smart_box" | "double_box" | "custom";
   ceilingTraySteps?: number;
   ceilingGeometryApproved?: boolean;
   floorType?: "none" | "slab" | "framed";
@@ -123,6 +135,43 @@ export type TakeoffVerticalSpaceLink = {
   type: "open_to_above";
   targetFloorId?: string;
   previousCeilingHeight?: number;
+  envelopeMode?: "volume_only" | "review" | "generate_wall_extensions";
+  ceilingAreaMode?: "existing_room_ceiling" | "manual" | "connected_volume";
+  ceilingAreaOverride?: number;
+  transitionWallAreaOverride?: number;
+};
+
+export type TakeoffConnectedVolumeFootprintRole = "lower" | "upper" | "ceiling" | "transition";
+
+export type TakeoffConnectedVolumeFootprint = {
+  id: string;
+  floorId: string;
+  role: TakeoffConnectedVolumeFootprintRole;
+  roomIds?: string[];
+  polygon?: TakeoffPoint[];
+  areaOverride?: number;
+  label?: string;
+};
+
+export type TakeoffConnectedVolumeComponent = {
+  id: string;
+  surface: "ceiling" | "wall";
+  assembly: string;
+  area: number;
+  direction?: TakeoffRoomComponent["direction"];
+  label?: string;
+  adjacency?: TakeoffWallAdjacency;
+  boundary?: TakeoffBoundaryType;
+};
+
+export type TakeoffConnectedVolume = {
+  id: string;
+  name: string;
+  assignedRoomId?: string;
+  reportingFloorId?: string;
+  envelopeMode?: "review" | "generate_wall_extensions" | "manual_components";
+  footprints: TakeoffConnectedVolumeFootprint[];
+  components?: TakeoffConnectedVolumeComponent[];
 };
 
 export type TakeoffScaleLine = {
@@ -143,6 +192,7 @@ export type TakeoffFloor = {
   coordinateSpace?: "world_feet";
   elevation?: number;
   floorToFloorHeight?: number;
+  bandJoistEnabled?: boolean;
   bandJoistHeight?: number;
   bandJoistHeightUserSet?: boolean;
   floorAlignmentSnapEnabled?: boolean;
@@ -234,6 +284,7 @@ export type TakeoffProject = {
   frontDoorFaces: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
   componentSchedule?: TakeoffComponentDefinition[];
   floors: TakeoffFloor[];
+  connectedVolumes?: TakeoffConnectedVolume[];
 };
 
 export type TakeoffSurfaceTreatmentSuggestion = {
@@ -285,15 +336,24 @@ export type TakeoffInternalGainSuggestion = {
   label?: string;
 };
 
+export type TakeoffOpenToAboveEnvelopeSuggestion = {
+  action: "generate-wall-extensions";
+  linkId: string;
+  addedHeight: number;
+  estimatedWallArea: number;
+  label?: string;
+};
+
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
-  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion" | "internal-gain-suggestion";
+  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion" | "internal-gain-suggestion" | "open-to-above-envelope-suggestion";
   boundaryCandidateId?: string;
   surfaceTreatmentSuggestion?: TakeoffSurfaceTreatmentSuggestion;
   wallComponentGeometrySuggestion?: TakeoffWallComponentGeometrySuggestion;
   glassTreatmentSuggestion?: TakeoffGlassTreatmentSuggestion;
   internalGainSuggestion?: TakeoffInternalGainSuggestion;
+  openToAboveEnvelopeSuggestion?: TakeoffOpenToAboveEnvelopeSuggestion;
   target?: {
     type: "room" | "unassigned";
     roomId?: string;
