@@ -2609,16 +2609,90 @@ function resolvedOpenToAboveTargetFloor(sourceFloor: TakeoffFloor, room: Takeoff
 function computedOpenToAboveHeight(sourceFloor: TakeoffFloor, room: TakeoffRectRoom, floors: TakeoffFloor[]) {
   const targetFloor = resolvedOpenToAboveTargetFloor(sourceFloor, room, floors);
   if (!targetFloor) return room.ceilingHeight;
+  const link = openToAboveLinkForRoom(room);
   const verticalSpan = Math.max(0, (targetFloor.elevation ?? 0) - (sourceFloor.elevation ?? 0));
+  if (link?.ceilingAreaMode === "connected_volume") {
+    const baseHeight = Math.max(0, link.previousCeilingHeight ?? sourceFloor.defaultCeilingHeight ?? room.ceilingHeight);
+    return Math.max(baseHeight, verticalSpan);
+  }
   return Math.max(room.ceilingHeight, verticalSpan + (targetFloor.defaultCeilingHeight ?? sourceFloor.defaultCeilingHeight ?? 9));
 }
 
-function openToBelowRoomsForFloor(targetFloor: TakeoffFloor, floors: TakeoffFloor[]) {
+type OpenToBelowReservation = {
+  sourceFloor: TakeoffFloor;
+  room: TakeoffRectRoom;
+  link: NonNullable<ReturnType<typeof openToAboveLinkForRoom>>;
+  points: TakeoffPoint[];
+  label?: string;
+  connectedVolumeId?: string;
+  targetRoomIds?: string[];
+};
+
+function connectedVolumeFootprintPoints(footprint: TakeoffConnectedVolume["footprints"][number], floors: TakeoffFloor[]) {
+  if (footprint.polygon && footprint.polygon.length >= 3) return footprint.polygon;
+  const footprintFloor = floors.find((entry) => entry.id === footprint.floorId);
+  const polygons = (footprint.roomIds ?? [])
+    .map((roomId) => footprintFloor?.rooms.find((room) => room.id === roomId))
+    .filter((room): room is TakeoffRectRoom => Boolean(room))
+    .map((room) => roomToClipPolygon(room));
+  if (polygons.length === 0) return null;
+  if (polygons.length === 1) return clipPolygonToPoints(polygons[0]);
+  const [first, ...rest] = polygons;
+  const merged = largestClipPolygon(union(first, ...rest));
+  return merged ? clipPolygonToPoints(merged) : null;
+}
+
+function connectedVolumeReservationsForRoom(
+  sourceFloor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  targetFloor: TakeoffFloor,
+  link: NonNullable<ReturnType<typeof openToAboveLinkForRoom>>,
+  floors: TakeoffFloor[],
+  connectedVolumes: TakeoffConnectedVolume[],
+): OpenToBelowReservation[] {
+  const reservations: OpenToBelowReservation[] = [];
+  for (const volume of connectedVolumes) {
+    if (!connectedVolumeIncludesRoom(volume, sourceFloor.id, room.id)) continue;
+    for (const footprint of volume.footprints) {
+      if (footprint.floorId !== targetFloor.id) continue;
+      const points = connectedVolumeFootprintPoints(footprint, floors);
+      if (!points || points.length < 3) continue;
+      reservations.push({
+        sourceFloor,
+        room,
+        link,
+        points,
+        label: footprint.label || volume.name,
+        connectedVolumeId: volume.id,
+        targetRoomIds: footprint.roomIds ?? [],
+      });
+    }
+  }
+  return reservations;
+}
+
+function openToBelowRoomsForFloor(
+  targetFloor: TakeoffFloor,
+  floors: TakeoffFloor[],
+  connectedVolumes: TakeoffConnectedVolume[] = [],
+): OpenToBelowReservation[] {
   return floors.flatMap((sourceFloor) =>
-    sourceFloor.rooms
-      .filter((room) => resolvedOpenToAboveTargetFloor(sourceFloor, room, floors)?.id === targetFloor.id)
-      .map((room) => ({ sourceFloor, room, link: openToAboveLinkForRoom(room)! }))
+    sourceFloor.rooms.flatMap((room) => {
+      const link = openToAboveLinkForRoom(room);
+      if (!link || resolvedOpenToAboveTargetFloor(sourceFloor, room, floors)?.id !== targetFloor.id) return [];
+      const connectedReservations = link.ceilingAreaMode === "connected_volume"
+        ? connectedVolumeReservationsForRoom(sourceFloor, room, targetFloor, link, floors, connectedVolumes)
+        : [];
+      if (connectedReservations.length > 0) return connectedReservations;
+      return [{ sourceFloor, room, link, points: roomCorners(room), targetRoomIds: [] }];
+    })
   );
+}
+
+function roomReservationOverlapArea(room: TakeoffRectRoom, reservation: OpenToBelowReservation) {
+  if (reservation.points.length < 3) return 0;
+  return intersection(roomToClipPolygon(room), pointsToClipPolygon(reservation.points))
+    .reduce((sum, polygon) => sum + polygonArea(clipPolygonToPoints(polygon)), 0);
 }
 
 function connectedVolumeIncludesRoom(volume: TakeoffConnectedVolume, floorId: string, roomId: string) {
@@ -2852,7 +2926,7 @@ function buildValidation(
   const defaultCeilingHeight = floor.defaultCeilingHeight ?? 9;
   const floorBelow = nearestFloorByElevation(floor, floors, "below");
   const floorAbove = nearestFloorByElevation(floor, floors, "above");
-  const openToBelowReservations = openToBelowRoomsForFloor(floor, floors);
+  const openToBelowReservations = openToBelowRoomsForFloor(floor, floors, connectedVolumes);
 
   if (floor.designGrid.width <= 0 || floor.designGrid.depth <= 0) {
     issues.push({ severity: "error", message: "Design grid dimensions are required." });
@@ -2966,13 +3040,15 @@ function buildValidation(
     }
     const roomArea = rectArea(room);
     const relevantOpenToBelowReservations = openToBelowReservations.filter((reservation) =>
+      !reservation.targetRoomIds?.includes(room.id) &&
       !connectedVolumeLinksRoomPair(connectedVolumes, reservation.sourceFloor.id, reservation.room.id, floor.id, room.id)
     );
-    const openToBelowOverlapArea = relevantOpenToBelowReservations.reduce((sum, reservation) => sum + roomOverlapArea(room, reservation.room), 0);
+    const openToBelowOverlapArea = relevantOpenToBelowReservations.reduce((sum, reservation) => sum + roomReservationOverlapArea(room, reservation), 0);
     if (openToBelowOverlapArea > verticalSurfaceTolerance(roomArea)) {
+      const firstOverlappingReservation = relevantOpenToBelowReservations.find((reservation) => roomReservationOverlapArea(room, reservation) > 0.5);
       issues.push({
         severity: "error",
-        message: `${room.name || "Room"} overlaps ${Math.round(openToBelowOverlapArea)} sf reserved as open-to-below from ${relevantOpenToBelowReservations.find((reservation) => roomOverlapArea(room, reservation.room) > 0.5)?.room.name || "the floor below"}. Keep this area open or adjust the room footprint.`,
+        message: `${room.name || "Room"} overlaps ${Math.round(openToBelowOverlapArea)} sf reserved as open-to-below from ${firstOverlappingReservation?.label || firstOverlappingReservation?.room.name || "the floor below"}. Keep this area open or adjust the room footprint.`,
         target: roomTarget,
       });
     }
@@ -3160,10 +3236,14 @@ function buildValidation(
         target: roomTarget,
       });
     }
-    const exteriorDirections = roomExteriorDirections(floor, room);
+    const envelopeRoomHeight = computedOpenToAboveHeight(floor, room, floors);
+    const envelopeRoom = Math.abs(envelopeRoomHeight - room.ceilingHeight) > 0.001
+      ? { ...room, ceilingHeight: envelopeRoomHeight }
+      : room;
+    const exteriorDirections = roomExteriorDirections(floor, envelopeRoom);
     const openingAreas = openingAreaByDirection(room);
     const openingHostWallAreas = openingHostWallAreaByDirection(room);
-    const missingSuggestedWalls = missingSuggestedExteriorWalls(floor, room);
+    const missingSuggestedWalls = missingSuggestedExteriorWalls(floor, envelopeRoom);
     if (missingSuggestedWalls.length > 0) {
       issues.push({
         severity: "error",
@@ -3171,7 +3251,7 @@ function buildValidation(
         target: roomTarget,
       });
     }
-    const adjacentWallMismatches = wallAdjacentSpaceMismatches(floor, room);
+    const adjacentWallMismatches = wallAdjacentSpaceMismatches(floor, envelopeRoom);
     if (adjacentWallMismatches.length > 0) {
       issues.push({
         severity: "error",
@@ -3179,7 +3259,7 @@ function buildValidation(
         target: roomTarget,
       });
     }
-    for (const reconciliation of roomWallReconciliation(floor, room)) {
+    for (const reconciliation of roomWallReconciliation(floor, envelopeRoom)) {
       if (!reconciliation.isAssigned || reconciliation.suggestedGross <= 0) continue;
       const delta = reconciliation.assignedGross - reconciliation.suggestedGross;
       const tolerance = Math.max(1, reconciliation.suggestedGross * 0.02);
@@ -4114,6 +4194,7 @@ function TakeoffModelPreview({
   floorViewOptions,
   componentSchedule,
   selectedRoomId,
+  connectedVolumes,
   onSelectRoom,
   onUpdateFloorViewOptions,
   onAssignSurfaceComponent,
@@ -4126,6 +4207,7 @@ function TakeoffModelPreview({
   floorViewOptions: Record<string, FloorViewOptions>;
   componentSchedule: TakeoffComponentDefinition[];
   selectedRoomId: string | null;
+  connectedVolumes: TakeoffConnectedVolume[];
   onSelectRoom: (roomId: string) => void;
   onUpdateFloorViewOptions: (floorId: string, patch: Partial<FloorViewOptions>) => void;
   onAssignSurfaceComponent: (selection: ModelSurfaceSelection, assembly: string) => void;
@@ -4281,15 +4363,15 @@ function TakeoffModelPreview({
     const openVoidOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x0f5fa8, depthTest: false, transparent: true, opacity: 0.88 });
     const renderOpenToBelowMarkers = (targetFloor: TakeoffFloor, yOffset: number) => {
       if (!visibleLayers.floors) return;
-      for (const { room } of openToBelowRoomsForFloor(targetFloor, floors)) {
-        const points = cleanPolygonPointsForRender(roomCorners(room));
+      for (const reservation of openToBelowRoomsForFloor(targetFloor, floors, connectedVolumes)) {
+        const points = cleanPolygonPointsForRender(reservation.points);
         if (points.length < 3) continue;
         const marker = createHorizontalShapeMesh(points, center, yOffset + 0.08, openVoidMaterial);
         marker.userData.modelSurface = {
-          roomId: room.id,
-          roomName: room.name,
+          roomId: reservation.room.id,
+          roomName: reservation.label || reservation.room.name,
           kind: "floor",
-          label: `Open to below - ${room.name || "room"}`,
+          label: `Open to below - ${reservation.label || reservation.room.name || "room"}`,
           surface: "floor",
           area: Number(polygonArea(points).toFixed(3)),
         } satisfies ModelSurfaceSelection;
@@ -4817,7 +4899,7 @@ function TakeoffModelPreview({
       hoverOutlineMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [activeFloorId, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, visibleLayers]);
+  }, [activeFloorId, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, visibleLayers]);
 
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
@@ -5686,7 +5768,7 @@ export function TakeoffApp() {
   const alignmentTransform = { ...defaultAlignmentTransform(), ...(floor.alignment?.transform ?? {}) };
   const canAlignCurrentReference = floors.length > 1 && Boolean(floor.alignment?.referenceFloorId && floor.reference && alignmentReferenceFloor?.reference);
   const alignmentEffectiveScale = alignmentTransform.scale;
-  const activeOpenToBelowReservations = useMemo(() => openToBelowRoomsForFloor(floor, floors), [floor, floors]);
+  const activeOpenToBelowReservations = useMemo(() => openToBelowRoomsForFloor(floor, floors, connectedVolumes), [connectedVolumes, floor, floors]);
   const unassignedCells = useMemo(() => {
     if (floor.exteriorPolygon.length < 3 && (floor.conditionedPerimeter.width <= 0 || floor.conditionedPerimeter.depth <= 0)) return [];
     const cellSize = Math.max(1, floor.scale.feetPerGrid);
@@ -5697,7 +5779,7 @@ export function TakeoffApp() {
       : [pointsToClipPolygon(rectToPoints({ x: 0, y: 0, width: floor.conditionedPerimeter.width, depth: floor.conditionedPerimeter.depth }))];
     const blockers = [
       ...floor.rooms.map((room) => roomToClipPolygon(room)),
-      ...activeOpenToBelowReservations.map(({ room }) => roomToClipPolygon(room)),
+      ...activeOpenToBelowReservations.map((reservation) => pointsToClipPolygon(reservation.points)),
     ];
     if (blockers.length > 0) {
       available = difference(available, ...blockers);
@@ -8078,7 +8160,7 @@ export function TakeoffApp() {
     const segmentSets = [
       ...(options.excludeActiveExterior ? [] : [floor.exteriorPolygon]),
       ...floor.rooms.map((room) => roomCorners(room)),
-      ...activeOpenToBelowReservations.map(({ room }) => roomCorners(room)),
+      ...activeOpenToBelowReservations.map((reservation) => reservation.points),
     ].filter((points) => points.length >= 2);
 
     for (const points of segmentSets) {
@@ -8494,7 +8576,7 @@ export function TakeoffApp() {
     const blockers = floor.rooms
       .filter((room) => room.id !== ignoredRoomId)
       .map((room) => roomToClipPolygon(room));
-    const reservationBlockers = activeOpenToBelowReservations.map(({ room }) => roomToClipPolygon(room));
+    const reservationBlockers = activeOpenToBelowReservations.map((reservation) => pointsToClipPolygon(reservation.points));
     if (blockers.length > 0 || reservationBlockers.length > 0) {
       available = difference(available, ...blockers, ...reservationBlockers);
     }
@@ -10351,6 +10433,7 @@ export function TakeoffApp() {
                 floorViewOptions={floorViewOptions}
                 componentSchedule={componentSchedule}
                 selectedRoomId={selectedRoomId}
+                connectedVolumes={connectedVolumes}
                 onSelectRoom={setSelectedRoomId}
                 onUpdateFloorViewOptions={updateFloorViewOptions}
                 onAssignSurfaceComponent={assignModelSurfaceComponent}
@@ -10538,11 +10621,11 @@ export function TakeoffApp() {
                   />
                 );
               }))}
-              {activeFloorViewOptions.visible && activeFloorViewOptions.rooms && activeOpenToBelowReservations.map(({ sourceFloor, room }) => {
-                const points = roomCorners(room);
+              {activeFloorViewOptions.visible && activeFloorViewOptions.rooms && activeOpenToBelowReservations.map((reservation) => {
+                const points = reservation.points;
                 const labelPoint = polygonLabelPoint(points);
                 return (
-                  <g key={`open-to-below-${sourceFloor.id}-${room.id}`} pointerEvents="none">
+                  <g key={`open-to-below-${reservation.sourceFloor.id}-${reservation.room.id}-${reservation.connectedVolumeId ?? "simple"}`} pointerEvents="none">
                     <polygon
                       points={points.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
                       fill="rgba(45, 120, 173, 0.16)"
@@ -10567,7 +10650,7 @@ export function TakeoffApp() {
                       fill="#38556f"
                       textAnchor="middle"
                     >
-                      {room.name || sourceFloor.name || "Room below"}
+                      {reservation.label || reservation.room.name || reservation.sourceFloor.name || "Room below"}
                     </text>
                   </g>
                 );
