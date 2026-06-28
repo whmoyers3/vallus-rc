@@ -144,6 +144,7 @@ export type TakeoffFloor = {
   elevation?: number;
   floorToFloorHeight?: number;
   bandJoistHeight?: number;
+  bandJoistHeightUserSet?: boolean;
   floorAlignmentSnapEnabled?: boolean;
   alignment?: {
     referenceFloorId?: string;

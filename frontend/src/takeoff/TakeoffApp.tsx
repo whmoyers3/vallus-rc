@@ -32,6 +32,7 @@ const { difference, intersection, union } = polygonClipping;
 
 const directionOptions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const defaultLightingWPerSf = 0.502;
+const defaultBandJoistHeight = 0.75;
 const takeoffReferenceMaxBytes = 7 * 1024 * 1024;
 const pdfPreviewTargetScale = 2;
 const pdfPreviewMaxPixels = 8_000_000;
@@ -382,7 +383,8 @@ function makeInitialFloor(): TakeoffFloor {
     coordinateSpace: "world_feet",
     elevation: 0,
     floorToFloorHeight: 10,
-    bandJoistHeight: 1,
+    bandJoistHeight: defaultBandJoistHeight,
+    bandJoistHeightUserSet: false,
     floorAlignmentSnapEnabled: true,
     alignment: undefined,
     referencePoints: [],
@@ -1424,7 +1426,7 @@ function payloadComponentsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom, fl
 }
 
 function payloadBandJoistComponentsForFloor(floor: TakeoffFloor, floors: TakeoffFloor[]) {
-  const bandJoistHeight = Math.max(0, floor.bandJoistHeight ?? 0);
+  const bandJoistHeight = Math.max(0, floor.bandJoistHeight ?? defaultBandJoistHeight);
   if (bandJoistHeight <= 0.01) return [] as Array<{ room: TakeoffRectRoom; component: TakeoffRoomComponent }>;
   if (!nearestFloorByElevation(floor, floors, "above")) return [] as Array<{ room: TakeoffRectRoom; component: TakeoffRoomComponent }>;
 
@@ -1436,6 +1438,7 @@ function payloadBandJoistComponentsForFloor(floor: TakeoffFloor, floors: Takeoff
   for (const room of floor.rooms) {
     for (const segment of roomExteriorSegments(floor, room)) {
       if (!isCompassDirection(segment.direction) || segment.length <= 0.25) continue;
+      if (adjacentKindsForSegment(floor, segment).includes("garage")) continue;
       const key = `${room.id}:${segment.direction}`;
       const existing = byRoomDirection.get(key);
       if (existing) {
@@ -3123,6 +3126,12 @@ function adjacentSpaceColor(kind: TakeoffAdjacentSpaceKind) {
 function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFloor {
   const fallback = makeInitialFloor();
   if (!rawFloor) return fallback;
+  const rawBandJoistHeight = rawFloor.bandJoistHeight;
+  const bandJoistHeight = rawBandJoistHeight == null
+    ? fallback.bandJoistHeight
+    : !rawFloor.bandJoistHeightUserSet && Math.abs(rawBandJoistHeight - 1) <= 0.001
+      ? defaultBandJoistHeight
+      : rawBandJoistHeight;
   return {
     ...fallback,
     ...rawFloor,
@@ -3132,7 +3141,8 @@ function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFlo
     coordinateSpace: rawFloor.coordinateSpace || "world_feet",
     elevation: rawFloor.elevation ?? fallback.elevation,
     floorToFloorHeight: rawFloor.floorToFloorHeight ?? fallback.floorToFloorHeight,
-    bandJoistHeight: rawFloor.bandJoistHeight ?? fallback.bandJoistHeight,
+    bandJoistHeight,
+    bandJoistHeightUserSet: rawFloor.bandJoistHeightUserSet ?? false,
     floorAlignmentSnapEnabled: rawFloor.floorAlignmentSnapEnabled ?? fallback.floorAlignmentSnapEnabled,
     alignment: rawFloor.alignment,
     referencePoints: rawFloor.referencePoints ?? [],
@@ -3511,7 +3521,7 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
 }
 
 function bandJoistMeshesForFloor(floor: TakeoffFloor, center: TakeoffPoint, topOffset: number, material: THREE.Material) {
-  const height = Math.max(0, floor.bandJoistHeight ?? 1);
+  const height = Math.max(0, floor.bandJoistHeight ?? defaultBandJoistHeight);
   if (height <= 0.01) return [];
   const bandJoistPanels: THREE.Mesh[] = [];
   const edges = floor.rooms.length
@@ -3532,7 +3542,7 @@ function bandJoistMeshesForFloor(floor: TakeoffFloor, center: TakeoffPoint, topO
 }
 
 function floorHasRenderableBandJoist(floor: TakeoffFloor) {
-  if (Math.max(0, floor.bandJoistHeight ?? 1) <= 0.01) return false;
+  if (Math.max(0, floor.bandJoistHeight ?? defaultBandJoistHeight) <= 0.01) return false;
   if (floor.rooms.length) return floor.rooms.some((room) => room.floorType !== "slab" && roomExteriorSegments(floor, room).length > 0);
   return cleanPolygonPointsForRender(exteriorRingPoints(floor)).length >= 3;
 }
@@ -3809,7 +3819,7 @@ function TakeoffModelPreview({
     const absoluteLowestFloorElevation = Math.min(...floors.map((entry) => entry.elevation ?? 0));
     const lowestFloors = floors.filter((entry) => Math.abs((entry.elevation ?? 0) - absoluteLowestFloorElevation) <= 0.01);
     const modelBaseLift = lowestFloors.some((entry) => floorHasRenderableBandJoist(entry))
-      ? Math.max(...lowestFloors.map((entry) => floorHasRenderableBandJoist(entry) ? Math.max(0, entry.bandJoistHeight ?? 1) : 0))
+      ? Math.max(...lowestFloors.map((entry) => floorHasRenderableBandJoist(entry) ? Math.max(0, entry.bandJoistHeight ?? defaultBandJoistHeight) : 0))
       : 0;
     const activeFloorYOffset = ((floor.elevation ?? 0) - absoluteLowestFloorElevation) + modelBaseLift;
     const activeOptions = floorViewOptions[activeFloorId] ?? defaultFloorViewOptions();
@@ -5337,7 +5347,8 @@ export function TakeoffApp() {
       defaultCeilingHeight: base.defaultCeilingHeight,
       elevation: previousTop,
       floorToFloorHeight: base.floorToFloorHeight ?? 10,
-      bandJoistHeight: base.bandJoistHeight ?? 1,
+      bandJoistHeight: base.bandJoistHeight ?? defaultBandJoistHeight,
+      bandJoistHeightUserSet: base.bandJoistHeightUserSet ?? false,
       alignment: floors.length ? { referenceFloorId: base.id, pointPairs: [] } : undefined,
     };
     setFloors((current) => resolveOpenToAboveLinksForFloors(floorsByElevation([...current, nextFloor])));
@@ -5365,7 +5376,8 @@ export function TakeoffApp() {
       defaultCeilingHeight: base.defaultCeilingHeight,
       elevation: nextElevation,
       floorToFloorHeight: base.floorToFloorHeight ?? 10,
-      bandJoistHeight: base.bandJoistHeight ?? 1,
+      bandJoistHeight: base.bandJoistHeight ?? defaultBandJoistHeight,
+      bandJoistHeightUserSet: base.bandJoistHeightUserSet ?? false,
       alignment: { referenceFloorId: base.id, pointPairs: [] },
     };
     setFloors((current) => resolveOpenToAboveLinksForFloors(floorsByElevation([...current, nextFloor])));
@@ -9150,11 +9162,11 @@ export function TakeoffApp() {
             <label>
               Band joist height
               <DimensionInput
-                value={floor.bandJoistHeight ?? 1}
+                value={floor.bandJoistHeight ?? defaultBandJoistHeight}
                 mode={dimensionInputMode}
                 min={0}
                 step={0.25}
-                onCommit={(value) => updateFloor({ bandJoistHeight: value, coordinateSpace: "world_feet" })}
+                onCommit={(value) => updateFloor({ bandJoistHeight: value, bandJoistHeightUserSet: true, coordinateSpace: "world_feet" })}
               />
             </label>
             <label className="check-field">Mechanical ventilation
