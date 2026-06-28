@@ -170,6 +170,7 @@ type ActiveValidationTarget = {
   issueType?: TakeoffValidationIssue["issueType"];
   surfaceTreatmentSuggestion?: TakeoffValidationIssue["surfaceTreatmentSuggestion"];
   wallComponentGeometrySuggestion?: TakeoffValidationIssue["wallComponentGeometrySuggestion"];
+  glassTreatmentSuggestion?: TakeoffValidationIssue["glassTreatmentSuggestion"];
 };
 type ProjectValidationEntry = {
   floor: TakeoffFloor;
@@ -2937,7 +2938,19 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
           issues.push({ severity: "error", message: `${room.name || "Room"} has glass on a garage-adjacent ${component.direction} wall.`, target: roomTarget });
         }
         if (adjacentKinds.includes("covered_porch") && component.solarDirection !== "Shaded") {
-          issues.push({ severity: "warning", message: `${room.name || "Room"} has glass on a covered-porch ${component.direction} wall. Mark it shaded if Salas treats that opening as shaded.`, target: roomTarget });
+          issues.push({
+            severity: "warning",
+            message: `${room.name || "Room"} has glass on a covered-porch ${component.direction} wall. Mark it shaded if Salas treats that opening as shaded.`,
+            issueType: "glass-treatment-suggestion",
+            glassTreatmentSuggestion: {
+              action: "shade",
+              componentId: component.id,
+              direction: component.direction,
+              solarDirection: "Shaded",
+              label: defaultOpeningLabel("glass", "Shaded"),
+            },
+            target: roomTarget,
+          });
         }
       }
     }
@@ -6626,6 +6639,34 @@ export function TakeoffApp() {
     setMessage(`${suggestion.direction || "Wall"} wall slice updated to ${Math.round(suggestion.area ?? 0)} sf for ${roomName}.`);
   }
 
+  function applyGlassTreatmentSuggestion(issue: TakeoffValidationIssue) {
+    const suggestion = issue.glassTreatmentSuggestion;
+    const roomId = issue.target?.roomId;
+    if (!suggestion || !roomId || suggestion.action !== "shade") return;
+    const roomName = floor.rooms.find((room) => room.id === roomId)?.name || "Room";
+
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        return {
+          ...room,
+          components: roomComponents(room).map((component) => {
+            if (component.id !== suggestion.componentId || component.surface !== "glass") return component;
+            return {
+              ...component,
+              solarDirection: suggestion.solarDirection,
+              label: isAutoOpeningLabel(component.label)
+                ? suggestion.label || defaultOpeningLabel("glass", suggestion.solarDirection)
+                : component.label,
+            };
+          }),
+        };
+      }),
+    }));
+    setMessage(`${roomName} glass marked as shaded.`);
+  }
+
   function updateRoomCeilingType(roomId: string, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>) {
     const nextFloor = {
       ...floor,
@@ -8171,6 +8212,7 @@ export function TakeoffApp() {
       issueType: issue.issueType,
       surfaceTreatmentSuggestion: issue.surfaceTreatmentSuggestion,
       wallComponentGeometrySuggestion: issue.wallComponentGeometrySuggestion,
+      glassTreatmentSuggestion: issue.glassTreatmentSuggestion,
     });
     if (issueFloor.id !== activeFloorId) {
       setActiveFloorId(issueFloor.id);
@@ -10324,6 +10366,7 @@ export function TakeoffApp() {
                             : null;
                           const surfaceTreatmentSuggestion = activeRoomValidationTarget.surfaceTreatmentSuggestion;
                           const wallComponentGeometrySuggestion = activeRoomValidationTarget.wallComponentGeometrySuggestion;
+                          const glassTreatmentSuggestion = activeRoomValidationTarget.glassTreatmentSuggestion;
                           const suggestedLabel = roomTypeSuggestion
                             ? roomTypeOptions.find((option) => option.id === roomTypeSuggestion.type)?.shortLabel ?? roomTypeLabel(roomTypeSuggestion.type)
                             : "";
@@ -10333,6 +10376,7 @@ export function TakeoffApp() {
                             issueType: activeRoomValidationTarget.issueType,
                             surfaceTreatmentSuggestion,
                             wallComponentGeometrySuggestion,
+                            glassTreatmentSuggestion,
                             target: { type: "room", roomId: selectedRoom.id },
                           };
                           return (
@@ -10352,6 +10396,8 @@ export function TakeoffApp() {
                                   <button className="toolbar-primary" onClick={() => applySurfaceTreatmentSuggestion(activeValidationIssue)}>Apply Change</button>
                                 ) : wallComponentGeometrySuggestion ? (
                                   <button className="toolbar-primary" onClick={() => applyWallComponentGeometrySuggestion(activeValidationIssue)}>Apply Change</button>
+                                ) : glassTreatmentSuggestion ? (
+                                  <button className="toolbar-primary" onClick={() => applyGlassTreatmentSuggestion(activeValidationIssue)}>Apply Change</button>
                                 ) : (
                                   <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
                                 )}

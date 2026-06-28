@@ -269,13 +269,22 @@ export type TakeoffWallComponentGeometrySuggestion = {
   label?: string;
 };
 
+export type TakeoffGlassTreatmentSuggestion = {
+  action: "shade";
+  componentId: string;
+  direction?: TakeoffRoomComponent["direction"];
+  solarDirection: "Shaded";
+  label?: string;
+};
+
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
-  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion";
+  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion";
   boundaryCandidateId?: string;
   surfaceTreatmentSuggestion?: TakeoffSurfaceTreatmentSuggestion;
   wallComponentGeometrySuggestion?: TakeoffWallComponentGeometrySuggestion;
+  glassTreatmentSuggestion?: TakeoffGlassTreatmentSuggestion;
   target?: {
     type: "room" | "unassigned";
     roomId?: string;
