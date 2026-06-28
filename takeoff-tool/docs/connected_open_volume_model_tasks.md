@@ -34,6 +34,8 @@ decision.
 - [x] Add tray mode vocabulary and UI for smart box, double box, follow-room, and custom.
 - [x] Suppress generated gable/knee-wall suggestions where a gable end is shared by a
   matching conditioned room with the same vault geometry.
+- [x] Add a validation helper for like-labeled vertically aligned rooms, with reporting
+  floor selection for stair-style connected volumes.
 - [ ] Add a visible connected-volume editor for selecting linked rooms/footprints across
   floors.
 - [ ] Add lower/upper/ceiling/transition footprint drawing and room attribution controls.

@@ -344,16 +344,28 @@ export type TakeoffOpenToAboveEnvelopeSuggestion = {
   label?: string;
 };
 
+export type TakeoffVerticalMergeSuggestion = {
+  action: "create-connected-volume";
+  sourceFloorId: string;
+  sourceRoomId: string;
+  targetFloorId: string;
+  targetRoomId: string;
+  defaultReportingFloorId: string;
+  overlapArea: number;
+  label?: string;
+};
+
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
-  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion" | "internal-gain-suggestion" | "open-to-above-envelope-suggestion";
+  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion" | "internal-gain-suggestion" | "open-to-above-envelope-suggestion" | "vertical-merge-suggestion";
   boundaryCandidateId?: string;
   surfaceTreatmentSuggestion?: TakeoffSurfaceTreatmentSuggestion;
   wallComponentGeometrySuggestion?: TakeoffWallComponentGeometrySuggestion;
   glassTreatmentSuggestion?: TakeoffGlassTreatmentSuggestion;
   internalGainSuggestion?: TakeoffInternalGainSuggestion;
   openToAboveEnvelopeSuggestion?: TakeoffOpenToAboveEnvelopeSuggestion;
+  verticalMergeSuggestion?: TakeoffVerticalMergeSuggestion;
   target?: {
     type: "room" | "unassigned";
     roomId?: string;

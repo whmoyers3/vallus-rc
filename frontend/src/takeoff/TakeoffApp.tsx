@@ -13,6 +13,7 @@ import type {
   TakeoffBoundaryType,
   TakeoffComponentCategory,
   TakeoffComponentDefinition,
+  TakeoffConnectedVolume,
   TakeoffFloor,
   TakeoffPoint,
   TakeoffProject,
@@ -173,6 +174,7 @@ type ActiveValidationTarget = {
   glassTreatmentSuggestion?: TakeoffValidationIssue["glassTreatmentSuggestion"];
   internalGainSuggestion?: TakeoffValidationIssue["internalGainSuggestion"];
   openToAboveEnvelopeSuggestion?: TakeoffValidationIssue["openToAboveEnvelopeSuggestion"];
+  verticalMergeSuggestion?: TakeoffValidationIssue["verticalMergeSuggestion"];
 };
 type ProjectValidationEntry = {
   floor: TakeoffFloor;
@@ -431,6 +433,7 @@ function makeTakeoffProject(
   frontDoorFaces: TakeoffProject["frontDoorFaces"],
   floors: TakeoffFloor | TakeoffFloor[],
   componentSchedule: TakeoffComponentDefinition[],
+  connectedVolumes: TakeoffConnectedVolume[] = [],
 ): TakeoffProject {
   const projectFloors = Array.isArray(floors) ? floors : [floors];
   return {
@@ -443,6 +446,7 @@ function makeTakeoffProject(
     frontDoorFaces,
     componentSchedule,
     floors: projectFloors.length ? projectFloors : [makeInitialFloor()],
+    connectedVolumes,
   };
 }
 
@@ -2617,6 +2621,76 @@ function openToBelowRoomsForFloor(targetFloor: TakeoffFloor, floors: TakeoffFloo
   );
 }
 
+function connectedVolumeIncludesRoom(volume: TakeoffConnectedVolume, floorId: string, roomId: string) {
+  return volume.footprints.some((footprint) => footprint.floorId === floorId && (footprint.roomIds ?? []).includes(roomId));
+}
+
+function connectedVolumeLinksRoomPair(
+  connectedVolumes: TakeoffConnectedVolume[],
+  firstFloorId: string,
+  firstRoomId: string,
+  secondFloorId: string,
+  secondRoomId: string,
+) {
+  return connectedVolumes.some((volume) =>
+    connectedVolumeIncludesRoom(volume, firstFloorId, firstRoomId) &&
+    connectedVolumeIncludesRoom(volume, secondFloorId, secondRoomId)
+  );
+}
+
+type VerticalMergeRoomLabel = { key: string; label: string };
+
+function verticalMergeRoomLabelForName(name: string): VerticalMergeRoomLabel | null {
+  const normalized = normalizedRoomNameForInference(name)
+    .replace(/\b(?:main|first|1st|second|2nd|upper|lower|upstairs|downstairs|floor|level|flr)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return null;
+  if (/\bstairs?\b/.test(normalized) || /\bstair(?:way|well)s?\b/.test(normalized)) return { key: "stairs", label: "stairs" };
+  if (/\bfoyers?\b/.test(normalized) || /\bentries\b/.test(normalized) || /\bentry\b/.test(normalized) || /\bopen to (?:above|below)\b/.test(normalized)) {
+    return { key: "foyer", label: "foyer/open volume" };
+  }
+  if (/\bhalls?\b/.test(normalized) || /\bhallways?\b/.test(normalized) || /\bcorridors?\b/.test(normalized) || /\bcirculation\b/.test(normalized)) {
+    return { key: "hall", label: "hall/circulation" };
+  }
+  if (roomNameHasLoftLabel(normalized)) return { key: "loft", label: "loft" };
+  return null;
+}
+
+function verticalMergeSuggestionsForRoom(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  floors: TakeoffFloor[],
+  connectedVolumes: TakeoffConnectedVolume[],
+): NonNullable<TakeoffValidationIssue["verticalMergeSuggestion"]>[] {
+  const label = verticalMergeRoomLabelForName(room.name);
+  const floorAbove = nearestFloorByElevation(floor, floors, "above");
+  if (!label || !floorAbove) return [];
+
+  const suggestions: NonNullable<TakeoffValidationIssue["verticalMergeSuggestion"]>[] = [];
+  for (const targetRoom of floorAbove.rooms) {
+    const targetLabel = verticalMergeRoomLabelForName(targetRoom.name);
+    if (!targetLabel || targetLabel.key !== label.key) continue;
+    if (connectedVolumeLinksRoomPair(connectedVolumes, floor.id, room.id, floorAbove.id, targetRoom.id)) continue;
+    const overlapArea = roomOverlapArea(room, targetRoom);
+    const smallerRoomArea = Math.min(rectArea(room), rectArea(targetRoom));
+    const shiftedStairAlignment = label.key === "stairs" &&
+      distance(roomCenter(room), roomCenter(targetRoom)) <= Math.max(8, Math.sqrt(smallerRoomArea) * 1.5);
+    if (overlapArea < Math.max(5, smallerRoomArea * 0.1) && !shiftedStairAlignment) continue;
+    suggestions.push({
+      action: "create-connected-volume",
+      sourceFloorId: floor.id,
+      sourceRoomId: room.id,
+      targetFloorId: floorAbove.id,
+      targetRoomId: targetRoom.id,
+      defaultReportingFloorId: label.key === "stairs" ? floorAbove.id : floor.id,
+      overlapArea: Number(overlapArea.toFixed(3)),
+      label: label.label,
+    });
+  }
+  return suggestions;
+}
+
 function resolveOpenToAboveLinksForFloors(sourceFloors: TakeoffFloor[]) {
   return sourceFloors.map((sourceFloor) => ({
     ...sourceFloor,
@@ -2766,7 +2840,12 @@ function buildUnassignedRegions(floor: TakeoffFloor, cells: UnassignedCell[]): U
   return regions.sort((a, b) => b.area - a.area);
 }
 
-function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegion[] = [], floors: TakeoffFloor[] = [floor]): TakeoffValidationIssue[] {
+function buildValidation(
+  floor: TakeoffFloor,
+  unassignedRegions: UnassignedRegion[] = [],
+  floors: TakeoffFloor[] = [floor],
+  connectedVolumes: TakeoffConnectedVolume[] = [],
+): TakeoffValidationIssue[] {
   const issues: TakeoffValidationIssue[] = [];
   const area = footprintArea(floor);
   const roomArea = floor.rooms.reduce((sum, room) => sum + rectArea(room), 0);
@@ -2812,6 +2891,17 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         message: internalGainValidation.message,
         issueType: "internal-gain-suggestion",
         internalGainSuggestion: internalGainValidation.suggestion,
+        target: roomTarget,
+      });
+    }
+    for (const suggestion of verticalMergeSuggestionsForRoom(floor, room, floors, connectedVolumes)) {
+      const targetFloor = floors.find((entry) => entry.id === suggestion.targetFloorId);
+      const targetRoom = targetFloor?.rooms.find((candidate) => candidate.id === suggestion.targetRoomId);
+      issues.push({
+        severity: "warning",
+        message: `${room.name || "Room"} vertically aligns with ${targetRoom?.name || "a like-labeled room"} on ${targetFloor?.name || "the floor above"}. Create a connected volume and choose which floor receives the combined ${suggestion.label || "space"} attributes.`,
+        issueType: "vertical-merge-suggestion",
+        verticalMergeSuggestion: suggestion,
         target: roomTarget,
       });
     }
@@ -2875,11 +2965,14 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
       });
     }
     const roomArea = rectArea(room);
-    const openToBelowOverlapArea = openToBelowReservations.reduce((sum, reservation) => sum + roomOverlapArea(room, reservation.room), 0);
+    const relevantOpenToBelowReservations = openToBelowReservations.filter((reservation) =>
+      !connectedVolumeLinksRoomPair(connectedVolumes, reservation.sourceFloor.id, reservation.room.id, floor.id, room.id)
+    );
+    const openToBelowOverlapArea = relevantOpenToBelowReservations.reduce((sum, reservation) => sum + roomOverlapArea(room, reservation.room), 0);
     if (openToBelowOverlapArea > verticalSurfaceTolerance(roomArea)) {
       issues.push({
         severity: "error",
-        message: `${room.name || "Room"} overlaps ${Math.round(openToBelowOverlapArea)} sf reserved as open-to-below from ${openToBelowReservations.find((reservation) => roomOverlapArea(room, reservation.room) > 0.5)?.room.name || "the floor below"}. Keep this area open or adjust the room footprint.`,
+        message: `${room.name || "Room"} overlaps ${Math.round(openToBelowOverlapArea)} sf reserved as open-to-below from ${relevantOpenToBelowReservations.find((reservation) => roomOverlapArea(room, reservation.room) > 0.5)?.room.name || "the floor below"}. Keep this area open or adjust the room footprint.`,
         target: roomTarget,
       });
     }
@@ -3258,6 +3351,44 @@ function buildVrcPayload(project: TakeoffProject) {
       description: component.description,
     },
   ]));
+  const floorLookup = new Map(project.floors.map((floor) => [floor.id, floor]));
+  const roomLookup = new Map<string, { floor: TakeoffFloor; room: TakeoffRectRoom }>();
+  for (const floor of project.floors) {
+    for (const room of floor.rooms) {
+      roomLookup.set(`${floor.id}:${room.id}`, { floor, room });
+    }
+  }
+  const connectedVolumeMetadata = (project.connectedVolumes ?? []).map((volume) => {
+    const reportingFloor = volume.reportingFloorId ? floorLookup.get(volume.reportingFloorId) : undefined;
+    const assignedRoom = volume.assignedRoomId
+      ? Array.from(roomLookup.values()).find(({ room }) => room.id === volume.assignedRoomId)?.room
+      : undefined;
+    return {
+      id: volume.id,
+      name: volume.name,
+      envelope_mode: volume.envelopeMode ?? "review",
+      reporting_floor_id: volume.reportingFloorId,
+      reporting_floor_name: reportingFloor?.name,
+      assigned_room_id: volume.assignedRoomId,
+      assigned_room_name: assignedRoom?.name,
+      footprints: volume.footprints.map((footprint) => {
+        const footprintFloor = floorLookup.get(footprint.floorId);
+        const roomNames = (footprint.roomIds ?? [])
+          .map((roomId) => roomLookup.get(`${footprint.floorId}:${roomId}`)?.room.name)
+          .filter((name): name is string => Boolean(name));
+        return {
+          id: footprint.id,
+          floor_id: footprint.floorId,
+          floor_name: footprintFloor?.name,
+          role: footprint.role,
+          room_ids: footprint.roomIds ?? [],
+          room_names: roomNames,
+          area: footprint.areaOverride ?? (footprint.polygon && footprint.polygon.length >= 3 ? polygonArea(footprint.polygon) : undefined),
+          label: footprint.label,
+        };
+      }),
+    };
+  });
   const levels = project.floors.map((floor, index) => {
     const zoneId = `zone-${floor.id}`;
     const rooms = floor.rooms.map((room) => {
@@ -3346,6 +3477,7 @@ function buildVrcPayload(project: TakeoffProject) {
         seer: 14,
         front_door_faces: project.frontDoorFaces,
         ...(project.mechanicalVentilation ? { mechanical_ventilation: true, outside_air_cfm: resolvedVentilationCfm } : {}),
+        ...(connectedVolumeMetadata.length ? { connected_volumes: connectedVolumeMetadata } : {}),
         units: [{ id: "unit-whole-house", name: "Whole House", selected_tons: 1, selected_kw: 5 }],
         zones: project.floors.map((floor, index) => ({ id: `zone-${floor.id}`, name: floor.name || `Floor ${index + 1}`, unit_id: "unit-whole-house" })),
         takeoff_schema_version: project.schemaVersion,
@@ -3443,6 +3575,7 @@ function normalizeTakeoffProject(rawProject: Partial<TakeoffProject>): TakeoffPr
     frontDoorFaces,
     floors,
     rawProject.componentSchedule?.length ? rawProject.componentSchedule : defaultComponentSchedule,
+    rawProject.connectedVolumes ?? [],
   );
 }
 
@@ -5105,6 +5238,7 @@ function validationSectionForIssue(issue: TakeoffValidationIssue): ValidationSec
   const message = issue.message.toLowerCase();
   if (issue.issueType === "internal-gain-suggestion") return "room-profile";
   if (issue.issueType === "open-to-above-envelope-suggestion") return "wall-components";
+  if (issue.issueType === "vertical-merge-suggestion") return "merge";
   if (message.includes("room type") || message.includes("internal gains")) return "room-profile";
   if (message.includes("suggested exterior wall")) return "wall-suggestions";
   if (issue.issueType === "wall-component-geometry-suggestion") return "wall-components";
@@ -5208,6 +5342,7 @@ export function TakeoffApp() {
   const [componentSchedule, setComponentSchedule] = useState<TakeoffComponentDefinition[]>(() => defaultComponentSchedule);
   const [dimensionInputMode, setDimensionInputMode] = useState<DimensionInputMode>("decimal");
   const [floors, setFloors] = useState<TakeoffFloor[]>(() => [makeInitialFloor()]);
+  const [connectedVolumes, setConnectedVolumes] = useState<TakeoffConnectedVolume[]>([]);
   const [activeFloorId, setActiveFloorId] = useState("floor-1");
   const [floorViewOptions, setFloorViewOptions] = useState<Record<string, FloorViewOptions>>(() => ({ "floor-1": defaultFloorViewOptions() }));
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
@@ -5419,8 +5554,8 @@ export function TakeoffApp() {
   }, [roomMergeMenuOpen, roomTypeMenuOpen]);
 
   const takeoffProject = useMemo<TakeoffProject>(
-    () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule),
-    [componentSchedule, dimensionInputMode, floors, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
+    () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule, connectedVolumes),
+    [componentSchedule, connectedVolumes, dimensionInputMode, floors, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
   );
   const currentUndoSnapshot = useMemo(() => takeoffSnapshot(persistableTakeoffProject(takeoffProject)), [takeoffProject]);
   function pushUndoSnapshot(label: string) {
@@ -5442,6 +5577,7 @@ export function TakeoffApp() {
     setFrontDoorFaces(restored.frontDoorFaces);
     setComponentSchedule(restored.componentSchedule?.length ? restored.componentSchedule : defaultComponentSchedule);
     setFloors(restoredFloors);
+    setConnectedVolumes(restored.connectedVolumes ?? []);
     setFloorViewOptions((current) => {
       return Object.fromEntries(restoredFloors.map((entry) => [entry.id, current[entry.id] ?? defaultFloorViewOptions()]));
     });
@@ -5620,14 +5756,14 @@ export function TakeoffApp() {
       ...orderedFloors.filter((entry) => entry.id !== activeFloorId),
     ];
     return activeFirstFloors.flatMap((entry) =>
-      buildValidation(entry, entry.id === activeFloorId ? unassignedRegions : [], floors).map((issue, index) => ({
+      buildValidation(entry, entry.id === activeFloorId ? unassignedRegions : [], floors, connectedVolumes).map((issue, index) => ({
         floor: entry,
         issue,
         index,
         key: projectValidationIssueKey(entry.id, issue, index),
       }))
     );
-  }, [activeFloorId, floors, orderedFloors, unassignedRegions]);
+  }, [activeFloorId, connectedVolumes, floors, orderedFloors, unassignedRegions]);
   const visibleProjectValidation = useMemo(
     () => projectValidation.filter((entry) => !dismissedValidationKeys.has(entry.key)),
     [dismissedValidationKeys, projectValidation],
@@ -5887,6 +6023,9 @@ export function TakeoffApp() {
       }));
     const nextActiveFloor = remainingFloors[0] ?? makeInitialFloor();
     setFloors(remainingFloors.length ? remainingFloors : [nextActiveFloor]);
+    setConnectedVolumes((current) =>
+      current.filter((volume) => !volume.footprints.some((footprint) => footprint.floorId === target.id))
+    );
     setFloorViewOptions((current) => {
       const next = { ...current };
       delete next[target.id];
@@ -7183,6 +7322,89 @@ export function TakeoffApp() {
     }));
     setActiveValidationTarget(null);
     setMessage(`${roomName} will export open-to-above wall extensions as separate oriented line items.`);
+  }
+
+  function applyVerticalMergeSuggestion(issue: TakeoffValidationIssue, reportingFloorId: string) {
+    const suggestion = issue.verticalMergeSuggestion;
+    if (!suggestion || suggestion.action !== "create-connected-volume") return;
+    const sourceFloor = floors.find((entry) => entry.id === suggestion.sourceFloorId);
+    const targetFloor = floors.find((entry) => entry.id === suggestion.targetFloorId);
+    const sourceRoom = sourceFloor?.rooms.find((room) => room.id === suggestion.sourceRoomId);
+    const targetRoom = targetFloor?.rooms.find((room) => room.id === suggestion.targetRoomId);
+    if (!sourceFloor || !targetFloor || !sourceRoom || !targetRoom) return;
+
+    const resolvedReportingFloorId = reportingFloorId === targetFloor.id || reportingFloorId === sourceFloor.id
+      ? reportingFloorId
+      : suggestion.defaultReportingFloorId;
+    const reportingFloor = resolvedReportingFloorId === targetFloor.id ? targetFloor : sourceFloor;
+    const assignedRoom = resolvedReportingFloorId === targetFloor.id ? targetRoom : sourceRoom;
+    const volumeId = nextId("connected-volume");
+    const sourceFootprintId = nextId("connected-volume-footprint");
+    const targetFootprintId = nextId("connected-volume-footprint");
+    const linkId = nextId("vertical-link");
+
+    pushUndoSnapshot("connected vertical volume");
+    setConnectedVolumes((current) => {
+      if (connectedVolumeLinksRoomPair(current, sourceFloor.id, sourceRoom.id, targetFloor.id, targetRoom.id)) return current;
+      return [
+        ...current,
+        {
+          id: volumeId,
+          name: `${sourceRoom.name || "Lower room"} + ${targetRoom.name || "Upper room"}`,
+          assignedRoomId: assignedRoom.id,
+          reportingFloorId: reportingFloor.id,
+          envelopeMode: "review",
+          footprints: [
+            {
+              id: sourceFootprintId,
+              floorId: sourceFloor.id,
+              role: "lower",
+              roomIds: [sourceRoom.id],
+              polygon: roomCorners(sourceRoom),
+              label: sourceRoom.name || "Lower footprint",
+            },
+            {
+              id: targetFootprintId,
+              floorId: targetFloor.id,
+              role: "upper",
+              roomIds: [targetRoom.id],
+              polygon: roomCorners(targetRoom),
+              label: targetRoom.name || "Upper footprint",
+            },
+          ],
+        },
+      ];
+    });
+    setFloors((current) => current.map((entry) => {
+      if (entry.id !== sourceFloor.id) return entry;
+      return {
+        ...entry,
+        rooms: entry.rooms.map((room) => {
+          if (room.id !== sourceRoom.id) return room;
+          const existingLink = openToAboveLinkForRoom(room);
+          const nextLink = {
+            id: existingLink?.id ?? linkId,
+            type: "open_to_above" as const,
+            targetFloorId: targetFloor.id,
+            previousCeilingHeight: existingLink?.previousCeilingHeight ?? room.ceilingHeight,
+            envelopeMode: "review" as const,
+            ceilingAreaMode: "connected_volume" as const,
+          };
+          const linkedRoom = {
+            ...room,
+            verticalLinks: [...(room.verticalLinks ?? []).filter((link) => link.type !== "open_to_above"), nextLink],
+          };
+          return {
+            ...linkedRoom,
+            ceilingHeight: Number(computedOpenToAboveHeight(entry, linkedRoom, current).toFixed(3)),
+          };
+        }),
+      };
+    }));
+    setActiveFloorId(reportingFloor.id);
+    setSelectedRoomId(assignedRoom.id);
+    setActiveValidationTarget(null);
+    setMessage(`${sourceRoom.name || "Lower room"} and ${targetRoom.name || "upper room"} connected; combined attributes assigned to ${reportingFloor.name || "the selected floor"}.`);
   }
 
   function updateRoomCeilingType(roomId: string, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>) {
@@ -8736,6 +8958,7 @@ export function TakeoffApp() {
       glassTreatmentSuggestion: issue.glassTreatmentSuggestion,
       internalGainSuggestion: issue.internalGainSuggestion,
       openToAboveEnvelopeSuggestion: issue.openToAboveEnvelopeSuggestion,
+      verticalMergeSuggestion: issue.verticalMergeSuggestion,
     });
     if (issueFloor.id !== activeFloorId) {
       setActiveFloorId(issueFloor.id);
@@ -9201,6 +9424,7 @@ export function TakeoffApp() {
     setComponentSchedule(defaultComponentSchedule);
     setDimensionInputMode("decimal");
     setFloors([initialFloor]);
+    setConnectedVolumes([]);
     setActiveFloorId(initialFloor.id);
     setFloorViewOptions({ [initialFloor.id]: defaultFloorViewOptions() });
     setDraftRoom({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
@@ -9278,6 +9502,7 @@ export function TakeoffApp() {
       setFrontDoorFaces(loadedProject.frontDoorFaces);
       setComponentSchedule(loadedProject.componentSchedule?.length ? loadedProject.componentSchedule : defaultComponentSchedule);
       setFloors(loadedProject.floors.length ? loadedProject.floors : [firstLoadedFloor]);
+      setConnectedVolumes(loadedProject.connectedVolumes ?? []);
       setUndoStack([]);
       setFloorViewOptions(Object.fromEntries((loadedProject.floors.length ? loadedProject.floors : [firstLoadedFloor]).map((entry) => [entry.id, defaultFloorViewOptions()])));
       setActiveFloorId(firstLoadedFloor.id);
@@ -10907,6 +11132,9 @@ export function TakeoffApp() {
                           const glassTreatmentSuggestion = activeRoomValidationTarget.glassTreatmentSuggestion;
                           const internalGainSuggestion = activeRoomValidationTarget.internalGainSuggestion;
                           const openToAboveEnvelopeSuggestion = activeRoomValidationTarget.openToAboveEnvelopeSuggestion;
+                          const verticalMergeSuggestion = activeRoomValidationTarget.verticalMergeSuggestion;
+                          const verticalMergeSourceFloor = verticalMergeSuggestion ? floors.find((entry) => entry.id === verticalMergeSuggestion.sourceFloorId) : null;
+                          const verticalMergeTargetFloor = verticalMergeSuggestion ? floors.find((entry) => entry.id === verticalMergeSuggestion.targetFloorId) : null;
                           const suggestedLabel = roomTypeSuggestion
                             ? roomTypeOptions.find((option) => option.id === roomTypeSuggestion.type)?.shortLabel ?? roomTypeLabel(roomTypeSuggestion.type)
                             : "";
@@ -10919,6 +11147,7 @@ export function TakeoffApp() {
                             glassTreatmentSuggestion,
                             internalGainSuggestion,
                             openToAboveEnvelopeSuggestion,
+                            verticalMergeSuggestion,
                             target: { type: "room", roomId: selectedRoom.id },
                           };
                           return (
@@ -10944,6 +11173,15 @@ export function TakeoffApp() {
                                   <button className="toolbar-primary" onClick={() => applyInternalGainSuggestion(activeValidationIssue)}>Apply Change</button>
                                 ) : openToAboveEnvelopeSuggestion ? (
                                   <button className="toolbar-primary" onClick={() => applyOpenToAboveEnvelopeSuggestion(activeValidationIssue)}>Apply Change</button>
+                                ) : verticalMergeSuggestion ? (
+                                  <>
+                                    <button className="toolbar-primary" onClick={() => applyVerticalMergeSuggestion(activeValidationIssue, verticalMergeSuggestion.defaultReportingFloorId)}>
+                                      Assign to {verticalMergeSuggestion.defaultReportingFloorId === verticalMergeTargetFloor?.id ? verticalMergeTargetFloor?.name || "upper floor" : verticalMergeSourceFloor?.name || "lower floor"}
+                                    </button>
+                                    <button onClick={() => applyVerticalMergeSuggestion(activeValidationIssue, verticalMergeSuggestion.defaultReportingFloorId === verticalMergeTargetFloor?.id ? verticalMergeSourceFloor?.id ?? verticalMergeSuggestion.sourceFloorId : verticalMergeTargetFloor?.id ?? verticalMergeSuggestion.targetFloorId)}>
+                                      Assign to {verticalMergeSuggestion.defaultReportingFloorId === verticalMergeTargetFloor?.id ? verticalMergeSourceFloor?.name || "lower floor" : verticalMergeTargetFloor?.name || "upper floor"}
+                                    </button>
+                                  </>
                                 ) : (
                                   <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
                                 )}
