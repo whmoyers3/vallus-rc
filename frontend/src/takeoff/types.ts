@@ -7,12 +7,13 @@ export type TakeoffPoint = {
   y: number;
 };
 
-export type TakeoffRoomComponentSource = "manual" | "exterior-perimeter" | "opening-placement" | "raised-ceiling" | "vault-gable" | "tray-knee-wall";
+export type TakeoffRoomComponentSource = "manual" | "exterior-perimeter" | "opening-placement" | "raised-ceiling" | "vault-gable" | "tray-knee-wall" | "band-joist";
 export type TakeoffWallAdjacency = "outside" | "attic" | "garage" | "crawlspace" | "conditioned" | "unknown";
 export type TakeoffBoundaryType =
   | "exterior"
   | "attic_knee_wall"
   | "garage_wall"
+  | "band_joist"
   | "partition"
   | "crawlspace_wall"
   | "floor_over_garage"

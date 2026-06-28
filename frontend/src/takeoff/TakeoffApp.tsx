@@ -1423,6 +1423,51 @@ function payloadComponentsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom, fl
     .filter((component) => Math.max(0, component.area || 0) > 0);
 }
 
+function payloadBandJoistComponentsForFloor(floor: TakeoffFloor, floors: TakeoffFloor[]) {
+  const bandJoistHeight = Math.max(0, floor.bandJoistHeight ?? 0);
+  if (bandJoistHeight <= 0.01) return [] as Array<{ room: TakeoffRectRoom; component: TakeoffRoomComponent }>;
+  if (!nearestFloorByElevation(floor, floors, "above")) return [] as Array<{ room: TakeoffRectRoom; component: TakeoffRoomComponent }>;
+
+  const byRoomDirection = new Map<string, {
+    room: TakeoffRectRoom;
+    direction: NonNullable<TakeoffRoomComponent["direction"]>;
+    length: number;
+  }>();
+  for (const room of floor.rooms) {
+    for (const segment of roomExteriorSegments(floor, room)) {
+      if (!isCompassDirection(segment.direction) || segment.length <= 0.25) continue;
+      const key = `${room.id}:${segment.direction}`;
+      const existing = byRoomDirection.get(key);
+      if (existing) {
+        existing.length += segment.length;
+      } else {
+        byRoomDirection.set(key, { room, direction: segment.direction, length: segment.length });
+      }
+    }
+  }
+
+  return Array.from(byRoomDirection.values())
+    .map(({ room, direction, length }) => {
+      const area = Number((length * bandJoistHeight).toFixed(3));
+      if (area <= 0.5) return null;
+      const roundedLength = Number(length.toFixed(3));
+      const component: TakeoffRoomComponent = {
+        id: `band-joist-${floor.id}-${room.id}-${direction}`,
+        surface: "wall",
+        assembly: "W1",
+        direction,
+        area,
+        label: `${direction} band joist`,
+        source: "band-joist",
+        adjacency: "outside",
+        boundary: "band_joist",
+        geometryLabel: `${bandJoistHeight} ft band over ${roundedLength} lf exterior wall`,
+      };
+      return { room, component };
+    })
+    .filter((entry): entry is { room: TakeoffRectRoom; component: TakeoffRoomComponent } => entry != null);
+}
+
 function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
   const x = Math.min(a.x, b.x);
   const y = Math.min(a.y, b.y);
@@ -2980,21 +3025,25 @@ function buildVrcPayload(project: TakeoffProject) {
         zone_id: zoneId,
       };
     });
-    const lineItems = floor.rooms.flatMap((room) => {
-      return payloadComponentsForRoom(floor, room, project.floors).map((component) => ({
-        name: `${room.name} ${component.label || component.assembly}`,
-        kind: componentPayloadKind(component.surface),
-        room_name: room.name,
-        assembly: component.assembly,
-        direction: payloadDirectionForComponent(component),
-        area: component.area,
-        ...(componentBoundaryForSurface(component) ? { boundary: componentBoundaryForSurface(component) } : {}),
-        ...(component.source ? { source: component.source } : {}),
-        ...(component.adjacency ? { adjacency: component.adjacency } : {}),
-        ...(component.geometryLabel ? { geometry_label: component.geometryLabel } : {}),
-        ...(component.solarDirection ? { solar_direction: component.solarDirection, wall_direction: component.direction } : {}),
-      }));
+    const lineItemFromComponent = (room: TakeoffRectRoom, component: TakeoffRoomComponent) => ({
+      name: `${room.name} ${component.label || component.assembly}`,
+      kind: componentPayloadKind(component.surface),
+      room_name: room.name,
+      assembly: component.assembly,
+      direction: payloadDirectionForComponent(component),
+      area: component.area,
+      ...(componentBoundaryForSurface(component) ? { boundary: componentBoundaryForSurface(component) } : {}),
+      ...(component.source ? { source: component.source } : {}),
+      ...(component.adjacency ? { adjacency: component.adjacency } : {}),
+      ...(component.geometryLabel ? { geometry_label: component.geometryLabel } : {}),
+      ...(component.solarDirection ? { solar_direction: component.solarDirection, wall_direction: component.direction } : {}),
     });
+    const roomLineItems = floor.rooms.flatMap((room) =>
+      payloadComponentsForRoom(floor, room, project.floors).map((component) => lineItemFromComponent(room, component))
+    );
+    const bandJoistLineItems = payloadBandJoistComponentsForFloor(floor, project.floors)
+      .map(({ room, component }) => lineItemFromComponent(room, component));
+    const lineItems = [...roomLineItems, ...bandJoistLineItems];
     return {
       name: floor.name || `Floor ${index + 1}`,
       floor_area: rooms.reduce((sum, room) => sum + room.floor_area, 0),

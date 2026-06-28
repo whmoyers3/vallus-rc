@@ -157,6 +157,7 @@ def _component_row(
         "assembly": assembly.code if assembly else None,
         "assembly_description": assembly.description if assembly else None,
         "direction": item.direction,
+        "boundary": item.boundary,
         "area": item.area,
         "heating_area": item.heating_area,
         "volume": item.volume,
