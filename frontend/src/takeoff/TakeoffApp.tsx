@@ -1408,7 +1408,7 @@ function componentAreaBySurfaceAndDirection(room: TakeoffRectRoom, surface: Take
   return totals;
 }
 
-function roomWallReconciliation(floor: TakeoffFloor, room: TakeoffRectRoom) {
+function roomWallReconciliation(floor: TakeoffFloor, room: TakeoffRectRoom, _floors: TakeoffFloor[] = [floor]) {
   const suggested = new Map(roomExteriorWallSuggestions(floor, room).map((entry) => [entry.direction, entry.area]));
   const assignedWalls = assignedWallAreaByDirection(room);
   const windows = componentAreaBySurfaceAndDirection(room, "glass");
@@ -1439,7 +1439,7 @@ function roomWallReconciliation(floor: TakeoffFloor, room: TakeoffRectRoom) {
     .filter((entry) => entry.grossArea > 0 || entry.openingArea > 0);
 }
 
-function missingSuggestedExteriorWalls(floor: TakeoffFloor, room: TakeoffRectRoom) {
+function missingSuggestedExteriorWalls(floor: TakeoffFloor, room: TakeoffRectRoom, _floors: TakeoffFloor[] = [floor]) {
   return roomWallReconciliation(floor, room).filter((entry) => entry.suggestedGross > 0 && !entry.isAssigned);
 }
 
@@ -1578,33 +1578,13 @@ function payloadOpenToAboveEnvelopeComponentsForRoom(floor: TakeoffFloor, room: 
   if (!link || link.envelopeMode !== "generate_wall_extensions") {
     return [] as Array<{ room: TakeoffRectRoom; component: TakeoffRoomComponent }>;
   }
-  const effectiveHeight = computedOpenToAboveHeight(floor, room, floors);
-  const baseHeight = Math.max(0, link.previousCeilingHeight ?? floor.defaultCeilingHeight ?? room.ceilingHeight);
-  const addedHeight = Number(Math.max(0, effectiveHeight - baseHeight).toFixed(3));
-  if (addedHeight <= 0.01) {
+  const extensions = openToAboveWallExtensionsForRoom(floor, room, floors);
+  if (extensions.length === 0) {
     return [] as Array<{ room: TakeoffRectRoom; component: TakeoffRoomComponent }>;
   }
 
-  const byBoundary = new Map<string, {
-    direction: NonNullable<TakeoffRoomComponent["direction"]>;
-    adjacency: TakeoffWallAdjacency;
-    length: number;
-  }>();
-  for (const segment of roomExteriorSegments(floor, room)) {
-    if (!isCompassDirection(segment.direction) || segment.length <= 0.25) continue;
-    const adjacency = wallAdjacencyFromAdjacentKinds(adjacentKindsForSegment(floor, segment));
-    if (adjacency === "conditioned") continue;
-    const key = `${segment.direction}:${adjacency}`;
-    const existing = byBoundary.get(key);
-    if (existing) {
-      existing.length += segment.length;
-    } else {
-      byBoundary.set(key, { direction: segment.direction, adjacency, length: segment.length });
-    }
-  }
-
-  return Array.from(byBoundary.values())
-    .map(({ direction, adjacency, length }) => {
+  return extensions
+    .map(({ direction, adjacency, length, addedHeight, baseHeight, effectiveHeight }) => {
       const area = Number((length * addedHeight).toFixed(3));
       if (area <= 0.5) return null;
       const roundedLength = Number(length.toFixed(3));
@@ -2075,36 +2055,70 @@ function sharedSegment(
   };
 }
 
-function roomExteriorWallSuggestions(floor: TakeoffFloor, room: TakeoffRectRoom) {
+type RoomExteriorWallSuggestion = {
+  direction: (typeof directionOptions)[number];
+  length: number;
+  area: number;
+  geometryLabel?: string;
+};
+
+type OpenToAboveWallExtension = {
+  direction: (typeof directionOptions)[number];
+  adjacency: TakeoffWallAdjacency;
+  length: number;
+  addedHeight: number;
+  baseHeight: number;
+  effectiveHeight: number;
+};
+
+function baseEnvelopeHeightForWallSuggestion(floor: TakeoffFloor, room: TakeoffRectRoom) {
+  const link = openToAboveLinkForRoom(room);
+  if (!link) return Math.max(0, room.ceilingHeight);
+  return Math.max(0, link.previousCeilingHeight ?? floor.defaultCeilingHeight ?? room.ceilingHeight);
+}
+
+function roomExteriorWallSuggestions(floor: TakeoffFloor, room: TakeoffRectRoom, _floors: TakeoffFloor[] = [floor]): RoomExteriorWallSuggestion[] {
   const exteriorPoints = exteriorRingPoints(floor);
-  if (exteriorPoints.length < 3) return [] as Array<{ direction: (typeof directionOptions)[number]; length: number; area: number }>;
+  if (exteriorPoints.length < 3) return [];
   const center = {
     x: exteriorPoints.reduce((sum, point) => sum + point.x, 0) / exteriorPoints.length,
     y: exteriorPoints.reduce((sum, point) => sum + point.y, 0) / exteriorPoints.length,
   };
   const exteriorEdges = pointsToEdges(exteriorPoints);
   const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
+  const baseLengths = new Map<(typeof directionOptions)[number], number>();
   const lengths = new Map<(typeof directionOptions)[number], number>();
+  const areas = new Map<(typeof directionOptions)[number], number>();
 
   for (const roomEdge of pointsToEdges(roomCorners(room))) {
     for (const exteriorEdge of exteriorEdges) {
       const sharedLength = sharedSegmentLength(roomEdge, exteriorEdge, tolerance);
       if (sharedLength <= 0.25) continue;
       const direction = exteriorEdgeDirection(exteriorEdge, exteriorPoints, center, Math.max(0.75, tolerance * 2));
+      baseLengths.set(direction, (baseLengths.get(direction) ?? 0) + sharedLength);
       lengths.set(direction, (lengths.get(direction) ?? 0) + sharedLength);
+      areas.set(direction, (areas.get(direction) ?? 0) + sharedLength * baseHeight);
     }
   }
 
   return directionOptions
-    .map((direction) => ({
-      direction,
-      length: Number((lengths.get(direction) ?? 0).toFixed(3)),
-      area: Number(((lengths.get(direction) ?? 0) * Math.max(0, room.ceilingHeight)).toFixed(3)),
-    }))
+    .map((direction) => {
+      const length = Number((lengths.get(direction) ?? 0).toFixed(3));
+      const baseLength = Number((baseLengths.get(direction) ?? 0).toFixed(3));
+      const area = Number((areas.get(direction) ?? 0).toFixed(3));
+      const baseLabel = baseLength > 0 && baseHeight > 0 ? [`${Number(baseLength.toFixed(1))} lf x ${Number(baseHeight.toFixed(1))} ft base wall`] : [];
+      return {
+        direction,
+        length,
+        area,
+        geometryLabel: baseLabel.join(" + ") || undefined,
+      };
+    })
     .filter((suggestion) => suggestion.length > 0.25);
 }
 
-function roomExteriorDirections(floor: TakeoffFloor, room: TakeoffRectRoom) {
+function roomExteriorDirections(floor: TakeoffFloor, room: TakeoffRectRoom, _floors: TakeoffFloor[] = [floor]) {
   return roomExteriorWallSuggestions(floor, room).map((suggestion) => suggestion.direction);
 }
 
@@ -2132,6 +2146,59 @@ function roomExteriorSegments(floor: TakeoffFloor, room: TakeoffRectRoom) {
   }
 
   return segments;
+}
+
+function openToAboveWallExtensionsForRoom(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  floors: TakeoffFloor[],
+  includeReviewMode = false,
+): OpenToAboveWallExtension[] {
+  const link = openToAboveLinkForRoom(room);
+  const targetFloor = resolvedOpenToAboveTargetFloor(floor, room, floors);
+  if (!link || !targetFloor) return [];
+  if (!includeReviewMode && link.envelopeMode !== "generate_wall_extensions") return [];
+
+  const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
+  const effectiveHeight = computedOpenToAboveHeight(floor, room, floors);
+  const addedHeight = Number(Math.max(0, effectiveHeight - baseHeight).toFixed(3));
+  const targetExteriorPoints = exteriorRingPoints(targetFloor);
+  if (addedHeight <= 0.25 || targetExteriorPoints.length < 3) return [];
+
+  const targetCenter = {
+    x: targetExteriorPoints.reduce((sum, point) => sum + point.x, 0) / targetExteriorPoints.length,
+    y: targetExteriorPoints.reduce((sum, point) => sum + point.y, 0) / targetExteriorPoints.length,
+  };
+  const targetExteriorEdges = pointsToEdges(targetExteriorPoints);
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35, targetFloor.scale.feetPerGrid * 0.35);
+  const byDirectionAdjacency = new Map<string, OpenToAboveWallExtension>();
+
+  for (const sourceSegment of roomExteriorSegments(floor, room)) {
+    if (!isCompassDirection(sourceSegment.direction) || sourceSegment.length <= 0.25) continue;
+    for (const targetEdge of targetExteriorEdges) {
+      const shared = sharedSegment(sourceSegment, targetEdge, tolerance);
+      if (!shared || shared.length <= 0.25) continue;
+      const direction = exteriorEdgeDirection(targetEdge, targetExteriorPoints, targetCenter, Math.max(0.75, tolerance * 2));
+      const adjacency = wallAdjacencyFromAdjacentKinds(adjacentKindsForSegment(targetFloor, shared));
+      if (adjacency === "conditioned") continue;
+      const key = `${direction}:${adjacency}`;
+      const existing = byDirectionAdjacency.get(key);
+      if (existing) {
+        existing.length = Number((existing.length + shared.length).toFixed(3));
+      } else {
+        byDirectionAdjacency.set(key, {
+          direction,
+          adjacency,
+          length: Number(shared.length.toFixed(3)),
+          addedHeight,
+          baseHeight,
+          effectiveHeight,
+        });
+      }
+    }
+  }
+
+  return Array.from(byDirectionAdjacency.values()).filter((entry) => entry.length > 0.25);
 }
 
 function adjacentKindsForSegment(floor: TakeoffFloor, segment: { a: TakeoffPoint; b: TakeoffPoint }) {
@@ -2618,13 +2685,6 @@ function computedOpenToAboveHeight(sourceFloor: TakeoffFloor, room: TakeoffRectR
   return Math.max(room.ceilingHeight, verticalSpan + (targetFloor.defaultCeilingHeight ?? sourceFloor.defaultCeilingHeight ?? 9));
 }
 
-function roomWithComputedEnvelopeHeight(floor: TakeoffFloor, room: TakeoffRectRoom, floors: TakeoffFloor[]) {
-  const envelopeHeight = computedOpenToAboveHeight(floor, room, floors);
-  return Math.abs(envelopeHeight - room.ceilingHeight) > 0.001
-    ? { ...room, ceilingHeight: envelopeHeight }
-    : room;
-}
-
 type OpenToBelowReservation = {
   sourceFloor: TakeoffFloor;
   room: TakeoffRectRoom;
@@ -2997,13 +3057,11 @@ function buildValidation(
       const effectiveHeight = computedOpenToAboveHeight(floor, room, floors);
       const baseHeight = Math.max(0, openToAboveLink.previousCeilingHeight ?? floor.defaultCeilingHeight ?? room.ceilingHeight);
       const addedHeight = Number(Math.max(0, effectiveHeight - baseHeight).toFixed(3));
-      const exteriorExtensionLength = roomExteriorSegments(floor, room)
-        .filter((segment) => isCompassDirection(segment.direction) && segment.length > 0.25)
-        .reduce((sum, segment) => {
-          const adjacency = wallAdjacencyFromAdjacentKinds(adjacentKindsForSegment(floor, segment));
-          return adjacency === "conditioned" ? sum : sum + segment.length;
-        }, 0);
-      const estimatedWallArea = Number((exteriorExtensionLength * addedHeight).toFixed(3));
+      const estimatedWallArea = Number(
+        openToAboveWallExtensionsForRoom(floor, room, floors, true)
+          .reduce((sum, extension) => sum + extension.length * extension.addedHeight, 0)
+          .toFixed(3),
+      );
       const handledByConnectedVolume = openToAboveLink.ceilingAreaMode === "connected_volume";
       if (addedHeight > 0.5 && estimatedWallArea > 0.5 && openToAboveLink.envelopeMode !== "generate_wall_extensions" && !handledByConnectedVolume) {
         issues.push({
@@ -3243,13 +3301,10 @@ function buildValidation(
         target: roomTarget,
       });
     }
-    const envelopeRoom = roomWithComputedEnvelopeHeight(floor, room, floors);
-    const includesOpenVolumeHeight = envelopeRoom.ceilingHeight > room.ceilingHeight + 0.5;
-    const openVolumeHeightLabel = includesOpenVolumeHeight ? ` including the open-volume height (${Number(envelopeRoom.ceilingHeight.toFixed(1))} ft)` : "";
-    const exteriorDirections = roomExteriorDirections(floor, envelopeRoom);
+    const exteriorDirections = roomExteriorDirections(floor, room, floors);
     const openingAreas = openingAreaByDirection(room);
     const openingHostWallAreas = openingHostWallAreaByDirection(room);
-    const missingSuggestedWalls = missingSuggestedExteriorWalls(floor, envelopeRoom);
+    const missingSuggestedWalls = missingSuggestedExteriorWalls(floor, room, floors);
     if (missingSuggestedWalls.length > 0) {
       issues.push({
         severity: "error",
@@ -3257,7 +3312,7 @@ function buildValidation(
         target: roomTarget,
       });
     }
-    const adjacentWallMismatches = wallAdjacentSpaceMismatches(floor, envelopeRoom);
+    const adjacentWallMismatches = wallAdjacentSpaceMismatches(floor, room);
     if (adjacentWallMismatches.length > 0) {
       issues.push({
         severity: "error",
@@ -3265,7 +3320,7 @@ function buildValidation(
         target: roomTarget,
       });
     }
-    for (const reconciliation of roomWallReconciliation(floor, envelopeRoom)) {
+    for (const reconciliation of roomWallReconciliation(floor, room, floors)) {
       if (!reconciliation.isAssigned || reconciliation.suggestedGross <= 0) continue;
       const delta = reconciliation.assignedGross - reconciliation.suggestedGross;
       const tolerance = Math.max(1, reconciliation.suggestedGross * 0.02);
@@ -3277,7 +3332,7 @@ function buildValidation(
       const recommendation = recommendedWallTreatment(reconciliation.adjacentKinds, component.assembly || "W1");
       issues.push({
         severity: "error",
-        message: `${room.name || "Room"} has ${Math.round(reconciliation.assignedGross)} sf assigned to ${reconciliation.direction} wall, but detected exterior/load-bearing area is ${Math.round(reconciliation.suggestedGross)} sf after the current footprint${openVolumeHeightLabel}. Apply the detected wall slice.`,
+        message: `${room.name || "Room"} has ${Math.round(reconciliation.assignedGross)} sf assigned to ${reconciliation.direction} wall, but detected exterior/load-bearing area is ${Math.round(reconciliation.suggestedGross)} sf after the current footprint. Apply the detected wall slice.`,
         issueType: "wall-component-geometry-suggestion",
         wallComponentGeometrySuggestion: {
           action: "resize",
@@ -7557,7 +7612,7 @@ export function TakeoffApp() {
 
   function applySuggestedWallArea(
     roomId: string,
-    suggestion: { direction: TakeoffRoomComponent["direction"]; area: number },
+    suggestion: Pick<RoomExteriorWallSuggestion, "direction" | "area" | "geometryLabel">,
     assembly: string,
     adjacency: TakeoffWallAdjacency = "outside",
   ) {
@@ -7572,7 +7627,7 @@ export function TakeoffApp() {
           return {
             ...room,
             components: components.map((component) => component.id === existing.id
-              ? { ...component, assembly, adjacency, area: Math.round(suggestion.area), label: `${suggestion.direction} ${label.toLowerCase()}`, source: "exterior-perimeter" }
+              ? { ...component, assembly, adjacency, area: Math.round(suggestion.area), label: `${suggestion.direction} ${label.toLowerCase()}`, geometryLabel: suggestion.geometryLabel, source: "exterior-perimeter" }
               : component),
           };
         }
@@ -7587,6 +7642,7 @@ export function TakeoffApp() {
               direction: suggestion.direction,
               area: Math.round(suggestion.area),
               label: `${suggestion.direction} ${label.toLowerCase()}`,
+              geometryLabel: suggestion.geometryLabel,
               source: "exterior-perimeter",
               adjacency,
             },
@@ -7598,7 +7654,7 @@ export function TakeoffApp() {
 
   function applySuggestedWallAreas(
     roomId: string,
-    rows: Array<{ suggestion: { direction: TakeoffRoomComponent["direction"]; area: number }; recommendation: { assembly: string; adjacency: TakeoffWallAdjacency } }>,
+    rows: Array<{ suggestion: Pick<RoomExteriorWallSuggestion, "direction" | "area" | "geometryLabel">; recommendation: { assembly: string; adjacency: TakeoffWallAdjacency } }>,
   ) {
     rows.forEach((row) => {
       applySuggestedWallArea(roomId, row.suggestion, row.recommendation.assembly, row.recommendation.adjacency);
@@ -9717,8 +9773,7 @@ export function TakeoffApp() {
 
   function roomTileMetricSummary(room: TakeoffRectRoom) {
     if (roomTileMetric === "wall") {
-      const envelopeRoom = roomWithComputedEnvelopeHeight(floor, room, floors);
-      const netWallArea = roomWallReconciliation(floor, envelopeRoom).reduce((sum, entry) => sum + entry.netArea, 0);
+      const netWallArea = roomWallReconciliation(floor, room, floors).reduce((sum, entry) => sum + entry.netArea, 0);
       return { value: Math.round(netWallArea), label: "net wall sf" };
     }
     if (roomTileMetric === "glass") {
@@ -11112,9 +11167,8 @@ export function TakeoffApp() {
                 (() => {
                   const roomArea = rectArea(selectedRoom);
                   const ceilingSurfaceArea = expectedSurfaceArea(selectedRoom, "ceiling");
-                  const envelopeRoom = roomWithComputedEnvelopeHeight(floor, selectedRoom, floors);
-                  const suggestions = roomExteriorWallSuggestions(floor, envelopeRoom);
-                  const reconciliation = roomWallReconciliation(floor, envelopeRoom);
+                  const suggestions = roomExteriorWallSuggestions(floor, selectedRoom, floors);
+                  const reconciliation = roomWallReconciliation(floor, selectedRoom, floors);
                   const openToAboveLink = openToAboveLinkForRoom(selectedRoom);
                   const resolvedOpenToAboveFloor = resolvedOpenToAboveTargetFloor(floor, selectedRoom, floors);
                   const floorAboveForRoom = nearestFloorByElevation(floor, floors, "above");
@@ -11314,12 +11368,13 @@ export function TakeoffApp() {
                             const rowKey = `${selectedRoom.id}:${suggestion.direction}`;
                             const selectedAdjacency = suggestedWallRowAdjacencies[rowKey] ?? recommendation.adjacency;
                             const selectedAssembly = suggestedWallRowAssemblies[rowKey] ?? recommendation.assembly ?? defaultWallAssemblyForAdjacency(selectedAdjacency);
+                            const geometrySummary = suggestion.geometryLabel ?? `${Number(suggestion.length.toFixed(1))} lf x ${Number((suggestion.area / Math.max(suggestion.length, 0.001)).toFixed(1))} ft`;
                             return (
                               <div key={suggestion.direction} className="takeoff-wall-suggestion-row takeoff-wall-suggestion-row--workbench">
                                 <span>
                                   <strong>{Math.round(suggestion.area)} sf</strong>
                                   <small>
-                                    {suggestion.direction} {wallAdjacencyLabel(selectedAdjacency).toLowerCase()} · {Number(suggestion.length.toFixed(1))} lf x {Number((suggestion.area / Math.max(suggestion.length, 0.001)).toFixed(1))} ft
+                                    {suggestion.direction} {wallAdjacencyLabel(selectedAdjacency).toLowerCase()} · {geometrySummary}
                                     {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")}` : ""}
                                   </small>
                                 </span>
@@ -12108,10 +12163,9 @@ export function TakeoffApp() {
             {selectedRoom ? (
               <>
                 {(() => {
-                  const envelopeRoom = roomWithComputedEnvelopeHeight(floor, selectedRoom, floors);
-                  const suggestions = roomExteriorWallSuggestions(floor, envelopeRoom);
+                  const suggestions = roomExteriorWallSuggestions(floor, selectedRoom, floors);
                   const exteriorDirections = suggestions.map((suggestion) => suggestion.direction);
-                  const reconciliation = roomWallReconciliation(floor, envelopeRoom);
+                  const reconciliation = roomWallReconciliation(floor, selectedRoom, floors);
                   const totals = reconciliation.reduce(
                     (sum, entry) => ({
                       grossArea: sum.grossArea + entry.grossArea,
@@ -12155,12 +12209,14 @@ export function TakeoffApp() {
                             <p className="takeoff-muted">
                               {suggestionRows.length} suggested wall area{suggestionRows.length === 1 ? "" : "s"} applied. Flagged wall components remain below for review.
                             </p>
-                          ) : suggestionRows.map(({ suggestion, adjacentKinds, recommendation, approved }) => (
+                          ) : suggestionRows.map(({ suggestion, adjacentKinds, recommendation, approved }) => {
+                            const geometrySummary = suggestion.geometryLabel ?? `${Number(suggestion.length.toFixed(1))} lf x ${Number((suggestion.area / Math.max(suggestion.length, 0.001)).toFixed(1))} ft`;
+                            return (
                               <div key={suggestion.direction} className="takeoff-wall-suggestion-row">
                                 <span>
                                   Suggested wall area: <strong>{Math.round(suggestion.area)} sf</strong> {suggestion.direction} {recommendation.label.toLowerCase()}
                                   <small>
-                                    {Number(suggestion.length.toFixed(1))} lf x {Number((suggestion.area / Math.max(suggestion.length, 0.001)).toFixed(1))} ft
+                                    {geometrySummary}
                                     {adjacentKinds.length > 0 ? ` · adjacent ${adjacentKinds.map(adjacentSpaceLabel).join(", ")} · ${recommendation.assembly}` : ""}
                                   </small>
                                 </span>
@@ -12168,7 +12224,8 @@ export function TakeoffApp() {
                                   {approved ? "Approved" : "Apply"}
                                 </button>
                               </div>
-                          ))}
+                            );
+                          })}
                           {(!allSuggestionsApproved || suggestionHighlightClass) && (
                             <p className="takeoff-muted">You can apply a suggested gross wall area, then edit it manually in Wall Components below.</p>
                           )}

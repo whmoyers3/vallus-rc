@@ -55,6 +55,21 @@ The model should support:
 - explicit attic/transition/knee-wall faces where the footprint changes;
 - a review state so generated components can be accepted, edited, or ignored.
 
+**Update 2026-06-28: derived thermal surface segmentation.** Open-volume wall continuation
+is a derived surface, not a resize of the lower room's base wall component. The takeoff
+should classify each wall band from the geometry around it: source room edge, target-floor
+exterior/conditioned footprint, adjacent spaces, and vertical interval. If an upper band is
+adjacent to conditioned space, it is not exported as a heat-bearing garage/exterior wall
+even when the lower band is a garage/exterior wall. If it remains adjacent to outside,
+garage, attic, or crawlspace, it exports as a separate generated component with its own
+orientation, boundary, `zMin`/`zMax`, and geometry label.
+
+This keeps regular wall review focused on the base room wall slice and prevents generated
+open-volume extensions from being double-counted as manually resized room walls. It also
+establishes the path for future diagonal stair cases: the wall face should be clipped into
+surface segments by adjacent-space/vertical profiles, then each segment should be classified
+and exported independently.
+
 `open_to_above` remains the simple path. For simple stacked rooms, it can generate the same
 derived components from the source room footprint. For irregular foyers and stairs, the user
 can promote the condition to a connected open volume with custom upper/lower footprints.
@@ -85,6 +100,8 @@ can promote the condition to a connected open volume with custom upper/lower foo
 - Users get an explicit place to model discretionary foyer/stair/hall methodology instead
   of hiding it in manual wall components.
 - Existing projects remain safe if new envelope generation is opt-in or review-gated.
+- Generated open-volume components must remain separate from user-authored base wall
+  components so validation and payload export do not count the same surface twice.
 
 ## Alternatives considered
 

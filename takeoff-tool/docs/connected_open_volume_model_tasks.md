@@ -8,7 +8,9 @@ decision.
 
 ## Design Points Not Fully Built Yet
 
-- Open-to-above currently changes room volume; it needs explicit envelope surfaces.
+- Open-to-above should derive explicit envelope surfaces from source edge, target-floor
+  footprint, adjacent spaces, and vertical interval; it should not simply stretch every
+  lower-floor wall to the full open-volume height.
 - Upper and lower footprints can differ for foyers, stairs, hallways, and loft openings.
 - Ceiling area should be independently modeled; it should not always equal lower floor area.
 - Vaulted ceilings sometimes have flat peaks and should split into flat and sloped ceiling
@@ -23,6 +25,9 @@ decision.
   wall continuation.
 - Diagnostic reports should identify whether a Salas gap comes from lower walls, band joist,
   open-volume wall continuation, ceiling area, transition walls, or room bucketing.
+- Future stair/diagonal geometry should clip wall faces into independent thermal surface
+  segments, so conditioned space above a stair line and garage/basement/attic below it are
+  represented as distinct load-bearing or non-load-bearing areas.
 
 ## Development Path
 
@@ -30,6 +35,8 @@ decision.
 - [x] Add takeoff data vocabulary for connected volumes and open-volume component sources.
 - [x] Add opt-in open-to-above wall-extension export support.
 - [x] Add validation that prompts the user before generating open-to-above wall extensions.
+- [x] Keep base wall reconciliation separate from generated open-volume wall-extension
+  line items to prevent duplicate wall area.
 - [x] Add `Vault w/ flat peak` ceiling geometry with flat/sloped ceiling line-item split.
 - [x] Add tray mode vocabulary and UI for smart box, double box, follow-room, and custom.
 - [x] Suppress generated gable/knee-wall suggestions where a gable end is shared by a
@@ -44,12 +51,14 @@ decision.
 - [ ] Add custom drawn tray polygons and smarter tray placement that ignores incidental
   room jogs.
 - [ ] Add stair-specific connected-volume workflow for lower/upper footprint mismatch.
+- [ ] Add a general thermal-surface segmentation pass that classifies wall/floor/ceiling
+  polygons by adjacent conditioned/unconditioned spaces and vertical profiles.
 - [ ] Extend diagnostics to group open-volume generated components separately.
 - [ ] Add tests/fixtures using Georgetown-style foyer and stair cases.
 
 ## Current Behavior
 
 Simple `open_to_above` links can now be marked to generate upper wall-extension line items.
-Those line items preserve orientation and boundary metadata and are emitted only after the
-user applies the validation suggestion. Existing projects remain volume-only unless the user
-opts in.
+Those line items preserve orientation and boundary metadata, are emitted only after the
+user applies the validation suggestion, and stay separate from ordinary base wall component
+suggestions. Existing projects remain volume-only unless the user opts in.
