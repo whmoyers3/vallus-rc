@@ -171,6 +171,7 @@ type ActiveValidationTarget = {
   surfaceTreatmentSuggestion?: TakeoffValidationIssue["surfaceTreatmentSuggestion"];
   wallComponentGeometrySuggestion?: TakeoffValidationIssue["wallComponentGeometrySuggestion"];
   glassTreatmentSuggestion?: TakeoffValidationIssue["glassTreatmentSuggestion"];
+  internalGainSuggestion?: TakeoffValidationIssue["internalGainSuggestion"];
 };
 type ProjectValidationEntry = {
   floor: TakeoffFloor;
@@ -312,6 +313,16 @@ const roomTypeOptions: Array<{ id: TakeoffRoomType; label: string; shortLabel: s
   { id: "entertainment", label: "Entertainment (250 W + 1 person)", shortLabel: "Entertainment" },
   { id: "laundry", label: "Laundry (200 W)", shortLabel: "Laundry" },
 ];
+const roomTypeInternalLoads: Record<TakeoffRoomType, { people: number; applianceWatts: number }> = {
+  plain: { people: 0, applianceWatts: 0 },
+  bedroom: { people: 1, applianceWatts: 0 },
+  kitchen: { people: 0, applianceWatts: 680 },
+  entertainment: { people: 1, applianceWatts: 250 },
+  laundry: { people: 0, applianceWatts: 200 },
+};
+const recGameEntertainmentApplianceWatts = 450;
+const officeApplianceWatts = 75;
+const computerApplianceWatts = 150;
 type SavedTakeoffRow = {
   id: number;
   calculation_id?: number | null;
@@ -2606,6 +2617,16 @@ function buildValidation(floor: TakeoffFloor, unassignedRegions: UnassignedRegio
         target: roomTarget,
       });
     }
+    const internalGainValidation = roomInternalGainValidationSuggestion(room);
+    if (internalGainValidation) {
+      issues.push({
+        severity: "warning",
+        message: internalGainValidation.message,
+        issueType: "internal-gain-suggestion",
+        internalGainSuggestion: internalGainValidation.suggestion,
+        target: roomTarget,
+      });
+    }
     if (!insidePerimeter(room, floor)) {
       issues.push({ severity: "error", message: `${room.name || "Room"} extends beyond the conditioned footprint by about ${Math.round(roomOutsideFootprintArea(room, floor))} sf.`, target: roomTarget });
     }
@@ -3027,16 +3048,18 @@ function buildVrcPayload(project: TakeoffProject) {
       const effectiveCeilingHeight = computedOpenToAboveHeight(floor, room, project.floors);
       const conditionedFloorArea = rectArea(room);
       const lightingBasis = roomLightingBasis(room);
+      const lightingArea = roomLightingArea(room);
+      const internalGains = roomInternalGainsForExport(room, conditionedFloorArea, lightingArea);
       return {
         name: room.name,
         floor_area: conditionedFloorArea,
-        lighting_area: roomLightingArea(room),
+        lighting_area: lightingArea,
         ceiling_height: effectiveCeilingHeight,
         volume: conditionedFloorArea * effectiveCeilingHeight,
         lighting_basis: lightingBasis,
-        room_type: room.roomType ?? "plain",
-        ...(room.peopleOverride != null ? { people_override: room.peopleOverride } : {}),
-        ...(room.applianceWattsOverride != null ? { appliance_watts_override: room.applianceWattsOverride } : {}),
+        room_type: internalGains.roomType,
+        ...(internalGains.peopleOverride != null ? { people_override: internalGains.peopleOverride } : {}),
+        ...(internalGains.applianceWattsOverride != null ? { appliance_watts_override: internalGains.applianceWattsOverride } : {}),
         unit_id: "unit-whole-house",
         zone_id: zoneId,
       };
@@ -4608,6 +4631,184 @@ function normalizedRoomNameForInference(name: string) {
   return name.toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function roomNameHasLoftLabel(name: string) {
+  const normalized = normalizedRoomNameForInference(name);
+  return /\blofts?\b/.test(normalized);
+}
+
+function roomNameHasRecOrGameLabel(name: string) {
+  const normalized = normalizedRoomNameForInference(name);
+  if (!normalized) return false;
+  const compact = normalized.replace(/\s+/g, "");
+  return /\brec(?:reation)?(?: room| area| space)?\b/.test(normalized) ||
+    /\bgame(?: room| area| space)?\b/.test(normalized) ||
+    /^(?:rec|recreation|game)(?:room|area|space)?$/.test(compact);
+}
+
+function roomNameHasOfficeLabel(name: string) {
+  const normalized = normalizedRoomNameForInference(name);
+  if (!normalized) return false;
+  const compact = normalized.replace(/\s+/g, "");
+  return /\boffices?\b/.test(normalized) ||
+    /\bhome office\b/.test(normalized) ||
+    /\bwork from home\b/.test(normalized) ||
+    /\bwf home\b/.test(normalized) ||
+    /\bwfh\b/.test(normalized) ||
+    compact === "wfhome";
+}
+
+function roomNameHasComputerLabel(name: string) {
+  const normalized = normalizedRoomNameForInference(name);
+  return /\bcomputers?\b/.test(normalized) || /\bpc\b/.test(normalized);
+}
+
+function roomNameHasStudyFlexDenLabel(name: string) {
+  const normalized = normalizedRoomNameForInference(name);
+  return /\bstud(?:y|ies)\b/.test(normalized) ||
+    /\bflex\b/.test(normalized) ||
+    /\bdens?\b/.test(normalized);
+}
+
+type TakeoffRoomInternalGainExport = {
+  roomType: TakeoffRoomType;
+  peopleOverride?: number;
+  applianceWattsOverride?: number;
+};
+
+type TakeoffRoomInternalGainValidation = {
+  message: string;
+  suggestion: NonNullable<TakeoffValidationIssue["internalGainSuggestion"]>;
+};
+
+function inferredLoftInternalGainProfile(
+  room: TakeoffRectRoom,
+  floorArea = rectArea(room),
+  lightingArea = roomLightingArea(room),
+): TakeoffRoomInternalGainExport | null {
+  if (!roomNameHasLoftLabel(room.name) || lightingArea <= 0.5) return null;
+  return {
+    roomType: "entertainment",
+    peopleOverride: 1,
+    applianceWattsOverride: floorArea < 100 ? 75 : 250,
+  };
+}
+
+function roomInternalGainsForExport(
+  room: TakeoffRectRoom,
+  floorArea = rectArea(room),
+  lightingArea = roomLightingArea(room),
+): TakeoffRoomInternalGainExport {
+  const roomType = room.roomType ?? "plain";
+  const loftProfile = inferredLoftInternalGainProfile(room, floorArea, lightingArea);
+  if (loftProfile && (roomType === "plain" || roomType === "entertainment")) {
+    return {
+      roomType: loftProfile.roomType,
+      peopleOverride: room.peopleOverride ?? loftProfile.peopleOverride,
+      applianceWattsOverride: room.applianceWattsOverride ?? loftProfile.applianceWattsOverride,
+    };
+  }
+  return {
+    roomType,
+    peopleOverride: room.peopleOverride,
+    applianceWattsOverride: room.applianceWattsOverride,
+  };
+}
+
+function effectiveRoomInternalGainValues(room: TakeoffRectRoom) {
+  const exportProfile = roomInternalGainsForExport(room);
+  const defaults = roomTypeInternalLoads[exportProfile.roomType];
+  return {
+    roomType: exportProfile.roomType,
+    people: exportProfile.peopleOverride ?? defaults.people,
+    applianceWatts: exportProfile.applianceWattsOverride ?? defaults.applianceWatts,
+  };
+}
+
+function internalGainOverrideSuggestion(
+  room: TakeoffRectRoom,
+  options: {
+    roomType: TakeoffRoomType;
+    people: number;
+    applianceWatts: number;
+    label: string;
+  },
+): NonNullable<TakeoffValidationIssue["internalGainSuggestion"]> | null {
+  const current = effectiveRoomInternalGainValues(room);
+  if (current.people >= options.people && current.applianceWatts >= options.applianceWatts) return null;
+  return {
+    action: "set-overrides",
+    roomType: options.roomType,
+    people: options.people,
+    applianceWatts: options.applianceWatts,
+    label: options.label,
+  };
+}
+
+function roomInternalGainValidationSuggestion(room: TakeoffRectRoom): TakeoffRoomInternalGainValidation | null {
+  const roomName = room.name || "Room";
+  if (roomNameHasRecOrGameLabel(room.name)) {
+    const suggestion = internalGainOverrideSuggestion(room, {
+      roomType: "entertainment",
+      people: 1,
+      applianceWatts: recGameEntertainmentApplianceWatts,
+      label: "1 person + 450 W entertainment",
+    });
+    return suggestion
+      ? {
+          message: `${roomName} is labeled as a rec/game room. Consider adding another 200 W of entertainment load (${suggestion.applianceWatts} W total) if this space has heavier media or game equipment.`,
+          suggestion,
+        }
+      : null;
+  }
+
+  if (roomNameHasComputerLabel(room.name)) {
+    const suggestion = internalGainOverrideSuggestion(room, {
+      roomType: "plain",
+      people: 1,
+      applianceWatts: computerApplianceWatts,
+      label: "1 person + 150 W computer equipment",
+    });
+    return suggestion
+      ? {
+          message: `${roomName} is labeled as a computer-focused space. Consider adding 1 person and ${suggestion.applianceWatts} W for computer equipment if Salas treats that load explicitly.`,
+          suggestion,
+        }
+      : null;
+  }
+
+  if (roomNameHasOfficeLabel(room.name)) {
+    const suggestion = internalGainOverrideSuggestion(room, {
+      roomType: "plain",
+      people: 1,
+      applianceWatts: officeApplianceWatts,
+      label: "1 person + 75 W office equipment",
+    });
+    return suggestion
+      ? {
+          message: `${roomName} is labeled as an office/work-from-home space. Consider adding 1 person and ${suggestion.applianceWatts} W for small office equipment if Salas treats that room explicitly.`,
+          suggestion,
+        }
+      : null;
+  }
+
+  if (roomNameHasStudyFlexDenLabel(room.name) && inferredRoomTypeFromName(room.name)?.type !== "bedroom") {
+    const suggestion = internalGainOverrideSuggestion(room, {
+      roomType: "plain",
+      people: 1,
+      applianceWatts: 0,
+      label: "1 person",
+    });
+    return suggestion
+      ? {
+          message: `${roomName} is labeled as a study/flex/den. Consider adding 1 person if it is used as occupied work, study, or guest space.`,
+          suggestion,
+        }
+      : null;
+  }
+
+  return null;
+}
+
 function inferredRoomTypeFromName(name: string): { type: TakeoffRoomType; reason: string; key: string } | null {
   const normalized = normalizedRoomNameForInference(name);
   if (!normalized) return null;
@@ -4618,8 +4819,7 @@ function inferredRoomTypeFromName(name: string): { type: TakeoffRoomType; reason
   const hasEntertainmentLabel = has(/\bfamily(?: room)?\b/) ||
     has(/\bgathering(?: room)?\b/) ||
     has(/\bgreat(?: room)?\b/) ||
-    has(/\bentertainment(?: area| room)?\b/) ||
-    has(/\brec(?:reation)? room\b/);
+    has(/\bentertainment(?: area| room)?\b/);
   const hasBedroomLanguage = has(new RegExp(`\\bbed(?:room)?(?: ${bedroomOrdinal})?\\b`)) ||
     has(/\bbdrm\b/) ||
     has(/\bbr\b/) ||
@@ -4652,6 +4852,7 @@ function projectValidationIssueKey(floorId: string, issue: TakeoffValidationIssu
 
 function validationSectionForIssue(issue: TakeoffValidationIssue): ValidationSection {
   const message = issue.message.toLowerCase();
+  if (issue.issueType === "internal-gain-suggestion") return "room-profile";
   if (message.includes("room type") || message.includes("internal gains")) return "room-profile";
   if (message.includes("suggested exterior wall")) return "wall-suggestions";
   if (issue.issueType === "wall-component-geometry-suggestion") return "wall-components";
@@ -6667,6 +6868,21 @@ export function TakeoffApp() {
     setMessage(`${roomName} glass marked as shaded.`);
   }
 
+  function applyInternalGainSuggestion(issue: TakeoffValidationIssue) {
+    const suggestion = issue.internalGainSuggestion;
+    const roomId = issue.target?.roomId;
+    if (!suggestion || !roomId || suggestion.action !== "set-overrides") return;
+    const roomName = floor.rooms.find((room) => room.id === roomId)?.name || "Room";
+
+    updateRoom(roomId, {
+      roomType: suggestion.roomType,
+      peopleOverride: suggestion.people,
+      applianceWattsOverride: suggestion.applianceWatts,
+    });
+    setActiveValidationTarget(null);
+    setMessage(`${roomName} set to ${suggestion.label || `${suggestion.people} person + ${suggestion.applianceWatts} W`}.`);
+  }
+
   function updateRoomCeilingType(roomId: string, ceilingType: NonNullable<TakeoffRectRoom["ceilingType"]>) {
     const nextFloor = {
       ...floor,
@@ -8213,6 +8429,7 @@ export function TakeoffApp() {
       surfaceTreatmentSuggestion: issue.surfaceTreatmentSuggestion,
       wallComponentGeometrySuggestion: issue.wallComponentGeometrySuggestion,
       glassTreatmentSuggestion: issue.glassTreatmentSuggestion,
+      internalGainSuggestion: issue.internalGainSuggestion,
     });
     if (issueFloor.id !== activeFloorId) {
       setActiveFloorId(issueFloor.id);
@@ -10367,6 +10584,7 @@ export function TakeoffApp() {
                           const surfaceTreatmentSuggestion = activeRoomValidationTarget.surfaceTreatmentSuggestion;
                           const wallComponentGeometrySuggestion = activeRoomValidationTarget.wallComponentGeometrySuggestion;
                           const glassTreatmentSuggestion = activeRoomValidationTarget.glassTreatmentSuggestion;
+                          const internalGainSuggestion = activeRoomValidationTarget.internalGainSuggestion;
                           const suggestedLabel = roomTypeSuggestion
                             ? roomTypeOptions.find((option) => option.id === roomTypeSuggestion.type)?.shortLabel ?? roomTypeLabel(roomTypeSuggestion.type)
                             : "";
@@ -10377,6 +10595,7 @@ export function TakeoffApp() {
                             surfaceTreatmentSuggestion,
                             wallComponentGeometrySuggestion,
                             glassTreatmentSuggestion,
+                            internalGainSuggestion,
                             target: { type: "room", roomId: selectedRoom.id },
                           };
                           return (
@@ -10398,6 +10617,8 @@ export function TakeoffApp() {
                                   <button className="toolbar-primary" onClick={() => applyWallComponentGeometrySuggestion(activeValidationIssue)}>Apply Change</button>
                                 ) : glassTreatmentSuggestion ? (
                                   <button className="toolbar-primary" onClick={() => applyGlassTreatmentSuggestion(activeValidationIssue)}>Apply Change</button>
+                                ) : internalGainSuggestion ? (
+                                  <button className="toolbar-primary" onClick={() => applyInternalGainSuggestion(activeValidationIssue)}>Apply Change</button>
                                 ) : (
                                   <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
                                 )}

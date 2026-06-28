@@ -4,6 +4,9 @@ Implements ADR 0007. Principle: the **takeoff carries the room type**; the **eng
 numbers** and expands type → people/appliance loads in the same room loop that already
 auto-generates lighting and infiltration. No watt/person values are baked into the takeoff.
 
+For the label-specific heuristics and validation prompts built on top of this catalog, see
+[`internal_load_room_label_decisions.md`](internal_load_room_label_decisions.md).
+
 For the Langford round trip this is the remaining input (with `location`): tag Kitchen,
 the bedrooms, Family (entertainment), and Laundry, and the engine fills the internal gains.
 

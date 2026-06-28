@@ -277,14 +277,23 @@ export type TakeoffGlassTreatmentSuggestion = {
   label?: string;
 };
 
+export type TakeoffInternalGainSuggestion = {
+  action: "set-overrides";
+  roomType: TakeoffRoomType;
+  people: number;
+  applianceWatts: number;
+  label?: string;
+};
+
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
-  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion";
+  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion" | "internal-gain-suggestion";
   boundaryCandidateId?: string;
   surfaceTreatmentSuggestion?: TakeoffSurfaceTreatmentSuggestion;
   wallComponentGeometrySuggestion?: TakeoffWallComponentGeometrySuggestion;
   glassTreatmentSuggestion?: TakeoffGlassTreatmentSuggestion;
+  internalGainSuggestion?: TakeoffInternalGainSuggestion;
   target?: {
     type: "room" | "unassigned";
     roomId?: string;
