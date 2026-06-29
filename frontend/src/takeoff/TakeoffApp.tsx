@@ -4492,7 +4492,6 @@ function TakeoffModelPreview({
   const [selectedSurface, setSelectedSurface] = useState<ModelSurfaceSelection | null>(null);
   const [hoveredSurface, setHoveredSurface] = useState<ModelSurfaceSelection | null>(null);
   const [selectedSurfaceAssembly, setSelectedSurfaceAssembly] = useState("");
-  const [sceneRevision, setSceneRevision] = useState(0);
 
   const selectedSurfaceOptions = selectedSurface?.surface
     ? componentSchedule.filter((component) => component.category === modelScheduleCategory(selectedSurface.surface!))
@@ -5199,7 +5198,7 @@ function TakeoffModelPreview({
       hoverOutlineMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [activeFloorId, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, sceneRevision, selectedRoomId, visibleLayers]);
+  }, [activeFloorId, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, visibleLayers]);
 
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
@@ -5323,13 +5322,6 @@ function TakeoffModelPreview({
         <button type="button" onClick={() => setModelViewPreset("rear")}>Rear</button>
         <button type="button" onClick={() => setModelViewPreset("left")}>Left</button>
         <button type="button" onClick={() => setModelViewPreset("right")}>Right</button>
-        <button
-          type="button"
-          className="takeoff-model-refresh"
-          onClick={() => setSceneRevision((current) => current + 1)}
-        >
-          Refresh 3D
-        </button>
       </div>
     </div>
   );
@@ -5775,7 +5767,6 @@ export function TakeoffApp() {
   });
   const [zoom, setZoom] = useState(1);
   const [planReviewMode, setPlanReviewMode] = useState<PlanReviewMode>("plan");
-  const [modelPreviewRevision, setModelPreviewRevision] = useState(0);
   const [traceTool, setTraceTool] = useState<"select" | "exterior">("select");
   const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("trace");
   const [calibrationOrientation, setCalibrationOrientation] = useState<TakeoffScaleLine["orientation"]>("horizontal");
@@ -5828,7 +5819,6 @@ export function TakeoffApp() {
         setMessage("Trace an exterior footprint or add at least one room before opening 3D QA.");
         return;
       }
-      setModelPreviewRevision((current) => current + 1);
     }
     setPlanReviewMode(mode);
   }
@@ -9895,7 +9885,6 @@ export function TakeoffApp() {
     setReferenceUrls({});
     setReferenceRenderStatus("");
     setPlanReviewMode("plan");
-    setModelPreviewRevision((current) => current + 1);
     resetTransientFloorTools();
   }
 
@@ -10807,7 +10796,6 @@ export function TakeoffApp() {
           <div className="takeoff-canvas-scroll" ref={canvasScrollRef}>
             {planReviewMode === "elevation" ? (
               <TakeoffModelPreview
-                key={`takeoff-model-preview-${modelPreviewRevision}`}
                 floor={floor}
                 floors={orderedFloors}
                 activeFloorId={floor.id}

@@ -1431,12 +1431,6 @@ button.toolbar-primary:hover {
   border-color: #8ca2b4;
 }
 
-.takeoff-model-view-controls .takeoff-model-refresh {
-  border-color: #8fb2a1;
-  color: #244f3c;
-  margin-left: 4px;
-}
-
 .takeoff-model-layer-controls {
   align-items: flex-start;
   background: rgba(255, 255, 255, 0.82);
