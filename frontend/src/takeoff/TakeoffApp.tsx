@@ -3794,8 +3794,22 @@ function simplifyPolygonPoints(points: TakeoffPoint[], options: { duplicateToler
     : entries.map(({ point }) => point);
 }
 
+function dedupePolygonPointsForRender(points: TakeoffPoint[], duplicateTolerance = 0.02) {
+  const roundedPoints = points.map((point) => ({ x: Number(point.x.toFixed(3)), y: Number(point.y.toFixed(3)) }));
+  const deduped = roundedPoints.filter((point, index, entries) => index === 0 || distance(point, entries[index - 1]) > duplicateTolerance);
+  if (deduped.length > 2 && distance(deduped[0], deduped[deduped.length - 1]) <= duplicateTolerance) deduped.pop();
+  return deduped;
+}
+
 function cleanPolygonPointsForRender(points: TakeoffPoint[]) {
-  return simplifyPolygonPoints(points, { duplicateTolerance: 0.02, collinearTolerance: 0.08, shortSegmentTolerance: 0.18 });
+  const deduped = dedupePolygonPointsForRender(points);
+  if (deduped.length <= 3) return deduped;
+  const simplified = simplifyPolygonPoints(deduped, { duplicateTolerance: 0.02, collinearTolerance: 0.08, shortSegmentTolerance: 0.18 });
+  const originalArea = polygonArea(deduped);
+  const simplifiedArea = polygonArea(simplified);
+  const areaDelta = Math.abs(simplifiedArea - originalArea);
+  if (originalArea > 0.5 && areaDelta > Math.max(0.5, originalArea * 0.08)) return deduped;
+  return simplified;
 }
 
 function sortedUniqueCoordinates(values: number[]) {
@@ -3803,6 +3817,24 @@ function sortedUniqueCoordinates(values: number[]) {
     .map((value) => Number(value.toFixed(3)))
     .sort((a, b) => a - b)
     .filter((value, index, coords) => index === 0 || Math.abs(value - coords[index - 1]) > 0.02);
+}
+
+const maxPlanSurfaceCellSize = 8;
+
+function subdividedSurfaceCoordinates(values: number[]) {
+  const coordinates = sortedUniqueCoordinates(values);
+  const subdivided = new Set(coordinates);
+  for (let index = 0; index < coordinates.length - 1; index += 1) {
+    const start = coordinates[index];
+    const end = coordinates[index + 1];
+    const span = end - start;
+    if (span <= maxPlanSurfaceCellSize) continue;
+    const stepCount = Math.ceil(span / maxPlanSurfaceCellSize);
+    for (let stepIndex = 1; stepIndex < stepCount; stepIndex += 1) {
+      subdivided.add(Number((start + (span * stepIndex) / stepCount).toFixed(3)));
+    }
+  }
+  return sortedUniqueCoordinates(Array.from(subdivided));
 }
 
 function triangleCentroid(triangle: TakeoffPoint[]) {
@@ -3837,8 +3869,8 @@ function triangulatedPlanPolygon(points: TakeoffPoint[]) {
   const cleanedPoints = cleanPolygonPointsForRender(points);
   if (cleanedPoints.length < 3) return [] as TakeoffPoint[][];
   const bounds = polygonBounds(cleanedPoints);
-  const xCoords = sortedUniqueCoordinates([bounds.x, bounds.x + bounds.width, ...cleanedPoints.map((point) => point.x)]);
-  const yCoords = sortedUniqueCoordinates([bounds.y, bounds.y + bounds.depth, ...cleanedPoints.map((point) => point.y)]);
+  const xCoords = subdividedSurfaceCoordinates([bounds.x, bounds.x + bounds.width, ...cleanedPoints.map((point) => point.x)]);
+  const yCoords = subdividedSurfaceCoordinates([bounds.y, bounds.y + bounds.depth, ...cleanedPoints.map((point) => point.y)]);
   const sourcePolygon = pointsToClipPolygon(cleanedPoints);
   const triangles: TakeoffPoint[][] = [];
 
