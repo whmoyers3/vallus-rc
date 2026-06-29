@@ -295,6 +295,44 @@ function ReferencePlanImage({ floor, src, alt, crop }: { floor: TakeoffFloor; sr
   );
 }
 
+function referenceSourceUvForRotatedPoint(floor: TakeoffFloor, point: TakeoffPoint) {
+  const rotationDeg = normalizeReferenceRotation(floor.reference?.rotationDeg);
+  const source = referenceSourceSizeForFloor(floor);
+  const fullCrop = referenceFullCropForFloor(floor, rotationDeg);
+  const center = { x: fullCrop.width / 2, y: fullCrop.depth / 2 };
+  const radians = (-rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const unrotated = {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos,
+  };
+  const sourceLeft = center.x - source.width / 2;
+  const sourceTop = center.y - source.depth / 2;
+  let sourceX = unrotated.x - sourceLeft;
+  const sourceY = unrotated.y - sourceTop;
+  if (floor.reference?.mirroredX) sourceX = source.width - sourceX;
+  return {
+    u: clamp(sourceX / Math.max(source.width, 1), 0, 1),
+    v: clamp(1 - sourceY / Math.max(source.depth, 1), 0, 1),
+  };
+}
+
+function applyReferencePlaneUvs(geometry: THREE.PlaneGeometry, floor: TakeoffFloor, crop: PlanRect) {
+  const topLeft = referenceSourceUvForRotatedPoint(floor, { x: crop.x, y: crop.y });
+  const topRight = referenceSourceUvForRotatedPoint(floor, { x: crop.x + crop.width, y: crop.y });
+  const bottomLeft = referenceSourceUvForRotatedPoint(floor, { x: crop.x, y: crop.y + crop.depth });
+  const bottomRight = referenceSourceUvForRotatedPoint(floor, { x: crop.x + crop.width, y: crop.y + crop.depth });
+  const uv = geometry.attributes.uv;
+  uv.setXY(0, topLeft.u, topLeft.v);
+  uv.setXY(1, topRight.u, topRight.v);
+  uv.setXY(2, bottomLeft.u, bottomLeft.v);
+  uv.setXY(3, bottomRight.u, bottomRight.v);
+  uv.needsUpdate = true;
+}
+
 const adjacentSpaceKinds: Array<{ id: TakeoffAdjacentSpaceKind; label: string }> = [
   { id: "garage", label: "Garage" },
   { id: "attic", label: "Attic" },
@@ -4187,10 +4225,7 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
 }
 
 function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, texture: THREE.Texture) {
-  const source = referenceSourceSizeForFloor(floor);
-  const width = Math.max(source.width, 1);
-  const depth = Math.max(source.depth, 1);
-  const crop = floor.reference?.crop;
+  const crop = referenceCropForFloor(floor);
   const display = referenceDisplayRectForFloor(floor);
   const transform = { ...defaultAlignmentTransform(), ...(floor.alignment?.transform ?? {}) };
   const displayScale = Math.max(0.0001, transform.scale || 1);
@@ -4201,20 +4236,8 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.wrapS = THREE.ClampToEdgeWrapping;
   texture.wrapT = THREE.ClampToEdgeWrapping;
-  if (crop && crop.width > 0 && crop.depth > 0) {
-    const repeatX = crop.width / width;
-    const repeatY = crop.depth / depth;
-    if (floor.reference?.mirroredX) {
-      texture.repeat.set(-repeatX, repeatY);
-      texture.offset.set((crop.x + crop.width) / width, 1 - (crop.y + crop.depth) / depth);
-    } else {
-      texture.repeat.set(repeatX, repeatY);
-      texture.offset.set(crop.x / width, 1 - (crop.y + crop.depth) / depth);
-    }
-  } else {
-    texture.repeat.set(1, 1);
-    texture.offset.set(0, 0);
-  }
+  texture.repeat.set(1, 1);
+  texture.offset.set(0, 0);
   texture.needsUpdate = true;
 
   const material = new THREE.MeshBasicMaterial({
@@ -4225,6 +4248,7 @@ function referencePlaneForFloor(floor: TakeoffFloor, center: TakeoffPoint, textu
     transparent: true,
   });
   const geometry = new THREE.PlaneGeometry(Math.max(displayWidth, 1), Math.max(displayDepth, 1));
+  applyReferencePlaneUvs(geometry, floor, crop);
   geometry.rotateX(-Math.PI / 2);
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(displayX + displayWidth / 2 - center.x, -0.08, displayY + displayDepth / 2 - center.y);
