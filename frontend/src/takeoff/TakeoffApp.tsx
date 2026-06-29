@@ -2071,6 +2071,11 @@ type OpenToAboveWallExtension = {
   effectiveHeight: number;
 };
 
+type OpenToAboveWallExtensionSegment = OpenToAboveWallExtension & {
+  a: TakeoffPoint;
+  b: TakeoffPoint;
+};
+
 function baseEnvelopeHeightForWallSuggestion(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const link = openToAboveLinkForRoom(room);
   if (!link) return Math.max(0, room.ceilingHeight ?? floor.defaultCeilingHeight ?? 9);
@@ -2148,12 +2153,12 @@ function roomExteriorSegments(floor: TakeoffFloor, room: TakeoffRectRoom) {
   return segments;
 }
 
-function openToAboveWallExtensionsForRoom(
+function openToAboveWallExtensionSegmentsForRoom(
   floor: TakeoffFloor,
   room: TakeoffRectRoom,
   floors: TakeoffFloor[],
   includeReviewMode = false,
-): OpenToAboveWallExtension[] {
+): OpenToAboveWallExtensionSegment[] {
   const link = openToAboveLinkForRoom(room);
   const targetFloor = resolvedOpenToAboveTargetFloor(floor, room, floors);
   if (!link || !targetFloor) return [];
@@ -2171,7 +2176,7 @@ function openToAboveWallExtensionsForRoom(
   };
   const targetExteriorEdges = pointsToEdges(targetExteriorPoints);
   const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35, targetFloor.scale.feetPerGrid * 0.35);
-  const byDirectionAdjacency = new Map<string, OpenToAboveWallExtension>();
+  const segments: OpenToAboveWallExtensionSegment[] = [];
 
   for (const sourceSegment of roomExteriorSegments(floor, room)) {
     if (!isCompassDirection(sourceSegment.direction) || sourceSegment.length <= 0.25) continue;
@@ -2181,20 +2186,46 @@ function openToAboveWallExtensionsForRoom(
       const direction = exteriorEdgeDirection(targetEdge, targetExteriorPoints, targetCenter, Math.max(0.75, tolerance * 2));
       const adjacency = wallAdjacencyFromAdjacentKinds(adjacentKindsForSegment(targetFloor, shared));
       if (adjacency === "conditioned") continue;
-      const key = `${direction}:${adjacency}`;
-      const existing = byDirectionAdjacency.get(key);
-      if (existing) {
-        existing.length = Number((existing.length + shared.length).toFixed(3));
-      } else {
-        byDirectionAdjacency.set(key, {
-          direction,
-          adjacency,
-          length: Number(shared.length.toFixed(3)),
-          addedHeight,
-          baseHeight,
-          effectiveHeight,
-        });
-      }
+      segments.push({
+        a: shared.a,
+        b: shared.b,
+        direction,
+        adjacency,
+        length: Number(shared.length.toFixed(3)),
+        addedHeight,
+        baseHeight,
+        effectiveHeight,
+      });
+    }
+  }
+
+  return segments;
+}
+
+function openToAboveWallExtensionsForRoom(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  floors: TakeoffFloor[],
+  includeReviewMode = false,
+): OpenToAboveWallExtension[] {
+  const segments = openToAboveWallExtensionSegmentsForRoom(floor, room, floors, includeReviewMode);
+  const byDirectionAdjacency = new Map<string, OpenToAboveWallExtension>();
+
+  for (const segment of segments) {
+    const { direction, adjacency, length, addedHeight, baseHeight, effectiveHeight } = segment;
+    const key = `${direction}:${adjacency}`;
+    const existing = byDirectionAdjacency.get(key);
+    if (existing) {
+      existing.length = Number((existing.length + length).toFixed(3));
+    } else {
+      byDirectionAdjacency.set(key, {
+        direction,
+        adjacency,
+        length,
+        addedHeight,
+        baseHeight,
+        effectiveHeight,
+      });
     }
   }
 
@@ -4308,6 +4339,31 @@ function ceilingWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint
   return raisedWallMeshPartsForRoom(room, center, defaultCeilingHeight, room.ceilingHeight, kneeWallMaterial);
 }
 
+function openToAboveWallExtensionMeshPartsForRoom(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  floors: TakeoffFloor[],
+  center: TakeoffPoint,
+  material: THREE.Material,
+): ModelMeshPart[] {
+  return openToAboveWallExtensionSegmentsForRoom(floor, room, floors, true).map((segment) => ({
+    mesh: createPanelMesh([
+      modelPoint(segment.a, center, segment.baseHeight),
+      modelPoint(segment.b, center, segment.baseHeight),
+      modelPoint(segment.b, center, segment.effectiveHeight),
+      modelPoint(segment.a, center, segment.effectiveHeight),
+    ], material),
+    kind: "load-wall",
+    label: `${segment.direction} open-to-above wall extension`,
+    surface: "wall",
+    direction: segment.direction,
+    area: Number((segment.length * segment.addedHeight).toFixed(3)),
+    assembly: defaultWallAssemblyForAdjacency(segment.adjacency),
+    source: "open-to-above-envelope",
+    geometryLabel: `${segment.addedHeight} ft open-to-above extension over ${Number(segment.length.toFixed(1))} lf ${wallAdjacencyLabel(segment.adjacency).toLowerCase()}`,
+  }));
+}
+
 function modelSurfaceFromObject(object: THREE.Object3D) {
   let current: THREE.Object3D | null = object;
   while (current) {
@@ -4581,18 +4637,24 @@ function TakeoffModelPreview({
         }
       }
       for (const sourceRoom of otherFloor.rooms) {
+        const baseWallHeight = baseEnvelopeHeightForWallSuggestion(otherFloor, sourceRoom);
         const room = { ...sourceRoom, ceilingHeight: computedOpenToAboveHeight(otherFloor, sourceRoom, floors) };
+        const wallRoom = { ...room, ceilingHeight: baseWallHeight };
         const points = cleanPolygonPointsForRender(roomCorners(room));
         if (points.length < 3) continue;
         if (visibleLayers.floors) scene.add(createHorizontalShapeMesh(points, center, yOffset + 0.025, ghostRoomMaterial));
         if (visibleLayers.walls) {
           for (const segment of roomExteriorSegments(otherFloor, room)) {
-            const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(room.ceilingHeight, 0.1), passiveWallMaterial);
+            const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(baseWallHeight, 0.1), passiveWallMaterial);
             wallMesh.position.y += yOffset;
             scene.add(wallMesh);
           }
-          const generatedWallParts = ceilingWallMeshPartsForRoom(room, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial);
+          const generatedWallParts = ceilingWallMeshPartsForRoom(wallRoom, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial);
           for (const part of generatedWallParts) {
+            part.mesh.position.y += yOffset;
+            scene.add(part.mesh);
+          }
+          for (const part of openToAboveWallExtensionMeshPartsForRoom(otherFloor, sourceRoom, floors, center, passiveWallMaterial)) {
             part.mesh.position.y += yOffset;
             scene.add(part.mesh);
           }
@@ -4603,7 +4665,7 @@ function TakeoffModelPreview({
           for (const edge of pointsToEdges(points)) {
             const isLoadWall = exposedSegments.some((segment) => sharedSegmentLength(edge, segment, tolerance) > 0.25);
             if (isLoadWall) continue;
-            const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), passiveInteriorWallMaterial);
+            const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(baseWallHeight, 0.1), passiveInteriorWallMaterial);
             wallMesh.position.y += yOffset;
             scene.add(wallMesh);
           }
@@ -4656,8 +4718,9 @@ function TakeoffModelPreview({
           const room = points.length !== rawPoints.length ? { ...sourceRoom, polygon: points } : sourceRoom;
           const ceilingInfo = ceilingGeometryInfo(room, otherFloor.defaultCeilingHeight ?? 9);
           const adjacentWallHeight = isVaultCeilingType(ceilingInfo.ceilingType) ? ceilingInfo.lowHeight : room.ceilingHeight;
-          if (visibleLayers.floors) scene.add(createHorizontalShapeMesh(roomCorners(room), center, yOffset + 0.02, adjacentFloorMaterial));
-          if (visibleLayers.walls) {
+          const porchRoofOnly = space.kind === "covered_porch";
+          if (visibleLayers.floors && !porchRoofOnly) scene.add(createHorizontalShapeMesh(roomCorners(room), center, yOffset + 0.02, adjacentFloorMaterial));
+          if (visibleLayers.walls && !porchRoofOnly) {
             for (const edge of pointsToEdges(roomCorners(room))) {
               const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(adjacentWallHeight, 0.1), adjacentWallMaterial);
               wallMesh.position.y += yOffset;
@@ -4719,7 +4782,8 @@ function TakeoffModelPreview({
 
       if (visibleLayers.walls) {
         for (const segment of roomExteriorSegments(floor, room)) {
-          const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(room.ceilingHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
+          const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
+          const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(baseWallHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
           wallMesh.position.y += activeFloorYOffset;
           wallMesh.userData.roomId = room.id;
           wallMesh.userData.modelSurface = {
@@ -4729,12 +4793,14 @@ function TakeoffModelPreview({
             label: `${segment.direction ?? "Exterior"} load wall`,
             surface: "wall",
             direction: segment.direction,
-            area: Number((segment.length * Math.max(room.ceilingHeight, 0)).toFixed(3)),
+            area: Number((segment.length * Math.max(baseWallHeight, 0)).toFixed(3)),
             assembly: roomSurfaceComponents(room, "wall").find((component) => wallCanHostOpenings(component) && component.direction === segment.direction)?.assembly,
           } satisfies ModelSurfaceSelection;
           scene.add(wallMesh);
         }
-        const generatedWallParts = ceilingWallMeshPartsForRoom(room, center, floor.defaultCeilingHeight ?? 9, kneeWallMaterial);
+        const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
+        const wallRoom = { ...room, ceilingHeight: baseWallHeight };
+        const generatedWallParts = ceilingWallMeshPartsForRoom(wallRoom, center, floor.defaultCeilingHeight ?? 9, kneeWallMaterial);
         for (const part of generatedWallParts) {
           const component = roomSurfaceComponents(room, "wall").find((candidate) =>
             componentIsGeneratedCeilingWall(candidate) &&
@@ -4758,15 +4824,39 @@ function TakeoffModelPreview({
           } satisfies ModelSurfaceSelection;
           scene.add(part.mesh);
         }
+        for (const part of openToAboveWallExtensionMeshPartsForRoom(floor, sourceRoom, floors, center, room.id === selectedRoomId ? selectedWallMaterial : wallMaterial)) {
+          const component = roomSurfaceComponents(room, "wall").find((candidate) =>
+            candidate.source === part.source &&
+            candidate.direction === part.direction &&
+            (!part.geometryLabel || candidate.geometryLabel === part.geometryLabel)
+          );
+          part.mesh.position.y += activeFloorYOffset;
+          part.mesh.userData.roomId = room.id;
+          part.mesh.userData.modelSurface = {
+            roomId: room.id,
+            roomName: room.name,
+            kind: part.kind,
+            label: part.label,
+            surface: "wall",
+            direction: part.direction,
+            area: part.area,
+            assembly: component?.assembly ?? part.assembly,
+            componentId: component?.id,
+            source: component?.source ?? part.source,
+            geometryLabel: component?.geometryLabel ?? part.geometryLabel,
+          } satisfies ModelSurfaceSelection;
+          scene.add(part.mesh);
+        }
       }
 
       if (visibleLayers.interiorWalls) {
+        const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
         const exposedSegments = roomExteriorSegments(floor, room);
         const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
         for (const edge of pointsToEdges(points)) {
           const isLoadWall = exposedSegments.some((segment) => sharedSegmentLength(edge, segment, tolerance) > 0.25);
           if (isLoadWall) continue;
-          const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(room.ceilingHeight, 0.1), interiorWallMaterial);
+          const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(baseWallHeight, 0.1), interiorWallMaterial);
           wallMesh.position.y += activeFloorYOffset;
           wallMesh.userData.roomId = room.id;
           wallMesh.userData.modelSurface = {
@@ -4881,8 +4971,9 @@ function TakeoffModelPreview({
       const area = Number(rectArea(room).toFixed(3));
       const ceilingInfo = ceilingGeometryInfo(room, floor.defaultCeilingHeight ?? 9);
       const adjacentWallHeight = isVaultCeilingType(ceilingInfo.ceilingType) ? ceilingInfo.lowHeight : room.ceilingHeight;
+      const porchRoofOnly = space.kind === "covered_porch";
 
-      if (visibleLayers.floors) {
+      if (visibleLayers.floors && !porchRoofOnly) {
         const floorMesh = createHorizontalShapeMesh(points, center, activeFloorYOffset - 0.01, selected ? adjacentSelectedMaterial : adjacentFloorMaterial);
         floorMesh.userData.roomId = room.id;
         floorMesh.userData.modelSurface = {
@@ -4896,7 +4987,7 @@ function TakeoffModelPreview({
         scene.add(floorMesh);
       }
 
-      if (visibleLayers.walls) {
+      if (visibleLayers.walls && !porchRoofOnly) {
         for (const edge of pointsToEdges(points)) {
           const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(adjacentWallHeight, 0.1), selected ? adjacentSelectedMaterial : adjacentWallMaterial);
           wallMesh.position.y += activeFloorYOffset;
