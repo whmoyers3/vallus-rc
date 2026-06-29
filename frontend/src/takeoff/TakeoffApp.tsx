@@ -4130,6 +4130,7 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
   const wallHeight = Math.max(0.5, room.ceilingHeight);
   const topPadding = 0.25;
   const bottomPadding = 0.25;
+  const typicalWindowSillHeight = 3;
   const visibleHeight = component.surface === "door"
     ? Math.min(height, Math.max(0.5, wallHeight - topPadding))
     : Math.min(height, Math.max(0.5, wallHeight - topPadding - bottomPadding));
@@ -4148,12 +4149,11 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
     distance({ x: edgeCenter.x + normalB.x, y: edgeCenter.y + normalB.y }, roomCenterPoint)
     ? normalA
     : normalB;
-  const verticalCenter = component.surface === "door"
-    ? visibleHeight / 2
-    : Math.min(
-        Math.max(3 + visibleHeight / 2, bottomPadding + visibleHeight / 2),
-        Math.max(bottomPadding + visibleHeight / 2, wallHeight - topPadding - visibleHeight / 2),
-      );
+  const maxOpeningBottom = Math.max(bottomPadding, wallHeight - topPadding - visibleHeight);
+  const openingBottom = component.surface === "door"
+    ? 0
+    : clamp(typicalWindowSillHeight, bottomPadding, maxOpeningBottom);
+  const verticalCenter = openingBottom + visibleHeight / 2;
   const group = new THREE.Group();
   group.position.set(edge.point.x + outward.x * 0.16 - center.x, verticalCenter, edge.point.y + outward.y * 0.16 - center.y);
   group.rotation.y = -Math.atan2(dz, dx);
@@ -4579,24 +4579,19 @@ function TakeoffModelPreview({
     const passiveGlassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
     const passiveDoorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.36, side: THREE.DoubleSide });
     const bandJoistMaterial = new THREE.MeshPhongMaterial({ color: 0x587082, depthWrite: false, transparent: true, opacity: 0.34, side: THREE.DoubleSide });
-    const openVoidMaterial = new THREE.MeshBasicMaterial({ color: 0x2d78ad, depthWrite: false, transparent: true, opacity: 0.22, side: THREE.DoubleSide });
-    const openVoidOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x0f5fa8, depthTest: false, transparent: true, opacity: 0.88 });
+    const openVoidMaterial = new THREE.MeshBasicMaterial({ color: 0xeaf2ef, depthWrite: false, transparent: true, opacity: 0.62, side: THREE.DoubleSide });
+    const openVoidOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x7f9098, depthTest: false, transparent: true, opacity: 0.35 });
     const renderOpenToBelowMarkers = (targetFloor: TakeoffFloor, yOffset: number) => {
       if (!visibleLayers.floors) return;
       for (const reservation of openToBelowRoomsForFloor(targetFloor, floors, connectedVolumes)) {
         const points = cleanPolygonPointsForRender(reservation.points);
         if (points.length < 3) continue;
         const marker = createHorizontalShapeMesh(points, center, yOffset + 0.08, openVoidMaterial);
-        marker.userData.modelSurface = {
-          roomId: reservation.room.id,
-          roomName: reservation.label || reservation.room.name,
-          kind: "floor",
-          label: `Open to below - ${reservation.label || reservation.room.name || "room"}`,
-          surface: "floor",
-          area: Number(polygonArea(points).toFixed(3)),
-        } satisfies ModelSurfaceSelection;
+        marker.userData.openVoidMask = true;
         scene.add(marker);
-        scene.add(createHorizontalOutline(points, center, yOffset + 0.105, openVoidOutlineMaterial));
+        const outline = createHorizontalOutline(points, center, yOffset + 0.105, openVoidOutlineMaterial);
+        outline.userData.openVoidMask = true;
+        scene.add(outline);
       }
     };
     if (visibleLayers.bandJoists) {
@@ -4702,7 +4697,8 @@ function TakeoffModelPreview({
         for (const component of roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door"))) {
           if (component.surface === "glass" && !visibleLayers.windows) continue;
           if (component.surface === "door" && !visibleLayers.doors) continue;
-          const openingMesh = openingMeshForComponent(component, room, center, component.surface === "glass" ? passiveGlassMaterial : passiveDoorMaterial, openingFrameMaterial);
+          const openingRoom = { ...room, ceilingHeight: baseWallHeight };
+          const openingMesh = openingMeshForComponent(component, openingRoom, center, component.surface === "glass" ? passiveGlassMaterial : passiveDoorMaterial, openingFrameMaterial);
           if (openingMesh) {
             openingMesh.position.y += yOffset;
             scene.add(openingMesh);
@@ -4941,7 +4937,8 @@ function TakeoffModelPreview({
       for (const component of roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door"))) {
         if (component.surface === "glass" && !visibleLayers.windows) continue;
         if (component.surface === "door" && !visibleLayers.doors) continue;
-        const openingMesh = openingMeshForComponent(component, room, center, component.surface === "glass" ? glassMaterial : doorMaterial, openingFrameMaterial);
+        const openingRoom = { ...room, ceilingHeight: baseEnvelopeHeightForWallSuggestion(floor, sourceRoom) };
+        const openingMesh = openingMeshForComponent(component, openingRoom, center, component.surface === "glass" ? glassMaterial : doorMaterial, openingFrameMaterial);
         if (openingMesh) {
           openingMesh.position.y += activeFloorYOffset;
           openingMesh.userData.modelSurface = {
@@ -5058,10 +5055,12 @@ function TakeoffModelPreview({
     }
 
     function firstSelectableHit() {
-      return raycaster.intersectObjects(scene.children, true).find((entry) =>
-        !entry.object.userData.hoverOutline &&
-        (entry.object.userData.roomId || modelSurfaceFromObject(entry.object))
-      );
+      for (const entry of raycaster.intersectObjects(scene.children, true)) {
+        if (entry.object.userData.hoverOutline) continue;
+        if (entry.object.userData.openVoidMask) return undefined;
+        if (entry.object.userData.roomId || modelSurfaceFromObject(entry.object)) return entry;
+      }
+      return undefined;
     }
 
     function updateHover(event: PointerEvent) {
