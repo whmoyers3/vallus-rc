@@ -6646,7 +6646,11 @@ export function TakeoffApp() {
     scrollToValidationSection(roomId, section);
   }
 
-  function renderRoomLoadSketch(room: TakeoffRectRoom, mode: "load" | "ceiling" = "load") {
+  function renderRoomLoadSketch(
+    room: TakeoffRectRoom,
+    mode: "load" | "ceiling" = "load",
+    options: { onRidgeOffsetChange?: (offset: number) => void } = {},
+  ) {
     const points = roomCorners(room);
     if (points.length < 3) return null;
     const viewWidth = mode === "ceiling" ? 380 : 320;
@@ -6900,7 +6904,12 @@ export function TakeoffApp() {
       const ratio = ceilingInfo.ridgeDirection === "E-W"
         ? clamp((planPoint.y - bounds.y) / Math.max(bounds.depth, 1), 0, 1)
         : clamp((planPoint.x - bounds.x) / Math.max(bounds.width, 1), 0, 1);
-      updateRoomCeilingGeometry(room.id, { ceilingRidgeOffset: Number((ratio * 2 - 1).toFixed(3)) });
+      const ridgeOffset = Number((ratio * 2 - 1).toFixed(3));
+      if (options.onRidgeOffsetChange) {
+        options.onRidgeOffsetChange(ridgeOffset);
+        return;
+      }
+      updateRoomCeilingGeometry(room.id, { ceilingRidgeOffset: ridgeOffset });
     };
     return (
       <div key={`${mode}-${room.id}`} className={`takeoff-room-sketch takeoff-room-sketch--${mode}`}>
@@ -12170,7 +12179,9 @@ export function TakeoffApp() {
                                 <h3>Unconditioned Space Geometry</h3>
                               </div>
                               <div className="takeoff-ceiling-qa-grid">
-                                {renderRoomLoadSketch(selectedAdjacentRoom, "ceiling")}
+                                {renderRoomLoadSketch(selectedAdjacentRoom, "ceiling", {
+                                  onRidgeOffsetChange: (ceilingRidgeOffset) => updateAdjacentSpaceCeilingGeometry(selectedAdjacentSpace.id, { ceilingRidgeOffset }),
+                                })}
                                 <div className="takeoff-ceiling-qa-copy">
                                   <span>Floor default <strong>{floor.defaultCeilingHeight ?? 9} ft</strong></span>
                                   <span>Space <strong>{Math.round(roomBounds.width)} x {Math.round(roomBounds.depth)} ft</strong></span>
