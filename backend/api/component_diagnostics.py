@@ -298,9 +298,33 @@ def _glass_audit_from_rows(component_rows: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def build_component_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
-    project = project_from_payload(payload)
-    result = calculate_project(project)
+def _diagnostic_notes(project: Project) -> list[str]:
+    notes = [
+        (
+            "This diagnostic report can be produced from calculator imports, "
+            "Salas O'Brien PDF imports, or independent takeoff exports."
+        )
+    ]
+    if project.metadata.get("salas_reference_orientation"):
+        notes.append(
+            (
+                "salas_reference_orientation came from the source payload metadata "
+                "and is not recomputed by this diagnostic export."
+            )
+        )
+    else:
+        notes.append(
+            (
+                "salas_reference_orientation is expected to be null for takeoff-origin "
+                "reports unless the payload was created from a Salas O'Brien PDF import; "
+                "use orientation_sweep and worst_case_orientation for independent "
+                "takeoff diagnostics."
+            )
+        )
+    return notes
+
+
+def _rows_for_project_result(project: Project, result: ProjectResult) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     component_rows: list[dict[str, Any]] = []
     generated_rows: list[dict[str, Any]] = []
 
@@ -327,10 +351,40 @@ def build_component_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
                 "heating_btuh_with_safety": generated.heating_btuh * project.design_conditions.heating_safety_factor,
             })
 
+    return component_rows, generated_rows
+
+
+def _worst_case_orientation_export(project: Project, sweep: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not sweep:
+        return None
+    worst = max(sweep, key=lambda row: row["sensible_cooling_btuh"])
+    rotated_project = _rotate_project(project, worst["rotation_steps"])
+    rotated_result = calculate_project(rotated_project)
+    component_rows, generated_rows = _rows_for_project_result(rotated_project, rotated_result)
+    return {
+        "facing": worst["facing"],
+        "rotation_steps": worst["rotation_steps"],
+        "source": "orientation_sweep_max_sensible_cooling",
+        "note": (
+            "Component directions and loads in this section are rotated to the worst-case "
+            "facing from orientation_sweep; Salas reference metadata is not required."
+        ),
+        "system": _system_summary(rotated_project, rotated_result),
+        "component_rows": component_rows,
+        "generated_rows": generated_rows,
+        "glass_audit": _glass_audit_from_rows(component_rows),
+    }
+
+
+def build_component_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
+    project = project_from_payload(payload)
+    result = calculate_project(project)
+    component_rows, generated_rows = _rows_for_project_result(project, result)
     sweep = _orientation_sweep(project)
     glass_audit = _glass_audit_from_rows(component_rows)
     return {
         "generated_at": _now_iso(),
+        "diagnostic_notes": _diagnostic_notes(project),
         "project": {
             "name": project.name,
             "location": project.location,
@@ -369,5 +423,6 @@ def build_component_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
         "generated_rows": generated_rows,
         "glass_audit": glass_audit,
         "orientation_sweep": sweep,
+        "worst_case_orientation": _worst_case_orientation_export(project, sweep),
         "orientation_sensitivity": _orientation_sensitivity(project, sweep),
     }

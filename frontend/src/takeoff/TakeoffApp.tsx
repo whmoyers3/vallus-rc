@@ -2073,8 +2073,8 @@ type OpenToAboveWallExtension = {
 
 function baseEnvelopeHeightForWallSuggestion(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const link = openToAboveLinkForRoom(room);
-  if (!link) return Math.max(0, room.ceilingHeight);
-  return Math.max(0, link.previousCeilingHeight ?? floor.defaultCeilingHeight ?? room.ceilingHeight);
+  if (!link) return Math.max(0, room.ceilingHeight ?? floor.defaultCeilingHeight ?? 9);
+  return baseCeilingHeightForOpenToAboveLink(floor, room, link);
 }
 
 function roomExteriorWallSuggestions(floor: TakeoffFloor, room: TakeoffRectRoom, _floors: TakeoffFloor[] = [floor]): RoomExteriorWallSuggestion[] {
@@ -2665,6 +2665,14 @@ function openToAboveLinkForRoom(room: TakeoffRectRoom) {
   return room.verticalLinks?.find((link) => link.type === "open_to_above");
 }
 
+function baseCeilingHeightForOpenToAboveLink(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  link: { previousCeilingHeight?: number },
+) {
+  return Math.max(0, link.previousCeilingHeight ?? room.ceilingHeight ?? floor.defaultCeilingHeight ?? 9);
+}
+
 function resolvedOpenToAboveTargetFloor(sourceFloor: TakeoffFloor, room: TakeoffRectRoom, floors: TakeoffFloor[]) {
   const link = openToAboveLinkForRoom(room);
   if (!link) return undefined;
@@ -2679,7 +2687,7 @@ function computedOpenToAboveHeight(sourceFloor: TakeoffFloor, room: TakeoffRectR
   const link = openToAboveLinkForRoom(room);
   const verticalSpan = Math.max(0, (targetFloor.elevation ?? 0) - (sourceFloor.elevation ?? 0));
   if (link?.ceilingAreaMode === "connected_volume") {
-    const baseHeight = Math.max(0, link.previousCeilingHeight ?? sourceFloor.defaultCeilingHeight ?? room.ceilingHeight);
+    const baseHeight = baseCeilingHeightForOpenToAboveLink(sourceFloor, room, link);
     return Math.max(baseHeight, verticalSpan);
   }
   return Math.max(room.ceilingHeight, verticalSpan + (targetFloor.defaultCeilingHeight ?? sourceFloor.defaultCeilingHeight ?? 9));
@@ -3055,7 +3063,7 @@ function buildValidation(
     const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
     if (openToAboveLink) {
       const effectiveHeight = computedOpenToAboveHeight(floor, room, floors);
-      const baseHeight = Math.max(0, openToAboveLink.previousCeilingHeight ?? floor.defaultCeilingHeight ?? room.ceilingHeight);
+      const baseHeight = baseCeilingHeightForOpenToAboveLink(floor, room, openToAboveLink);
       const addedHeight = Number(Math.max(0, effectiveHeight - baseHeight).toFixed(3));
       const estimatedWallArea = Number(
         openToAboveWallExtensionsForRoom(floor, room, floors, true)
