@@ -3748,19 +3748,6 @@ function persistableTakeoffProject(project: TakeoffProject): TakeoffProject {
   };
 }
 
-function shapeFromPoints(points: TakeoffPoint[], center: TakeoffPoint) {
-  const cleanedPoints = cleanPolygonPointsForRender(points);
-  const shape = new THREE.Shape();
-  cleanedPoints.forEach((point, index) => {
-    const x = point.x - center.x;
-    const y = point.y - center.y;
-    if (index === 0) shape.moveTo(x, y);
-    else shape.lineTo(x, y);
-  });
-  shape.closePath();
-  return shape;
-}
-
 function simplifyPolygonPoints(points: TakeoffPoint[], options: { duplicateTolerance?: number; collinearTolerance?: number; shortSegmentTolerance?: number; preserveIndices?: number[] } = {}): TakeoffPoint[] {
   if (points.length <= 3) return points;
   const duplicateTolerance = options.duplicateTolerance ?? 0.02;
@@ -3811,11 +3798,46 @@ function cleanPolygonPointsForRender(points: TakeoffPoint[]) {
   return simplifyPolygonPoints(points, { duplicateTolerance: 0.02, collinearTolerance: 0.08, shortSegmentTolerance: 0.18 });
 }
 
-function createHorizontalShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.Material) {
-  const geometry = new THREE.ShapeGeometry(shapeFromPoints(points, center));
-  geometry.rotateX(Math.PI / 2);
-  geometry.translate(0, height, 0);
+function triangulatedPlanPolygon(points: TakeoffPoint[]) {
+  const cleanedPoints = cleanPolygonPointsForRender(points);
+  if (cleanedPoints.length < 3) return [] as TakeoffPoint[][];
+  const contour = cleanedPoints.map((point) => new THREE.Vector2(point.x, point.y));
+  const triangles = THREE.ShapeUtils.triangulateShape(contour, [])
+    .map((triangle) => triangle.map((index) => cleanedPoints[index]))
+    .filter((triangle) => {
+      if (triangle.length !== 3 || polygonArea(triangle) <= 0.001) return false;
+      const centroid = {
+        x: (triangle[0].x + triangle[1].x + triangle[2].x) / 3,
+        y: (triangle[0].y + triangle[1].y + triangle[2].y) / 3,
+      };
+      return pointInPolygon(centroid, cleanedPoints);
+    });
+  if (triangles.length > 0) return triangles;
+  return cleanedPoints.slice(1, -1).map((_, index) => [cleanedPoints[0], cleanedPoints[index + 1], cleanedPoints[index + 2]])
+    .filter((triangle) => {
+      const centroid = {
+        x: (triangle[0].x + triangle[1].x + triangle[2].x) / 3,
+        y: (triangle[0].y + triangle[1].y + triangle[2].y) / 3,
+      };
+      return pointInPolygon(centroid, cleanedPoints);
+    });
+}
+
+function createPlanSurfaceMesh(points: TakeoffPoint[], center: TakeoffPoint, material: THREE.Material, heightAtPoint: (point: TakeoffPoint) => number) {
+  const positions: number[] = [];
+  for (const triangle of triangulatedPlanPolygon(points)) {
+    for (const point of triangle) {
+      positions.push(point.x - center.x, heightAtPoint(point), point.y - center.y);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
   return new THREE.Mesh(geometry, material);
+}
+
+function createHorizontalShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.Material) {
+  return createPlanSurfaceMesh(points, center, material, () => height);
 }
 
 function createHorizontalOutline(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.LineBasicMaterial) {
@@ -3881,17 +3903,7 @@ function vaultedRoofHeightAtPoint(point: TakeoffPoint, bounds: PlanRect, ceiling
 }
 
 function createSlopedShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>, material: THREE.Material) {
-  const geometry = new THREE.ShapeGeometry(shapeFromPoints(points, center));
-  const positions = geometry.attributes.position;
-  for (let index = 0; index < positions.count; index += 1) {
-    const localX = positions.getX(index);
-    const localPlanY = positions.getY(index);
-    const point = { x: localX + center.x, y: localPlanY + center.y };
-    positions.setXYZ(index, localX, vaultedRoofHeightAtPoint(point, bounds, ceilingInfo), localPlanY);
-  }
-  positions.needsUpdate = true;
-  geometry.computeVertexNormals();
-  return new THREE.Mesh(geometry, material);
+  return createPlanSurfaceMesh(points, center, material, (point) => vaultedRoofHeightAtPoint(point, bounds, ceilingInfo));
 }
 
 function splitVaultFootprintAtRidge(points: TakeoffPoint[], bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>) {
