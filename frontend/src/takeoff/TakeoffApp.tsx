@@ -100,6 +100,7 @@ type EditingOpeningTarget = OpeningMoveTarget | null;
 type PlanRect = { x: number; y: number; width: number; depth: number };
 type UnassignedCell = { x: number; y: number; width: number; depth: number; polygon?: TakeoffPoint[]; area?: number };
 type ModelViewPreset = "iso" | "front" | "rear" | "left" | "right";
+type ModelCameraMode = "orbit" | "fly" | "walkthrough";
 type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "interiorWalls" | "adjacentSpaces" | "bandJoists";
 type ModelSurfaceKind = "floor" | "ceiling" | "load-wall" | "interior-wall" | "knee-wall" | "window" | "door";
 type FloorViewOptions = {
@@ -132,6 +133,11 @@ type ModelSurfaceSelection = {
   source?: TakeoffRoomComponentSource;
   geometryLabel?: string;
 };
+const walkthroughEyeHeightFt = 5 + 10 / 12;
+const walkthroughDefaultCameraDistanceFt = 0.35;
+const walkthroughMinCameraDistanceFt = 0.03;
+const modelFlySpeedFtPerSecond = 18;
+const modelWalkSpeedFtPerSecond = 8;
 type StaleCeilingWallPrompt = {
   roomId: string;
   roomName: string;
@@ -4382,6 +4388,13 @@ function ceilingWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint
   return raisedWallMeshPartsForRoom(room, center, defaultCeilingHeight, room.ceilingHeight, kneeWallMaterial);
 }
 
+function roomFor3DCeilingWallParts(sourceRoom: TakeoffRectRoom, renderedRoom: TakeoffRectRoom, baseWallHeight: number) {
+  if (openToAboveLinkForRoom(sourceRoom) && (sourceRoom.ceilingType ?? "flat") === "tray") {
+    return renderedRoom;
+  }
+  return { ...renderedRoom, ceilingHeight: baseWallHeight };
+}
+
 function openToAboveWallExtensionMeshPartsForRoom(
   floor: TakeoffFloor,
   room: TakeoffRectRoom,
@@ -4457,6 +4470,7 @@ function TakeoffModelPreview({
   selectedRoomId,
   connectedVolumes,
   onSelectRoom,
+  onActivateFloor,
   onUpdateFloorViewOptions,
   onAssignSurfaceComponent,
 }: {
@@ -4470,14 +4484,28 @@ function TakeoffModelPreview({
   selectedRoomId: string | null;
   connectedVolumes: TakeoffConnectedVolume[];
   onSelectRoom: (roomId: string) => void;
+  onActivateFloor: (floorId: string) => void;
   onUpdateFloorViewOptions: (floorId: string, patch: Partial<FloorViewOptions>) => void;
   onAssignSurfaceComponent: (selection: ModelSurfaceSelection, assembly: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const cameraModeRef = useRef<ModelCameraMode>("orbit");
+  const activeWalkFloorIdRef = useRef(activeFloorId);
+  const floorNavigationRef = useRef<Array<{ id: string; name: string; yOffset: number }>>([]);
+  const walkthroughStateRef = useRef({
+    anchor: new THREE.Vector3(0, walkthroughEyeHeightFt, 0),
+    yaw: 0,
+    pitch: 0,
+    distance: walkthroughDefaultCameraDistanceFt,
+  });
   const spanRef = useRef(40);
   const modelViewStateRef = useRef<{ position: THREE.Vector3; target: THREE.Vector3 } | null>(null);
+  const [cameraMode, setCameraMode] = useState<ModelCameraMode>("orbit");
+  const [walkthroughCameraDistance, setWalkthroughCameraDistance] = useState(walkthroughDefaultCameraDistanceFt);
+  const [modelFullscreen, setModelFullscreen] = useState(false);
+  const [activeWalkFloorId, setActiveWalkFloorId] = useState(activeFloorId);
   const [visibleLayers, setVisibleLayers] = useState<Record<ModelLayerKey, boolean>>({
     reference: true,
     windows: true,
@@ -4496,6 +4524,33 @@ function TakeoffModelPreview({
   const selectedSurfaceOptions = selectedSurface?.surface
     ? componentSchedule.filter((component) => component.category === modelScheduleCategory(selectedSurface.surface!))
     : [];
+  const sortedFloorsForNavigation = useMemo(
+    () => [...floors].sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0)),
+    [floors]
+  );
+  const activeWalkFloorIndex = sortedFloorsForNavigation.findIndex((entry) => entry.id === activeWalkFloorId);
+  const activeWalkFloor = sortedFloorsForNavigation[activeWalkFloorIndex] ?? sortedFloorsForNavigation.find((entry) => entry.id === activeFloorId) ?? sortedFloorsForNavigation[0];
+  const cameraCaption = cameraMode === "orbit"
+    ? "3D QA View · right-click drag to orbit · scroll to zoom · drag to pan"
+    : cameraMode === "fly"
+      ? "3D QA View · Fly mode · drag to look · WASD to move · E/C vertical · Space up"
+      : `3D QA View · Walkthrough · right-drag to look · wheel camera distance ${walkthroughCameraDistance.toFixed(1)} ft · E/C floors`;
+
+  useEffect(() => {
+    cameraModeRef.current = cameraMode;
+  }, [cameraMode]);
+
+  useEffect(() => {
+    activeWalkFloorIdRef.current = activeWalkFloorId;
+  }, [activeWalkFloorId]);
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      setModelFullscreen(document.fullscreenElement === containerRef.current);
+    }
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
 
   useEffect(() => {
     if (!selectedSurface?.surface) {
@@ -4506,10 +4561,57 @@ function TakeoffModelPreview({
     setSelectedSurfaceAssembly(selectedSurface.assembly || firstOption?.code || "");
   }, [componentSchedule, selectedSurface]);
 
+  function setWalkFloor(floorId: string, activateToolFloor = false) {
+    activeWalkFloorIdRef.current = floorId;
+    setActiveWalkFloorId(floorId);
+    if (activateToolFloor) onActivateFloor(floorId);
+  }
+
+  function setModelCameraMode(nextMode: ModelCameraMode) {
+    setCameraMode(nextMode);
+    if (nextMode === "walkthrough") {
+      const preferredFloor = sortedFloorsForNavigation.find((entry) => entry.id === activeFloorId) ?? sortedFloorsForNavigation[0];
+      if (preferredFloor) {
+        setWalkFloor(preferredFloor.id, false);
+      }
+    }
+  }
+
+  function toggleModelFullscreen() {
+    const container = containerRef.current;
+    if (!container) return;
+    if (document.fullscreenElement === container) {
+      void document.exitFullscreen();
+      return;
+    }
+    void container.requestFullscreen();
+  }
+
+  function moveWalkthroughFloor(delta: number) {
+    const camera = cameraRef.current;
+    if (!camera || sortedFloorsForNavigation.length === 0) return;
+    const navigationFloors = floorNavigationRef.current.length > 0
+      ? floorNavigationRef.current
+      : sortedFloorsForNavigation.map((entry) => ({ id: entry.id, name: entry.name, yOffset: entry.elevation ?? 0 }));
+    const currentIndex = navigationFloors.findIndex((entry) => entry.id === activeWalkFloorIdRef.current);
+    const fallbackIndex = navigationFloors.reduce((bestIndex, entry, index) => {
+      const best = navigationFloors[bestIndex];
+      return Math.abs(entry.yOffset + walkthroughEyeHeightFt - camera.position.y) < Math.abs(best.yOffset + walkthroughEyeHeightFt - camera.position.y)
+        ? index
+        : bestIndex;
+    }, Math.max(0, currentIndex));
+    const nextIndex = Math.min(Math.max((currentIndex >= 0 ? currentIndex : fallbackIndex) + delta, 0), navigationFloors.length - 1);
+    const nextFloor = navigationFloors[nextIndex];
+    if (!nextFloor) return;
+    walkthroughStateRef.current.anchor.y = nextFloor.yOffset + walkthroughEyeHeightFt;
+    setWalkFloor(nextFloor.id, true);
+  }
+
   function setModelViewPreset(preset: ModelViewPreset) {
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (!camera || !controls) return;
+    setModelCameraMode("orbit");
     const span = spanRef.current;
     const positions: Record<ModelViewPreset, [number, number, number]> = {
       iso: [span * 0.82, span * 0.72, span * 1.05],
@@ -4555,6 +4657,7 @@ function TakeoffModelPreview({
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.enablePan = true;
+    controls.enabled = cameraMode === "orbit";
     controls.minDistance = span * 0.22;
     controls.maxDistance = span * 3.2;
     controls.mouseButtons = {
@@ -4586,6 +4689,28 @@ function TakeoffModelPreview({
       ? Math.max(...lowestFloors.map((entry) => floorHasRenderableBandJoist(entry) ? floorBandJoistHeight(entry) : 0))
       : 0;
     const activeFloorYOffset = ((floor.elevation ?? 0) - absoluteLowestFloorElevation) + modelBaseLift;
+    const navigationFloors = sortedFloorsForNavigation.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      yOffset: ((entry.elevation ?? 0) - absoluteLowestFloorElevation) + modelBaseLift,
+    }));
+    floorNavigationRef.current = navigationFloors;
+    if (cameraMode === "walkthrough") {
+      const walkFloor = navigationFloors.find((entry) => entry.id === activeWalkFloorIdRef.current)
+        ?? navigationFloors.find((entry) => entry.id === activeFloorId)
+        ?? navigationFloors[0];
+      if (walkFloor) {
+        const state = walkthroughStateRef.current;
+        if (!previousModelViewState || state.anchor.lengthSq() < 0.01) {
+          state.anchor.set(0, walkFloor.yOffset + walkthroughEyeHeightFt, 0);
+          state.yaw = Math.atan2(camera.position.x - state.anchor.x, camera.position.z - state.anchor.z);
+          state.pitch = 0;
+        } else {
+          state.anchor.y = walkFloor.yOffset + walkthroughEyeHeightFt;
+        }
+        setWalkFloor(walkFloor.id, false);
+      }
+    }
     const activeOptions = floorViewOptions[activeFloorId] ?? defaultFloorViewOptions();
     if (activeOptions.visible && activeOptions.reference && visibleLayers.reference && referenceUrl) {
       const texture = loader.load(referenceUrl);
@@ -4676,7 +4801,7 @@ function TakeoffModelPreview({
       for (const sourceRoom of otherFloor.rooms) {
         const baseWallHeight = baseEnvelopeHeightForWallSuggestion(otherFloor, sourceRoom);
         const room = { ...sourceRoom, ceilingHeight: computedOpenToAboveHeight(otherFloor, sourceRoom, floors) };
-        const wallRoom = { ...room, ceilingHeight: baseWallHeight };
+        const wallRoom = roomFor3DCeilingWallParts(sourceRoom, room, baseWallHeight);
         const points = cleanPolygonPointsForRender(roomCorners(room));
         if (points.length < 3) continue;
         if (visibleLayers.floors) scene.add(createHorizontalShapeMesh(points, center, yOffset + 0.025, ghostRoomMaterial));
@@ -4837,7 +4962,7 @@ function TakeoffModelPreview({
           scene.add(wallMesh);
         }
         const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
-        const wallRoom = { ...room, ceilingHeight: baseWallHeight };
+        const wallRoom = roomFor3DCeilingWallParts(sourceRoom, room, baseWallHeight);
         const generatedWallParts = ceilingWallMeshPartsForRoom(wallRoom, center, floor.defaultCeilingHeight ?? 9, kneeWallMaterial);
         for (const part of generatedWallParts) {
           const component = roomSurfaceComponents(room, "wall").find((candidate) =>
@@ -5082,6 +5207,122 @@ function TakeoffModelPreview({
     const pointer = new THREE.Vector2();
     let hoverOutline: THREE.LineSegments | null = null;
     let hoverSurfaceKey = "";
+    const pressedKeys = new Set<string>();
+    const cameraEuler = new THREE.Euler().setFromQuaternion(camera.quaternion, "YXZ");
+    let flyLookDrag: { pointerId: number; x: number; y: number } | null = null;
+    let walkthroughLookDrag: { pointerId: number; x: number; y: number } | null = null;
+    let lastAnimationTime = performance.now();
+    const moveVector = new THREE.Vector3();
+    const forwardVector = new THREE.Vector3();
+    const horizontalForwardVector = new THREE.Vector3();
+    const rightVector = new THREE.Vector3();
+    const upVector = new THREE.Vector3(0, 1, 0);
+    const walkthroughLookTarget = new THREE.Vector3();
+
+    function isEditableKeyboardTarget(target: EventTarget | null) {
+      if (!(target instanceof HTMLElement)) return false;
+      const tagName = target.tagName.toLowerCase();
+      return tagName === "input" || tagName === "textarea" || tagName === "select" || target.isContentEditable;
+    }
+
+    function rotateInspectionCamera(deltaX: number, deltaY: number) {
+      cameraEuler.setFromQuaternion(camera.quaternion, "YXZ");
+      cameraEuler.y -= deltaX * 0.0024;
+      cameraEuler.x -= deltaY * 0.0024;
+      cameraEuler.x = Math.min(Math.max(cameraEuler.x, -Math.PI / 2 + 0.03), Math.PI / 2 - 0.03);
+      cameraEuler.z = 0;
+      camera.quaternion.setFromEuler(cameraEuler);
+    }
+
+    function currentWalkFloorY() {
+      const walkFloor = floorNavigationRef.current.find((entry) => entry.id === activeWalkFloorIdRef.current)
+        ?? floorNavigationRef.current.find((entry) => entry.id === activeFloorId)
+        ?? floorNavigationRef.current[0];
+      return walkFloor?.yOffset ?? activeFloorYOffset;
+    }
+
+    function walkthroughForward() {
+      const state = walkthroughStateRef.current;
+      forwardVector.set(
+        Math.sin(state.yaw) * Math.cos(state.pitch),
+        Math.sin(state.pitch),
+        Math.cos(state.yaw) * Math.cos(state.pitch),
+      );
+      if (forwardVector.lengthSq() > 0.0001) forwardVector.normalize();
+      return forwardVector;
+    }
+
+    function syncWalkthroughCamera() {
+      const state = walkthroughStateRef.current;
+      state.anchor.y = currentWalkFloorY() + walkthroughEyeHeightFt;
+      const look = walkthroughForward();
+      const distance = Math.max(walkthroughMinCameraDistanceFt, state.distance);
+      camera.position.copy(state.anchor).sub(look.clone().multiplyScalar(distance));
+      walkthroughLookTarget.copy(state.anchor).add(look.clone().multiplyScalar(Math.max(8, distance + 8)));
+      camera.lookAt(walkthroughLookTarget);
+    }
+
+    function moveWalkFloor(delta: number) {
+      const navigationFloors = floorNavigationRef.current;
+      if (navigationFloors.length === 0) return;
+      const currentIndex = navigationFloors.findIndex((entry) => entry.id === activeWalkFloorIdRef.current);
+      const fallbackIndex = navigationFloors.reduce((bestIndex, entry, index) => {
+        const best = navigationFloors[bestIndex];
+        return Math.abs(entry.yOffset + walkthroughEyeHeightFt - camera.position.y) < Math.abs(best.yOffset + walkthroughEyeHeightFt - camera.position.y)
+          ? index
+          : bestIndex;
+      }, Math.max(0, currentIndex));
+      const nextIndex = Math.min(Math.max((currentIndex >= 0 ? currentIndex : fallbackIndex) + delta, 0), navigationFloors.length - 1);
+      const nextFloor = navigationFloors[nextIndex];
+      if (!nextFloor) return;
+      walkthroughStateRef.current.anchor.y = nextFloor.yOffset + walkthroughEyeHeightFt;
+      setWalkFloor(nextFloor.id, true);
+      syncWalkthroughCamera();
+    }
+
+    function updateKeyboardMovement(deltaSeconds: number) {
+      const mode = cameraModeRef.current;
+      if (mode === "orbit" || pressedKeys.size === 0) return;
+      const boost = pressedKeys.has("ShiftLeft") || pressedKeys.has("ShiftRight") ? 2.4 : 1;
+      const speed = (mode === "walkthrough" ? modelWalkSpeedFtPerSecond : modelFlySpeedFtPerSecond) * boost * deltaSeconds;
+      moveVector.set(0, 0, 0);
+      if (mode === "walkthrough") {
+        walkthroughForward();
+        horizontalForwardVector.set(forwardVector.x, 0, forwardVector.z);
+        if (horizontalForwardVector.lengthSq() > 0.0001) horizontalForwardVector.normalize();
+        else horizontalForwardVector.set(0, 0, 1);
+        rightVector.crossVectors(upVector, horizontalForwardVector);
+        if (rightVector.lengthSq() > 0.0001) rightVector.normalize();
+        if (pressedKeys.has("KeyW")) moveVector.add(horizontalForwardVector);
+        if (pressedKeys.has("KeyS")) moveVector.sub(horizontalForwardVector);
+        if (pressedKeys.has("KeyD")) moveVector.add(rightVector);
+        if (pressedKeys.has("KeyA")) moveVector.sub(rightVector);
+        if (moveVector.lengthSq() > 0.0001) {
+          moveVector.normalize().multiplyScalar(speed);
+          walkthroughStateRef.current.anchor.add(moveVector);
+          syncWalkthroughCamera();
+        } else {
+          syncWalkthroughCamera();
+        }
+        return;
+      }
+      camera.getWorldDirection(forwardVector);
+      if (forwardVector.lengthSq() > 0.0001) forwardVector.normalize();
+      rightVector.crossVectors(forwardVector, upVector);
+      if (rightVector.lengthSq() > 0.0001) rightVector.normalize();
+      if (pressedKeys.has("KeyW")) moveVector.add(forwardVector);
+      if (pressedKeys.has("KeyS")) moveVector.sub(forwardVector);
+      if (pressedKeys.has("KeyD")) moveVector.add(rightVector);
+      if (pressedKeys.has("KeyA")) moveVector.sub(rightVector);
+      if (mode === "fly") {
+        if (pressedKeys.has("KeyE") || pressedKeys.has("Space")) moveVector.add(upVector);
+        if (pressedKeys.has("KeyC") || pressedKeys.has("ControlLeft") || pressedKeys.has("ControlRight")) moveVector.sub(upVector);
+      }
+      if (moveVector.lengthSq() > 0.0001) {
+        moveVector.normalize().multiplyScalar(speed);
+        camera.position.add(moveVector);
+      }
+    }
 
     function clearHoverOutline() {
       if (!hoverOutline) return;
@@ -5106,6 +5347,10 @@ function TakeoffModelPreview({
     }
 
     function updateHover(event: PointerEvent) {
+      if ((cameraModeRef.current !== "orbit" && cameraModeRef.current !== "walkthrough") || walkthroughLookDrag) {
+        clearHover();
+        return;
+      }
       setPointerFromEvent(event);
       raycaster.setFromCamera(pointer, camera);
       const hit = firstSelectableHit();
@@ -5133,6 +5378,22 @@ function TakeoffModelPreview({
     }
 
     function handlePointerDown(event: PointerEvent) {
+      if (cameraModeRef.current === "fly" && event.button === 0) {
+        event.preventDefault();
+        renderer.domElement.focus();
+        flyLookDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+        renderer.domElement.setPointerCapture(event.pointerId);
+        clearHover();
+        return;
+      }
+      if (cameraModeRef.current === "walkthrough" && event.button === 2) {
+        event.preventDefault();
+        renderer.domElement.focus();
+        walkthroughLookDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+        renderer.domElement.setPointerCapture(event.pointerId);
+        clearHover();
+        return;
+      }
       if (event.button === 2) return;
       setPointerFromEvent(event);
       raycaster.setFromCamera(pointer, camera);
@@ -5146,17 +5407,115 @@ function TakeoffModelPreview({
       }
       if (hit.object.userData.roomId) onSelectRoom(hit.object.userData.roomId);
     }
+    function handlePointerMove(event: PointerEvent) {
+      if (flyLookDrag && cameraModeRef.current === "fly" && event.pointerId === flyLookDrag.pointerId) {
+        event.preventDefault();
+        rotateInspectionCamera(event.clientX - flyLookDrag.x, event.clientY - flyLookDrag.y);
+        flyLookDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+        return;
+      }
+      if (walkthroughLookDrag && cameraModeRef.current === "walkthrough" && event.pointerId === walkthroughLookDrag.pointerId) {
+        event.preventDefault();
+        const state = walkthroughStateRef.current;
+        state.yaw -= (event.clientX - walkthroughLookDrag.x) * 0.0042;
+        state.pitch -= (event.clientY - walkthroughLookDrag.y) * 0.0032;
+        state.pitch = Math.min(Math.max(state.pitch, -Math.PI / 2 + 0.04), Math.PI / 2 - 0.04);
+        walkthroughLookDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+        syncWalkthroughCamera();
+      }
+    }
+    function handlePointerUp(event: PointerEvent) {
+      if (flyLookDrag && event.pointerId === flyLookDrag.pointerId) {
+        if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+        flyLookDrag = null;
+      }
+      if (walkthroughLookDrag && event.pointerId === walkthroughLookDrag.pointerId) {
+        if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+        walkthroughLookDrag = null;
+      }
+    }
+    function handleWheel(event: WheelEvent) {
+      if (cameraModeRef.current !== "walkthrough") return;
+      event.preventDefault();
+      const state = walkthroughStateRef.current;
+      const delta = event.deltaY > 0 ? 0.75 : -0.75;
+      state.distance = Math.min(Math.max(state.distance + delta, walkthroughMinCameraDistanceFt), Math.max(spanRef.current * 0.85, 18));
+      setWalkthroughCameraDistance(state.distance);
+      syncWalkthroughCamera();
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (cameraModeRef.current === "orbit" || isEditableKeyboardTarget(event.target)) return;
+      if (cameraModeRef.current === "walkthrough" && event.code === "KeyQ") {
+        event.preventDefault();
+        if (walkthroughLookDrag && renderer.domElement.hasPointerCapture(walkthroughLookDrag.pointerId)) {
+          renderer.domElement.releasePointerCapture(walkthroughLookDrag.pointerId);
+        }
+        walkthroughLookDrag = null;
+        pressedKeys.clear();
+        return;
+      }
+      if (cameraModeRef.current === "walkthrough" && event.code === "KeyE") {
+        event.preventDefault();
+        moveWalkFloor(1);
+        return;
+      }
+      if (cameraModeRef.current === "walkthrough" && event.code === "KeyC") {
+        event.preventDefault();
+        moveWalkFloor(-1);
+        return;
+      }
+      const movementKeys = new Set([
+        "KeyW",
+        "KeyA",
+        "KeyS",
+        "KeyD",
+        "KeyC",
+        "KeyE",
+        "Space",
+        "ControlLeft",
+        "ControlRight",
+        "ShiftLeft",
+        "ShiftRight",
+      ]);
+      if (cameraModeRef.current === "walkthrough" && (event.code === "PageUp" || event.code === "BracketRight")) {
+        event.preventDefault();
+        moveWalkFloor(1);
+        return;
+      }
+      if (cameraModeRef.current === "walkthrough" && (event.code === "PageDown" || event.code === "BracketLeft")) {
+        event.preventDefault();
+        moveWalkFloor(-1);
+        return;
+      }
+      if (!movementKeys.has(event.code)) return;
+      event.preventDefault();
+      pressedKeys.add(event.code);
+    }
+    function handleKeyUp(event: KeyboardEvent) {
+      pressedKeys.delete(event.code);
+    }
     function handleContextMenu(event: MouseEvent) {
       event.preventDefault();
     }
+    renderer.domElement.tabIndex = 0;
     renderer.domElement.addEventListener("pointermove", updateHover);
     renderer.domElement.addEventListener("pointerleave", clearHover);
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.addEventListener("pointermove", handlePointerMove);
+    renderer.domElement.addEventListener("pointerup", handlePointerUp);
+    renderer.domElement.addEventListener("lostpointercapture", handlePointerUp);
+    renderer.domElement.addEventListener("wheel", handleWheel, { passive: false });
     renderer.domElement.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    if (cameraMode === "walkthrough") syncWalkthroughCamera();
 
     let animationFrame = 0;
-    function animate() {
-      controls.update();
+    function animate(now = performance.now()) {
+      const deltaSeconds = Math.min(Math.max((now - lastAnimationTime) / 1000, 0), 0.08);
+      lastAnimationTime = now;
+      if (cameraModeRef.current === "orbit") controls.update();
+      else updateKeyboardMovement(deltaSeconds);
       renderer.render(scene, camera);
       animationFrame = window.requestAnimationFrame(animate);
     }
@@ -5179,10 +5538,21 @@ function TakeoffModelPreview({
       renderer.domElement.removeEventListener("pointermove", updateHover);
       renderer.domElement.removeEventListener("pointerleave", clearHover);
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+      renderer.domElement.removeEventListener("pointermove", handlePointerMove);
+      renderer.domElement.removeEventListener("pointerup", handlePointerUp);
+      renderer.domElement.removeEventListener("lostpointercapture", handlePointerUp);
+      renderer.domElement.removeEventListener("wheel", handleWheel);
       renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
       hoverSurfaceKey = "";
       clearHoverOutline();
-      modelViewStateRef.current = { position: camera.position.clone(), target: controls.target.clone() };
+      const savedTarget = controls.target.clone();
+      if (cameraMode !== "orbit") {
+        camera.getWorldDirection(forwardVector);
+        savedTarget.copy(camera.position).add(forwardVector.multiplyScalar(spanRef.current * 0.45));
+      }
+      modelViewStateRef.current = { position: camera.position.clone(), target: savedTarget };
       controls.dispose();
       controlsRef.current = null;
       cameraRef.current = null;
@@ -5198,11 +5568,11 @@ function TakeoffModelPreview({
       hoverOutlineMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [activeFloorId, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, visibleLayers]);
+  }, [activeFloorId, cameraMode, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers]);
 
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
-      <div className="takeoff-model-caption">3D QA View · right-click drag to orbit · scroll to zoom · drag to pan</div>
+      <div className="takeoff-model-caption">{cameraCaption}</div>
       {hoveredSurface && (
         <div className="takeoff-model-hover-panel">
           <strong>{hoveredSurface.label}</strong>
@@ -5322,6 +5692,37 @@ function TakeoffModelPreview({
         <button type="button" onClick={() => setModelViewPreset("rear")}>Rear</button>
         <button type="button" onClick={() => setModelViewPreset("left")}>Left</button>
         <button type="button" onClick={() => setModelViewPreset("right")}>Right</button>
+      </div>
+      <div className="takeoff-model-camera-controls" aria-label="3D camera mode controls">
+        {([
+          ["orbit", "Orbit"],
+          ["fly", "Fly"],
+          ["walkthrough", "Walkthrough"],
+        ] as Array<[ModelCameraMode, string]>).map(([mode, label]) => (
+          <button
+            key={mode}
+            type="button"
+            className={cameraMode === mode ? "is-active" : ""}
+            aria-pressed={cameraMode === mode}
+            onClick={() => setModelCameraMode(mode)}
+          >
+            {label}
+          </button>
+        ))}
+        <button type="button" onClick={toggleModelFullscreen}>
+          {modelFullscreen ? "Exit Full Screen" : "Full Screen"}
+        </button>
+        {cameraMode === "walkthrough" && (
+          <>
+            <span>{activeWalkFloor?.name || "Floor"}</span>
+            <button type="button" onClick={() => moveWalkthroughFloor(-1)} disabled={activeWalkFloorIndex <= 0}>
+              Floor Down
+            </button>
+            <button type="button" onClick={() => moveWalkthroughFloor(1)} disabled={activeWalkFloorIndex < 0 || activeWalkFloorIndex >= sortedFloorsForNavigation.length - 1}>
+              Floor Up
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -10806,6 +11207,7 @@ export function TakeoffApp() {
                 selectedRoomId={selectedRoomId}
                 connectedVolumes={connectedVolumes}
                 onSelectRoom={setSelectedRoomId}
+                onActivateFloor={switchActiveFloor}
                 onUpdateFloorViewOptions={updateFloorViewOptions}
                 onAssignSurfaceComponent={assignModelSurfaceComponent}
               />

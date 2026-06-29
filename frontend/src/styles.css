@@ -1363,10 +1363,18 @@ button.toolbar-primary:hover {
   width: 100%;
 }
 
+.takeoff-model-preview:fullscreen {
+  min-height: 100vh;
+}
+
 .takeoff-model-preview canvas {
   display: block;
   min-height: 560px;
   width: 100% !important;
+}
+
+.takeoff-model-preview:fullscreen canvas {
+  min-height: 100vh;
 }
 
 .takeoff-model-caption {
@@ -1429,6 +1437,52 @@ button.toolbar-primary:hover {
 .takeoff-model-view-controls button:hover {
   background: #ffffff;
   border-color: #8ca2b4;
+}
+
+.takeoff-model-camera-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  max-width: min(520px, calc(100% - 24px));
+  position: absolute;
+  right: 12px;
+  top: 50px;
+  z-index: 1;
+}
+
+.takeoff-model-camera-controls button,
+.takeoff-model-camera-controls span {
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid #c6d2dc;
+  border-radius: 6px;
+  color: #1f2933;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 30px;
+  padding: 5px 8px;
+}
+
+.takeoff-model-camera-controls button {
+  cursor: pointer;
+}
+
+.takeoff-model-camera-controls button:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: #8ca2b4;
+}
+
+.takeoff-model-camera-controls button.is-active {
+  background: #1f6fb2;
+  border-color: #1f6fb2;
+  color: #ffffff;
+}
+
+.takeoff-model-camera-controls button:disabled {
+  color: #8d9baa;
+  cursor: not-allowed;
+  opacity: 0.66;
 }
 
 .takeoff-model-layer-controls {
