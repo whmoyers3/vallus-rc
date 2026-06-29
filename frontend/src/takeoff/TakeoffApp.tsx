@@ -3798,29 +3798,68 @@ function cleanPolygonPointsForRender(points: TakeoffPoint[]) {
   return simplifyPolygonPoints(points, { duplicateTolerance: 0.02, collinearTolerance: 0.08, shortSegmentTolerance: 0.18 });
 }
 
-function triangulatedPlanPolygon(points: TakeoffPoint[]) {
+function sortedUniqueCoordinates(values: number[]) {
+  return values
+    .map((value) => Number(value.toFixed(3)))
+    .sort((a, b) => a - b)
+    .filter((value, index, coords) => index === 0 || Math.abs(value - coords[index - 1]) > 0.02);
+}
+
+function triangleCentroid(triangle: TakeoffPoint[]) {
+  return {
+    x: triangle.reduce((sum, point) => sum + point.x, 0) / triangle.length,
+    y: triangle.reduce((sum, point) => sum + point.y, 0) / triangle.length,
+  };
+}
+
+function triangleFitsInsidePolygon(triangle: TakeoffPoint[], polygon: TakeoffPoint[]) {
+  const triangleArea = polygonArea(triangle);
+  if (triangle.length !== 3 || triangleArea <= 0.001) return false;
+  if (!pointInPolygon(triangleCentroid(triangle), polygon)) return false;
+  const clipped = intersection([pointsToClipPolygon(triangle)], [pointsToClipPolygon(polygon)]);
+  const clippedArea = clipped.reduce((sum, piece) => sum + clipPolygonArea(piece), 0);
+  return clippedArea >= triangleArea - Math.max(0.01, triangleArea * 0.02);
+}
+
+function triangulateSimplePlanPolygon(points: TakeoffPoint[], containingPolygon = points) {
   const cleanedPoints = cleanPolygonPointsForRender(points);
   if (cleanedPoints.length < 3) return [] as TakeoffPoint[][];
   const contour = cleanedPoints.map((point) => new THREE.Vector2(point.x, point.y));
   const triangles = THREE.ShapeUtils.triangulateShape(contour, [])
     .map((triangle) => triangle.map((index) => cleanedPoints[index]))
-    .filter((triangle) => {
-      if (triangle.length !== 3 || polygonArea(triangle) <= 0.001) return false;
-      const centroid = {
-        x: (triangle[0].x + triangle[1].x + triangle[2].x) / 3,
-        y: (triangle[0].y + triangle[1].y + triangle[2].y) / 3,
-      };
-      return pointInPolygon(centroid, cleanedPoints);
-    });
+    .filter((triangle) => triangleFitsInsidePolygon(triangle, containingPolygon));
   if (triangles.length > 0) return triangles;
   return cleanedPoints.slice(1, -1).map((_, index) => [cleanedPoints[0], cleanedPoints[index + 1], cleanedPoints[index + 2]])
-    .filter((triangle) => {
-      const centroid = {
-        x: (triangle[0].x + triangle[1].x + triangle[2].x) / 3,
-        y: (triangle[0].y + triangle[1].y + triangle[2].y) / 3,
+    .filter((triangle) => triangleFitsInsidePolygon(triangle, containingPolygon));
+}
+
+function triangulatedPlanPolygon(points: TakeoffPoint[]) {
+  const cleanedPoints = cleanPolygonPointsForRender(points);
+  if (cleanedPoints.length < 3) return [] as TakeoffPoint[][];
+  const bounds = polygonBounds(cleanedPoints);
+  const xCoords = sortedUniqueCoordinates([bounds.x, bounds.x + bounds.width, ...cleanedPoints.map((point) => point.x)]);
+  const yCoords = sortedUniqueCoordinates([bounds.y, bounds.y + bounds.depth, ...cleanedPoints.map((point) => point.y)]);
+  const sourcePolygon = pointsToClipPolygon(cleanedPoints);
+  const triangles: TakeoffPoint[][] = [];
+
+  for (let xIndex = 0; xIndex < xCoords.length - 1; xIndex += 1) {
+    for (let yIndex = 0; yIndex < yCoords.length - 1; yIndex += 1) {
+      const cell = {
+        x: xCoords[xIndex],
+        y: yCoords[yIndex],
+        width: xCoords[xIndex + 1] - xCoords[xIndex],
+        depth: yCoords[yIndex + 1] - yCoords[yIndex],
       };
-      return pointInPolygon(centroid, cleanedPoints);
-    });
+      if (cell.width <= 0.02 || cell.depth <= 0.02) continue;
+      const clipped = intersection([pointsToClipPolygon(rectToPoints(cell))], [sourcePolygon]);
+      for (const polygon of clipped.flatMap(simplePolygonsFromClipPolygon)) {
+        const piecePoints = clipPolygonToPoints(polygon);
+        triangles.push(...triangulateSimplePlanPolygon(piecePoints, cleanedPoints));
+      }
+    }
+  }
+
+  return triangles.length > 0 ? triangles : triangulateSimplePlanPolygon(cleanedPoints, cleanedPoints);
 }
 
 function createPlanSurfaceMesh(points: TakeoffPoint[], center: TakeoffPoint, material: THREE.Material, heightAtPoint: (point: TakeoffPoint) => number) {
@@ -3838,6 +3877,16 @@ function createPlanSurfaceMesh(points: TakeoffPoint[], center: TakeoffPoint, mat
 
 function createHorizontalShapeMesh(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.Material) {
   return createPlanSurfaceMesh(points, center, material, () => height);
+}
+
+function clippedPanelPolygonsForRoom(panel: TakeoffPoint[], room: TakeoffRectRoom) {
+  const panelPoints = cleanPolygonPointsForRender(panel);
+  const roomPoints = cleanPolygonPointsForRender(roomCorners(room));
+  if (panelPoints.length < 3 || roomPoints.length < 3) return [];
+  return intersection([pointsToClipPolygon(panelPoints)], [pointsToClipPolygon(roomPoints)])
+    .flatMap(simplePolygonsFromClipPolygon)
+    .map((polygon) => clipPolygonToPoints(polygon))
+    .filter((points) => points.length >= 3 && polygonArea(points) > 0.5);
 }
 
 function createHorizontalOutline(points: TakeoffPoint[], center: TakeoffPoint, height: number, material: THREE.LineBasicMaterial) {
@@ -4540,7 +4589,9 @@ function TakeoffModelPreview({
             if (panelComponents.length > 0) {
               for (const component of panelComponents) {
                 for (const panel of component.panelPolygons ?? []) {
-                  scene.add(createHorizontalShapeMesh(panel, center, yOffset + room.ceilingHeight, passiveCeilingMaterial));
+                  for (const clippedPanel of clippedPanelPolygonsForRoom(panel, room)) {
+                    scene.add(createHorizontalShapeMesh(clippedPanel, center, yOffset + room.ceilingHeight, passiveCeilingMaterial));
+                  }
                 }
               }
             } else if (ceilingComponents.length > 0) {
@@ -4720,8 +4771,9 @@ function TakeoffModelPreview({
           const panelComponents = ceilingComponents.filter((component) => component.panelPolygons?.length);
           if (panelComponents.length > 0) {
             for (const component of panelComponents) {
-              const componentPanelArea = (component.panelPolygons ?? []).reduce((sum, panel) => sum + polygonArea(panel), 0);
-              for (const panel of component.panelPolygons ?? []) {
+              const clippedPanels = (component.panelPolygons ?? []).flatMap((panel) => clippedPanelPolygonsForRoom(panel, room));
+              const componentPanelArea = clippedPanels.reduce((sum, panel) => sum + polygonArea(panel), 0);
+              for (const panel of clippedPanels) {
                 const panelArea = componentPanelArea > 0.5
                   ? (component.area || 0) * (polygonArea(panel) / componentPanelArea)
                   : polygonArea(panel);
