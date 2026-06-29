@@ -4300,6 +4300,7 @@ function TakeoffModelPreview({
   const [selectedSurface, setSelectedSurface] = useState<ModelSurfaceSelection | null>(null);
   const [hoveredSurface, setHoveredSurface] = useState<ModelSurfaceSelection | null>(null);
   const [selectedSurfaceAssembly, setSelectedSurfaceAssembly] = useState("");
+  const [sceneRevision, setSceneRevision] = useState(0);
 
   const selectedSurfaceOptions = selectedSurface?.surface
     ? componentSchedule.filter((component) => component.category === modelScheduleCategory(selectedSurface.surface!))
@@ -4336,6 +4337,7 @@ function TakeoffModelPreview({
     const container = containerRef.current;
     if (!container) return;
     setHoveredSurface(null);
+    setSelectedSurface(null);
     const bounds = footprintBounds(floor);
     const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.depth / 2 };
     const width = Math.max(container.clientWidth, 720);
@@ -4968,7 +4970,7 @@ function TakeoffModelPreview({
       hoverOutlineMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [activeFloorId, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, visibleLayers]);
+  }, [activeFloorId, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, sceneRevision, selectedRoomId, visibleLayers]);
 
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
@@ -5092,6 +5094,13 @@ function TakeoffModelPreview({
         <button type="button" onClick={() => setModelViewPreset("rear")}>Rear</button>
         <button type="button" onClick={() => setModelViewPreset("left")}>Left</button>
         <button type="button" onClick={() => setModelViewPreset("right")}>Right</button>
+        <button
+          type="button"
+          className="takeoff-model-refresh"
+          onClick={() => setSceneRevision((current) => current + 1)}
+        >
+          Refresh 3D
+        </button>
       </div>
     </div>
   );
