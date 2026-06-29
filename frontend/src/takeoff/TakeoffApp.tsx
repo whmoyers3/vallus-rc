@@ -4504,6 +4504,7 @@ function TakeoffModelPreview({
   const modelViewStateRef = useRef<{ position: THREE.Vector3; target: THREE.Vector3 } | null>(null);
   const [cameraMode, setCameraMode] = useState<ModelCameraMode>("orbit");
   const [walkthroughCameraDistance, setWalkthroughCameraDistance] = useState(walkthroughDefaultCameraDistanceFt);
+  const [walkthroughComponentTransparency, setWalkthroughComponentTransparency] = useState(0);
   const [modelFullscreen, setModelFullscreen] = useState(false);
   const [activeWalkFloorId, setActiveWalkFloorId] = useState(activeFloorId);
   const [visibleLayers, setVisibleLayers] = useState<Record<ModelLayerKey, boolean>>({
@@ -4585,6 +4586,12 @@ function TakeoffModelPreview({
       return;
     }
     void container.requestFullscreen();
+  }
+
+  function modelComponentOpacity(defaultOpacity: number, walkthroughOpacity = defaultOpacity) {
+    if (cameraMode !== "walkthrough") return defaultOpacity;
+    const transparentFraction = Math.min(Math.max(walkthroughComponentTransparency, 0), 100) / 100;
+    return Math.max(0, walkthroughOpacity * (1 - transparentFraction));
   }
 
   function moveWalkthroughFloor(delta: number) {
@@ -4720,32 +4727,32 @@ function TakeoffModelPreview({
       scene.add(plane);
     }
 
-    const exteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x8fc0b0, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
-    const floorMaterial = new THREE.MeshPhongMaterial({ color: 0xc8ddd5, depthWrite: false, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
-    const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x8fb4c8, depthWrite: false, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
-    const interiorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9aa9b5, depthWrite: false, transparent: true, opacity: 0.16, side: THREE.DoubleSide });
-    const selectedWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6aa0d6, depthWrite: false, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
-    const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, depthWrite: false, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
-    const adjacentFloorMaterial = new THREE.MeshPhongMaterial({ color: 0xd9c274, depthWrite: false, transparent: true, opacity: 0.22, side: THREE.DoubleSide });
-    const adjacentWallMaterial = new THREE.MeshPhongMaterial({ color: 0xc59a49, depthWrite: false, transparent: true, opacity: 0.24, side: THREE.DoubleSide });
-    const adjacentSelectedMaterial = new THREE.MeshPhongMaterial({ color: 0xd48a2b, depthWrite: false, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
-    const adjacentCeilingMaterial = new THREE.MeshPhongMaterial({ color: 0xe2d8a2, depthWrite: false, transparent: true, opacity: 0.28, side: THREE.DoubleSide });
-    const kneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xb35b2f, depthWrite: false, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
-    const glassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.78, side: THREE.DoubleSide });
-    const doorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.82, side: THREE.DoubleSide });
+    const exteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x8fc0b0, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.18, 0.86), side: THREE.DoubleSide });
+    const floorMaterial = new THREE.MeshPhongMaterial({ color: 0xc8ddd5, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.38, 0.78), side: THREE.DoubleSide });
+    const wallMaterial = new THREE.MeshPhongMaterial({ color: 0x8fb4c8, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.42, 0.94), side: THREE.DoubleSide });
+    const interiorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9aa9b5, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.16, 0.94), side: THREE.DoubleSide });
+    const selectedWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6aa0d6, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.5, 0.96), side: THREE.DoubleSide });
+    const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.25, 0.72), side: THREE.DoubleSide });
+    const adjacentFloorMaterial = new THREE.MeshPhongMaterial({ color: 0xd9c274, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.22, 0.68), side: THREE.DoubleSide });
+    const adjacentWallMaterial = new THREE.MeshPhongMaterial({ color: 0xc59a49, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.24, 0.82), side: THREE.DoubleSide });
+    const adjacentSelectedMaterial = new THREE.MeshPhongMaterial({ color: 0xd48a2b, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.42, 0.9), side: THREE.DoubleSide });
+    const adjacentCeilingMaterial = new THREE.MeshPhongMaterial({ color: 0xe2d8a2, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.28, 0.72), side: THREE.DoubleSide });
+    const kneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xb35b2f, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.3, 0.88), side: THREE.DoubleSide });
+    const glassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: modelComponentOpacity(0.78, 0.42), side: THREE.DoubleSide });
+    const doorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: modelComponentOpacity(0.82, 0.9), side: THREE.DoubleSide });
     const openingFrameMaterial = new THREE.MeshBasicMaterial({ color: 0x2f3b1f, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
     const lineMaterial = new THREE.LineBasicMaterial({ color: 0xb35b2f });
     const hoverOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x0f5fa8, depthTest: false, transparent: true, opacity: 0.95 });
     const ghostReferenceMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6070, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
     const ghostRoomMaterial = new THREE.MeshPhongMaterial({ color: 0x8799a8, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
     const ghostExteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x5f7f9b, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
-    const passiveWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6f8797, depthWrite: false, transparent: true, opacity: 0.24, side: THREE.DoubleSide });
-    const passiveInteriorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x7e8a94, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
-    const passiveCeilingMaterial = new THREE.MeshPhongMaterial({ color: 0xaebfc8, depthWrite: false, transparent: true, opacity: 0.14, side: THREE.DoubleSide });
-    const passiveKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0x8f6658, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
-    const passiveGlassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: 0.38, side: THREE.DoubleSide });
-    const passiveDoorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: 0.36, side: THREE.DoubleSide });
-    const bandJoistMaterial = new THREE.MeshPhongMaterial({ color: 0x587082, depthWrite: false, transparent: true, opacity: 0.34, side: THREE.DoubleSide });
+    const passiveWallMaterial = new THREE.MeshPhongMaterial({ color: 0x6f8797, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.24, 0.58), side: THREE.DoubleSide });
+    const passiveInteriorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x7e8a94, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.12, 0.48), side: THREE.DoubleSide });
+    const passiveCeilingMaterial = new THREE.MeshPhongMaterial({ color: 0xaebfc8, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.14, 0.5), side: THREE.DoubleSide });
+    const passiveKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0x8f6658, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.18, 0.58), side: THREE.DoubleSide });
+    const passiveGlassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: modelComponentOpacity(0.38, 0.28), side: THREE.DoubleSide });
+    const passiveDoorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: modelComponentOpacity(0.36, 0.5), side: THREE.DoubleSide });
+    const bandJoistMaterial = new THREE.MeshPhongMaterial({ color: 0x587082, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.34, 0.74), side: THREE.DoubleSide });
     const openVoidMaterial = new THREE.MeshBasicMaterial({ color: 0xeaf2ef, depthWrite: false, transparent: true, opacity: 0.62, side: THREE.DoubleSide });
     const openVoidOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x7f9098, depthTest: false, transparent: true, opacity: 0.35 });
     const renderOpenToBelowMarkers = (targetFloor: TakeoffFloor, yOffset: number) => {
@@ -5291,7 +5298,7 @@ function TakeoffModelPreview({
         horizontalForwardVector.set(forwardVector.x, 0, forwardVector.z);
         if (horizontalForwardVector.lengthSq() > 0.0001) horizontalForwardVector.normalize();
         else horizontalForwardVector.set(0, 0, 1);
-        rightVector.crossVectors(upVector, horizontalForwardVector);
+        rightVector.crossVectors(horizontalForwardVector, upVector);
         if (rightVector.lengthSq() > 0.0001) rightVector.normalize();
         if (pressedKeys.has("KeyW")) moveVector.add(horizontalForwardVector);
         if (pressedKeys.has("KeyS")) moveVector.sub(horizontalForwardVector);
@@ -5568,7 +5575,7 @@ function TakeoffModelPreview({
       hoverOutlineMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [activeFloorId, cameraMode, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers]);
+  }, [activeFloorId, cameraMode, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers, walkthroughComponentTransparency]);
 
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
@@ -5721,6 +5728,18 @@ function TakeoffModelPreview({
             <button type="button" onClick={() => moveWalkthroughFloor(1)} disabled={activeWalkFloorIndex < 0 || activeWalkFloorIndex >= sortedFloorsForNavigation.length - 1}>
               Floor Up
             </button>
+            <label className="takeoff-model-transparency-control">
+              <span>Component transparency</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="5"
+                value={walkthroughComponentTransparency}
+                onChange={(event) => setWalkthroughComponentTransparency(Number(event.target.value))}
+              />
+              <span>{walkthroughComponentTransparency}%</span>
+            </label>
           </>
         )}
       </div>
