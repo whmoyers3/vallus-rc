@@ -4128,7 +4128,7 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
   const width = Math.max(1.5, component.width ?? Math.sqrt(Math.max(component.area, 1) * 0.6));
   const height = Math.max(2, component.height ?? Math.max(2, component.area / width));
   const wallHeight = Math.max(0.5, room.ceilingHeight);
-  const topPadding = 0.25;
+  const topPadding = component.surface === "glass" ? 0.75 : 0.25;
   const bottomPadding = 0.25;
   const typicalWindowSillHeight = 3;
   const visibleHeight = component.surface === "door"
