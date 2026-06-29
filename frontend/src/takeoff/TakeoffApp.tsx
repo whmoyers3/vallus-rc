@@ -398,6 +398,22 @@ function floorBandJoistEnabled(floor: Pick<TakeoffFloor, "bandJoistEnabled" | "b
   return floor.bandJoistEnabled ?? floorBandJoistHeight(floor) > 0.01;
 }
 
+function suggestedFloorToFloorHeight(floor: Pick<TakeoffFloor, "defaultCeilingHeight" | "bandJoistEnabled" | "bandJoistHeight">) {
+  const clearHeight = Math.max(0, floor.defaultCeilingHeight ?? 9);
+  const bandHeight = floorBandJoistEnabled(floor) ? floorBandJoistHeight(floor) : 0;
+  return Number((clearHeight + bandHeight).toFixed(3));
+}
+
+function effectiveFloorToFloorHeight(floor: Pick<TakeoffFloor, "defaultCeilingHeight" | "floorToFloorHeight" | "floorToFloorHeightUserSet" | "bandJoistEnabled" | "bandJoistHeight">) {
+  const suggested = suggestedFloorToFloorHeight(floor);
+  if (!floor.floorToFloorHeightUserSet) return suggested;
+  return Math.max(0, floor.floorToFloorHeight ?? suggested);
+}
+
+function roomHasSlabFloor(room: Pick<TakeoffRectRoom, "floorType">) {
+  return (room.floorType ?? "slab") === "slab";
+}
+
 function makeInitialFloor(): TakeoffFloor {
   return {
     id: "floor-1",
@@ -406,6 +422,7 @@ function makeInitialFloor(): TakeoffFloor {
     coordinateSpace: "world_feet",
     elevation: 0,
     floorToFloorHeight: 10,
+    floorToFloorHeightUserSet: false,
     bandJoistEnabled: true,
     bandJoistHeight: defaultBandJoistHeight,
     bandJoistHeightUserSet: false,
@@ -3710,6 +3727,7 @@ function normalizeFloor(rawFloor: Partial<TakeoffFloor> | undefined): TakeoffFlo
     coordinateSpace: rawFloor.coordinateSpace || "world_feet",
     elevation: rawFloor.elevation ?? fallback.elevation,
     floorToFloorHeight: rawFloor.floorToFloorHeight ?? fallback.floorToFloorHeight,
+    floorToFloorHeightUserSet: rawFloor.floorToFloorHeightUserSet ?? false,
     bandJoistEnabled,
     bandJoistHeight,
     bandJoistHeightUserSet: rawFloor.bandJoistHeightUserSet ?? false,
@@ -3768,6 +3786,7 @@ function persistableTakeoffProject(project: TakeoffProject): TakeoffProject {
     ...project,
     floors: project.floors.map((floor) => ({
       ...floor,
+      floorToFloorHeight: effectiveFloorToFloorHeight(floor),
       reference: floor.reference
         ? {
             ...floor.reference,
@@ -4219,7 +4238,7 @@ function bandJoistMeshesForFloor(floor: TakeoffFloor, center: TakeoffPoint, topO
   const bandJoistPanels: THREE.Mesh[] = [];
   const edges = floor.rooms.length
     ? floor.rooms
-        .filter((room) => room.floorType !== "slab")
+        .filter((room) => !roomHasSlabFloor(room))
         .flatMap((room) => roomExteriorSegments(floor, room).map((segment) => ({ a: segment.a, b: segment.b })))
     : pointsToEdges(cleanPolygonPointsForRender(exteriorRingPoints(floor)));
   for (const edge of edges) {
@@ -4236,7 +4255,7 @@ function bandJoistMeshesForFloor(floor: TakeoffFloor, center: TakeoffPoint, topO
 
 function floorHasRenderableBandJoist(floor: TakeoffFloor) {
   if (!floorBandJoistEnabled(floor) || floorBandJoistHeight(floor) <= 0.01) return false;
-  if (floor.rooms.length) return floor.rooms.some((room) => room.floorType !== "slab" && roomExteriorSegments(floor, room).length > 0);
+  if (floor.rooms.length) return floor.rooms.some((room) => !roomHasSlabFloor(room) && roomExteriorSegments(floor, room).length > 0);
   return cleanPolygonPointsForRender(exteriorRingPoints(floor)).length >= 3;
 }
 
@@ -6201,17 +6220,67 @@ export function TakeoffApp() {
   const offsetX = 28;
   const offsetY = 28;
   const exteriorPath = floor.exteriorPolygon.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ");
+  const floorToFloorSuggestion = suggestedFloorToFloorHeight(floor);
+  const floorToFloorInputValue = floor.floorToFloorHeightUserSet
+    ? Math.max(0, floor.floorToFloorHeight ?? floorToFloorSuggestion)
+    : effectiveFloorToFloorHeight(floor);
+  const floorToFloorSuggestionDiffers = Math.abs(floorToFloorInputValue - floorToFloorSuggestion) > 0.01;
+  const nextFloorAbove = nearestFloorByElevation(floor, floors, "above");
+  const expectedNextFloorElevation = (floor.elevation ?? 0) + floorToFloorInputValue;
+  const nextFloorElevationDiffers = nextFloorAbove
+    ? Math.abs((nextFloorAbove.elevation ?? 0) - expectedNextFloorElevation) > 0.01
+    : false;
 
   function updateFloor(patch: Partial<TakeoffFloor>) {
     setFloor((current) => ({ ...current, ...patch }));
   }
 
+  function updateFloorWithAutoStackHeight(patch: Partial<TakeoffFloor>) {
+    setFloor((current) => {
+      const next = { ...current, ...patch };
+      if (next.floorToFloorHeightUserSet) return next;
+      return { ...next, floorToFloorHeight: effectiveFloorToFloorHeight(next) };
+    });
+  }
+
+  function applySuggestedFloorToFloorHeight() {
+    const suggested = suggestedFloorToFloorHeight(floor);
+    updateFloor({
+      floorToFloorHeight: suggested,
+      floorToFloorHeightUserSet: false,
+      coordinateSpace: "world_feet",
+    });
+    setMessage(`${floor.name || "Active floor"} floor-to-floor height set to ceiling plus band (${formatDimensionValue(suggested, dimensionInputMode)}).`);
+  }
+
+  function alignFloorsAboveToActiveStack() {
+    const sourceElevation = floor.elevation ?? 0;
+    const above = nearestFloorByElevation(floor, floors, "above");
+    if (!above) return;
+    const expectedElevation = sourceElevation + floorToFloorInputValue;
+    const delta = expectedElevation - (above.elevation ?? 0);
+    if (Math.abs(delta) <= 0.01) return;
+    setFloors((current) => floorsByElevation(current.map((entry) => {
+      if ((entry.elevation ?? 0) <= sourceElevation + 0.01) return entry;
+      return {
+        ...entry,
+        elevation: Number(((entry.elevation ?? 0) + delta).toFixed(3)),
+        coordinateSpace: "world_feet",
+      };
+    })));
+    setMessage(`Aligned floors above ${floor.name || "active floor"} to start at ${formatDimensionValue(expectedElevation, dimensionInputMode)}.`);
+  }
+
   function updateFloorDefaultCeilingHeight(height: number) {
-    setFloor((current) => ({
-      ...current,
-      defaultCeilingHeight: height,
-      rooms: current.rooms.map((room) => ({ ...room, ceilingGeometryApproved: false })),
-    }));
+    setFloor((current) => {
+      const next = {
+        ...current,
+        defaultCeilingHeight: height,
+        rooms: current.rooms.map((room) => ({ ...room, ceilingGeometryApproved: false })),
+      };
+      if (next.floorToFloorHeightUserSet) return next;
+      return { ...next, floorToFloorHeight: effectiveFloorToFloorHeight(next) };
+    });
   }
 
   function applyFloorDefaultCeilingHeightToRooms() {
@@ -6286,8 +6355,9 @@ export function TakeoffApp() {
   function addFloor() {
     pushUndoSnapshot("add floor");
     const floorNumber = floors.length + 1;
-    const previousTop = floors.reduce((maxElevation, entry) => Math.max(maxElevation, (entry.elevation ?? 0) + (entry.floorToFloorHeight ?? 10)), 0);
+    const previousTop = floors.reduce((maxElevation, entry) => Math.max(maxElevation, (entry.elevation ?? 0) + effectiveFloorToFloorHeight(entry)), 0);
     const base = floor;
+    const baseStackHeight = effectiveFloorToFloorHeight(base);
     const nextFloor: TakeoffFloor = {
       ...makeInitialFloor(),
       id: nextId("floor"),
@@ -6296,7 +6366,8 @@ export function TakeoffApp() {
       scale: { ...base.scale },
       defaultCeilingHeight: base.defaultCeilingHeight,
       elevation: previousTop,
-      floorToFloorHeight: base.floorToFloorHeight ?? 10,
+      floorToFloorHeight: baseStackHeight,
+      floorToFloorHeightUserSet: base.floorToFloorHeightUserSet ?? false,
       bandJoistEnabled: floorBandJoistEnabled(base),
       bandJoistHeight: base.bandJoistHeight ?? defaultBandJoistHeight,
       bandJoistHeightUserSet: base.bandJoistHeightUserSet ?? false,
@@ -6314,7 +6385,8 @@ export function TakeoffApp() {
     const floorNumber = floors.length + 1;
     const base = floor;
     const existingNames = new Set(floors.map((entry) => entry.name.trim().toLowerCase()).filter(Boolean));
-    const nextElevation = (base.elevation ?? 0) - (base.floorToFloorHeight ?? 10);
+    const baseStackHeight = effectiveFloorToFloorHeight(base);
+    const nextElevation = (base.elevation ?? 0) - baseStackHeight;
     const lowestElevation = floors.reduce((minElevation, entry) => Math.min(minElevation, entry.elevation ?? 0), base.elevation ?? 0);
     const preferredName = nextElevation < lowestElevation - 0.01 ? "Basement" : "Lower Floor";
     const nextName = existingNames.has(preferredName.toLowerCase()) ? `${preferredName} ${floorNumber}` : preferredName;
@@ -6326,7 +6398,8 @@ export function TakeoffApp() {
       scale: { ...base.scale },
       defaultCeilingHeight: base.defaultCeilingHeight,
       elevation: nextElevation,
-      floorToFloorHeight: base.floorToFloorHeight ?? 10,
+      floorToFloorHeight: baseStackHeight,
+      floorToFloorHeightUserSet: base.floorToFloorHeightUserSet ?? false,
       bandJoistEnabled: floorBandJoistEnabled(base),
       bandJoistHeight: base.bandJoistHeight ?? defaultBandJoistHeight,
       bandJoistHeightUserSet: base.bandJoistHeightUserSet ?? false,
@@ -10289,20 +10362,32 @@ export function TakeoffApp() {
             <label>
               Floor-to-floor height
               <DimensionInput
-                value={floor.floorToFloorHeight ?? 10}
+                value={floorToFloorInputValue}
                 mode={dimensionInputMode}
                 min={0}
                 step={0.5}
-                onCommit={(value) => updateFloor({ floorToFloorHeight: value, coordinateSpace: "world_feet" })}
+                onCommit={(value) => updateFloor({ floorToFloorHeight: value, floorToFloorHeightUserSet: true, coordinateSpace: "world_feet" })}
               />
             </label>
+            {floorToFloorSuggestionDiffers && (
+              <div className="takeoff-stack-suggestion">
+                <span>Ceiling + band: <strong>{formatDimensionValue(floorToFloorSuggestion, dimensionInputMode)}</strong></span>
+                <button type="button" onClick={applySuggestedFloorToFloorHeight}>Use</button>
+              </div>
+            )}
+            {nextFloorAbove && nextFloorElevationDiffers && (
+              <div className="takeoff-stack-suggestion">
+                <span>{nextFloorAbove.name || "Next floor"} starts at <strong>{formatDimensionValue(nextFloorAbove.elevation ?? 0, dimensionInputMode)}</strong>; stack says <strong>{formatDimensionValue(expectedNextFloorElevation, dimensionInputMode)}</strong></span>
+                <button type="button" onClick={alignFloorsAboveToActiveStack}>Align</button>
+              </div>
+            )}
             <label className="check-field">Band joist load
               <input
                 type="checkbox"
                 checked={floorBandJoistEnabled(floor)}
                 onChange={(event) => {
                   const enabled = event.target.checked;
-                  updateFloor({
+                  updateFloorWithAutoStackHeight({
                     bandJoistEnabled: enabled,
                     bandJoistHeight: enabled && floorBandJoistHeight(floor) <= 0.01 ? defaultBandJoistHeight : floor.bandJoistHeight ?? defaultBandJoistHeight,
                     coordinateSpace: "world_feet",
@@ -10318,7 +10403,7 @@ export function TakeoffApp() {
                 min={0}
                 step={0.25}
                 disabled={!floorBandJoistEnabled(floor)}
-                onCommit={(value) => updateFloor({ bandJoistHeight: value, bandJoistHeightUserSet: true, coordinateSpace: "world_feet" })}
+                onCommit={(value) => updateFloorWithAutoStackHeight({ bandJoistHeight: value, bandJoistHeightUserSet: true, coordinateSpace: "world_feet" })}
               />
             </label>
             <label className="check-field">Mechanical ventilation

@@ -192,6 +192,7 @@ export type TakeoffFloor = {
   coordinateSpace?: "world_feet";
   elevation?: number;
   floorToFloorHeight?: number;
+  floorToFloorHeightUserSet?: boolean;
   bandJoistEnabled?: boolean;
   bandJoistHeight?: number;
   bandJoistHeightUserSet?: boolean;

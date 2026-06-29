@@ -1035,6 +1035,30 @@ button.toolbar-primary:hover {
   flex-direction: row;
 }
 
+.takeoff-stack-suggestion {
+  align-items: center;
+  background: #f4f8fb;
+  border: 1px solid #d7e2eb;
+  border-radius: 6px;
+  color: #405060;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  margin: -3px 0 9px;
+  padding: 7px 8px;
+}
+
+.takeoff-stack-suggestion span {
+  flex: 1 1 160px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.takeoff-stack-suggestion button {
+  padding: 4px 9px;
+}
+
 .takeoff-panel input,
 .takeoff-panel select {
   border: 1px solid #c9d3dc;
