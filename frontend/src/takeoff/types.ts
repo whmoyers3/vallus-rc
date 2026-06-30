@@ -15,6 +15,7 @@ export type TakeoffRoomComponentSource =
   | "vault-gable"
   | "tray-knee-wall"
   | "wall-gap-fill"
+  | "conditioned-wall-profile"
   | "band-joist"
   | "open-to-above-envelope"
   | "connected-volume";
