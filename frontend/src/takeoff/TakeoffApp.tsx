@@ -125,6 +125,8 @@ type ModelMeshPart = {
   assembly?: string;
   source?: TakeoffRoomComponentSource;
   geometryLabel?: string;
+  adjacency?: TakeoffWallAdjacency;
+  loadExempt?: boolean;
 };
 type ModelSurfaceSelection = {
   roomId: string;
@@ -138,10 +140,16 @@ type ModelSurfaceSelection = {
   assembly?: string;
   source?: TakeoffRoomComponentSource;
   geometryLabel?: string;
+  adjacency?: TakeoffWallAdjacency;
+  loadExempt?: boolean;
   width?: number;
   height?: number;
   sillHeight?: number;
   headHeight?: number;
+  placement?: TakeoffPoint;
+  wallStart?: TakeoffPoint;
+  wallEnd?: TakeoffPoint;
+  wallHeight?: number;
 };
 const walkthroughEyeHeightFt = 5 + 10 / 12;
 const walkthroughDefaultCameraDistanceFt = 0.35;
@@ -1087,6 +1095,7 @@ function ceilingGeometryInfo(room: TakeoffRectRoom, defaultCeilingHeight = 9) {
     ridgeDirection,
     ridgeOffset,
     ridgeRatio,
+    peakDelta,
     firstRun,
     secondRun,
     flatPeakWidth,
@@ -1169,6 +1178,8 @@ function ceilingWallSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoo
       if (edgeSharesSameHeightRoom(floor, room, edge, addedLowHeight)) continue;
       const length = distance(edge.a, edge.b);
       const direction = edgeDirectionFromRoom(edge, room);
+      const sharesConditionedRoom = !exteriorDirections.includes(direction) && edgeSharesConditionedRoom(floor, room, edge);
+      if (sharesConditionedRoom) continue;
       const area = Math.round(length * addedLowHeight * 10) / 10;
       if (area <= 0.5) continue;
       suggestions.push({
@@ -1204,20 +1215,38 @@ function ceilingWallSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoo
   const directions: Array<NonNullable<TakeoffRoomComponent["direction"]>> = [...vaultGableDirections(ceilingInfo)];
   const area = Math.round((ceilingInfo.gableArea / 2) * 10) / 10;
   suggestions.push(...directions.flatMap((direction, index) => {
-    if (!exteriorDirections.includes(direction) && gableEndSharesMatchingConditionedRoom(floor, room, direction, defaultCeilingHeight)) return [];
     const geometryLabel = `Gable ${index === 0 ? "A" : "B"}`;
-    const adjacency: TakeoffWallAdjacency = exteriorDirections.includes(direction) ? "outside" : "attic";
-    return [{
-      key: `ceiling-gable-${direction}`,
-      direction,
-      area,
-      label: geometryLabel,
-      description: `${geometryLabel} · ${direction}-side gable end`,
-      geometryLabel,
-      basis: "gable-end" as const,
-      source: "vault-gable" as const,
-      adjacency,
-    }];
+    const breakdown = gableEndLengthBreakdown(floor, room, direction);
+    const hasMatchingConditionedVault = gableEndSharesMatchingConditionedRoom(floor, room, direction, defaultCeilingHeight);
+    const rawConditionedLength = breakdown.conditionedLength > 0.25 || hasMatchingConditionedVault
+      ? Math.max(breakdown.conditionedLength, hasMatchingConditionedVault ? Math.max(0, breakdown.totalLength - breakdown.exteriorLength) : 0)
+      : 0;
+    const conditionedLength = Math.min(Math.max(0, breakdown.totalLength - breakdown.exteriorLength), rawConditionedLength);
+    const atticLength = Math.max(0, breakdown.totalLength - breakdown.exteriorLength - conditionedLength);
+    const rows = [
+      { key: "outside", adjacency: "outside" as const, length: breakdown.exteriorLength },
+      { key: "attic", adjacency: "attic" as const, length: atticLength },
+    ].filter((row) => row.length > 0.25 && breakdown.totalLength > 0.001);
+    const split = rows.length > 1;
+    return rows.map((row) => {
+      const rowArea = Math.round(area * Math.min(1, row.length / breakdown.totalLength) * 10) / 10;
+      const label = split
+        ? `${geometryLabel} - ${wallAdjacencyLabel(row.adjacency).replace(/ wall$/i, "")}`
+        : geometryLabel;
+      return {
+        key: `ceiling-gable-${direction}-${row.key}`,
+        direction,
+        area: rowArea,
+        label,
+        description: `${geometryLabel} · ${direction}-side gable end`,
+        geometryLabel,
+        basis: "gable-end" as const,
+        source: "vault-gable" as const,
+        adjacency: row.adjacency,
+        length: Math.round(row.length * 10) / 10,
+        addedHeight: Math.round(ceilingInfo.peakDelta * 10) / 10,
+      };
+    });
   }));
   return suggestions;
 }
@@ -1226,6 +1255,7 @@ function ceilingWallSuggestionApplied(room: TakeoffRectRoom, suggestion: Ceiling
   return roomSurfaceComponents(room, "wall").some((component) =>
     component.label === suggestion.label &&
     component.direction === suggestion.direction &&
+    (component.adjacency ?? suggestion.adjacency) === suggestion.adjacency &&
     Math.abs((component.area || 0) - Math.round(suggestion.area)) <= 0.5
   );
 }
@@ -2141,6 +2171,33 @@ function edgeSharesSameHeightRoom(floor: TakeoffFloor, room: TakeoffRectRoom, ed
   }) && addedHeight > 0;
 }
 
+function edgeSharesConditionedRoom(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  edge: { a: TakeoffPoint; b: TakeoffPoint },
+  minSharedLength = 0.25,
+) {
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  return floor.rooms.some((other) => {
+    if (other.id === room.id) return false;
+    return pointsToEdges(roomCorners(other)).some((otherEdge) =>
+      sharedSegmentLength(edge, otherEdge, tolerance) >= minSharedLength
+    );
+  });
+}
+
+function edgeSharesExteriorSegment(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  edge: { a: TakeoffPoint; b: TakeoffPoint },
+  minSharedLength = 0.25,
+) {
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  return roomExteriorSegments(floor, room).some((segment) =>
+    sharedSegmentLength(edge, segment, tolerance) >= minSharedLength
+  );
+}
+
 function roomsHaveMatchingVaultGeometry(first: TakeoffRectRoom, second: TakeoffRectRoom, defaultCeilingHeight = 9) {
   const firstInfo = ceilingGeometryInfo(first, defaultCeilingHeight);
   const secondInfo = ceilingGeometryInfo(second, defaultCeilingHeight);
@@ -2159,6 +2216,38 @@ function vaultGableDirections(ceilingInfo: ReturnType<typeof ceilingGeometryInfo
   return ceilingInfo.ridgeDirection === "N-S"
     ? ["N", "S"]
     : ["E", "W"];
+}
+
+function gableEndLengthBreakdown(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  direction: NonNullable<TakeoffRoomComponent["direction"]>,
+) {
+  const roomEdges = pointsToEdges(roomCorners(room))
+    .filter((edge) => edgeDirectionFromRoom(edge, room) === direction);
+  const totalLength = roomEdges.reduce((sum, edge) => sum + distance(edge.a, edge.b), 0);
+  if (totalLength <= 0.001) return { totalLength: 0, exteriorLength: 0, conditionedLength: 0, atticLength: 0 };
+  const exteriorLength = roomExteriorSegments(floor, room)
+    .filter((segment) => segment.direction === direction)
+    .reduce((sum, segment) => sum + segment.length, 0);
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  let conditionedLength = 0;
+  for (const edge of roomEdges) {
+    for (const other of floor.rooms) {
+      if (other.id === room.id) continue;
+      for (const otherEdge of pointsToEdges(roomCorners(other))) {
+        conditionedLength += sharedSegmentLength(edge, otherEdge, tolerance);
+      }
+    }
+  }
+  const cappedExteriorLength = Math.min(totalLength, exteriorLength);
+  const cappedConditionedLength = Math.min(Math.max(0, totalLength - cappedExteriorLength), conditionedLength);
+  return {
+    totalLength,
+    exteriorLength: cappedExteriorLength,
+    conditionedLength: cappedConditionedLength,
+    atticLength: Math.max(0, totalLength - cappedExteriorLength - cappedConditionedLength),
+  };
 }
 
 function gableEndSharesMatchingConditionedRoom(
@@ -4185,11 +4274,27 @@ function createPanelMesh(vertices: THREE.Vector3[], material: THREE.Material) {
   return new THREE.Mesh(geometry, material);
 }
 
-function raisedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, baseHeight: number, topHeight: number, material: THREE.Material): ModelMeshPart[] {
+function raisedWallMeshPartsForRoom(
+  floor: TakeoffFloor | undefined,
+  room: TakeoffRectRoom,
+  center: TakeoffPoint,
+  baseHeight: number,
+  topHeight: number,
+  kneeWallMaterial: THREE.Material,
+  exteriorWallMaterial = kneeWallMaterial,
+): ModelMeshPart[] {
   if (topHeight <= baseHeight + 0.01) return [];
-  return pointsToEdges(roomCorners(room)).map((edge) => {
+  return pointsToEdges(roomCorners(room)).flatMap((edge) => {
     const direction = edgeDirectionFromRoom(edge, room);
     const length = distance(edge.a, edge.b);
+    const conditioned = floor
+      ? edgeSharesConditionedRoom(floor, room, edge, Math.max(0.1, length * 0.5))
+      : false;
+    if (conditioned) return [];
+    const exterior = floor
+      ? edgeSharesExteriorSegment(floor, room, edge, Math.max(0.1, length * 0.5))
+      : false;
+    const material = exterior ? exteriorWallMaterial : kneeWallMaterial;
     return {
       mesh: createPanelMesh([
         modelPoint(edge.a, center, baseHeight),
@@ -4197,13 +4302,13 @@ function raisedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint,
         modelPoint(edge.b, center, topHeight),
         modelPoint(edge.a, center, topHeight),
       ], material),
-      kind: "knee-wall",
-      label: `${direction}-side raised wall band`,
+      kind: exterior ? "load-wall" : "knee-wall",
+      label: exterior ? `${direction}-side exterior raised wall band` : `${direction}-side raised wall band`,
       surface: "wall",
       direction,
       area: Number((length * Math.max(0, topHeight - baseHeight)).toFixed(3)),
       source: "raised-ceiling",
-      geometryLabel: `Raised wall band - ${direction}`,
+      geometryLabel: exterior ? `Exterior raised wall band - ${direction}` : `Raised wall band - ${direction}`,
     };
   });
 }
@@ -4380,6 +4485,12 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
   group.add(frame);
   group.add(fill);
   group.userData.roomId = room.id;
+  group.userData.openingPlacement = { x: Number(edge.point.x.toFixed(3)), y: Number(edge.point.y.toFixed(3)) };
+  group.userData.openingWall = {
+    start: { x: Number(edge.a.x.toFixed(3)), y: Number(edge.a.y.toFixed(3)) },
+    end: { x: Number(edge.b.x.toFixed(3)), y: Number(edge.b.y.toFixed(3)) },
+    height: Number(wallHeight.toFixed(3)),
+  };
   return group;
 }
 
@@ -4466,15 +4577,63 @@ function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCei
   ];
 }
 
-function vaultedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, kneeWallMaterial: THREE.Material): ModelMeshPart[] {
+function sortedUniqueEdgePoints(edge: { a: TakeoffPoint; b: TakeoffPoint }, points: TakeoffPoint[]) {
+  const dx = edge.b.x - edge.a.x;
+  const dy = edge.b.y - edge.a.y;
+  const length = Math.max(0.001, Math.hypot(dx, dy));
+  const ux = dx / length;
+  const uy = dy / length;
+  const sorted = [...points].sort((first, second) =>
+    ((first.x - edge.a.x) * ux + (first.y - edge.a.y) * uy) -
+    ((second.x - edge.a.x) * ux + (second.y - edge.a.y) * uy)
+  );
+  return sorted.filter((point, index) => index === 0 || distance(point, sorted[index - 1]) > 0.05);
+}
+
+function conditionedRoomBreakPointsForEdge(floor: TakeoffFloor | undefined, room: TakeoffRectRoom, edge: { a: TakeoffPoint; b: TakeoffPoint }) {
+  if (!floor) return [] as TakeoffPoint[];
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const breakPoints: TakeoffPoint[] = [];
+  for (const other of floor.rooms) {
+    if (other.id === room.id) continue;
+    for (const otherEdge of pointsToEdges(roomCorners(other))) {
+      const shared = sharedSegment(edge, otherEdge, tolerance);
+      if (!shared || shared.length <= 0.25) continue;
+      breakPoints.push(shared.a, shared.b);
+    }
+  }
+  return breakPoints;
+}
+
+function splitEdgeAtVaultAndConditionedRooms(
+  floor: TakeoffFloor | undefined,
+  room: TakeoffRectRoom,
+  edge: { a: TakeoffPoint; b: TakeoffPoint },
+  bounds: PlanRect,
+  ceilingInfo: ReturnType<typeof ceilingGeometryInfo>,
+) {
+  return sortedUniqueEdgePoints(edge, [
+    ...splitEdgeAtVaultRidge(edge, bounds, ceilingInfo),
+    ...conditionedRoomBreakPointsForEdge(floor, room, edge),
+  ]);
+}
+
+function vaultedWallMeshPartsForRoom(
+  floor: TakeoffFloor | undefined,
+  room: TakeoffRectRoom,
+  center: TakeoffPoint,
+  defaultCeilingHeight: number,
+  kneeWallMaterial: THREE.Material,
+  exteriorWallMaterial = kneeWallMaterial,
+): ModelMeshPart[] {
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
   const points = roomCorners(room);
   const bounds = polygonBounds(points);
   const parts: ModelMeshPart[] = [];
-  parts.push(...raisedWallMeshPartsForRoom(room, center, defaultCeilingHeight, ceilingInfo.lowHeight, kneeWallMaterial));
+  parts.push(...raisedWallMeshPartsForRoom(floor, room, center, defaultCeilingHeight, ceilingInfo.lowHeight, kneeWallMaterial, exteriorWallMaterial));
 
   for (const edge of pointsToEdges(points)) {
-    const splitPoints = splitEdgeAtVaultRidge(edge, bounds, ceilingInfo);
+    const splitPoints = splitEdgeAtVaultAndConditionedRooms(floor, room, edge, bounds, ceilingInfo);
     for (let index = 0; index < splitPoints.length - 1; index += 1) {
       const a = splitPoints[index];
       const b = splitPoints[index + 1];
@@ -4483,20 +4642,28 @@ function vaultedWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint
       if (Math.max(aHeight, bHeight) <= ceilingInfo.lowHeight + 0.01) continue;
       const direction = edgeDirectionFromRoom({ a, b }, room);
       const averageHeight = Math.max(0, ((aHeight + bHeight) / 2) - ceilingInfo.lowHeight);
+      const conditioned = floor
+        ? edgeSharesConditionedRoom(floor, room, { a, b }, Math.max(0.1, distance(a, b) * 0.5))
+        : false;
+      if (conditioned) continue;
+      const exterior = floor
+        ? edgeSharesExteriorSegment(floor, room, { a, b }, Math.max(0.1, distance(a, b) * 0.5))
+        : false;
+      const material = exterior ? exteriorWallMaterial : kneeWallMaterial;
       parts.push({
         mesh: createPanelMesh([
           modelPoint(a, center, ceilingInfo.lowHeight),
           modelPoint(b, center, ceilingInfo.lowHeight),
           modelPoint(b, center, bHeight),
           modelPoint(a, center, aHeight),
-        ], kneeWallMaterial),
-        kind: "knee-wall",
-        label: `${direction}-side vault gable / knee-wall panel`,
+        ], material),
+        kind: exterior ? "load-wall" : "knee-wall",
+        label: exterior ? `${direction}-side exterior vault gable panel` : `${direction}-side vault gable / knee-wall panel`,
         surface: "wall",
         direction,
         area: Number((distance(a, b) * averageHeight).toFixed(3)),
         source: "vault-gable",
-        geometryLabel: `Vault gable / knee-wall - ${direction}`,
+        geometryLabel: exterior ? `Exterior vault gable - ${direction}` : `Vault gable / knee-wall - ${direction}`,
       });
     }
   }
@@ -4534,11 +4701,18 @@ function trayWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, d
   return parts;
 }
 
-function ceilingWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, kneeWallMaterial: THREE.Material): ModelMeshPart[] {
+function ceilingWallMeshPartsForRoom(
+  floor: TakeoffFloor | undefined,
+  room: TakeoffRectRoom,
+  center: TakeoffPoint,
+  defaultCeilingHeight: number,
+  kneeWallMaterial: THREE.Material,
+  exteriorWallMaterial = kneeWallMaterial,
+): ModelMeshPart[] {
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
-  if (isVaultCeilingType(ceilingInfo.ceilingType)) return vaultedWallMeshPartsForRoom(room, center, defaultCeilingHeight, kneeWallMaterial);
+  if (isVaultCeilingType(ceilingInfo.ceilingType)) return vaultedWallMeshPartsForRoom(floor, room, center, defaultCeilingHeight, kneeWallMaterial, exteriorWallMaterial);
   if (ceilingInfo.ceilingType === "tray") return trayWallMeshPartsForRoom(room, center, defaultCeilingHeight, kneeWallMaterial);
-  return raisedWallMeshPartsForRoom(room, center, defaultCeilingHeight, room.ceilingHeight, kneeWallMaterial);
+  return raisedWallMeshPartsForRoom(floor, room, center, defaultCeilingHeight, room.ceilingHeight, kneeWallMaterial, exteriorWallMaterial);
 }
 
 function roomFor3DCeilingWallParts(sourceRoom: TakeoffRectRoom, renderedRoom: TakeoffRectRoom, baseWallHeight: number) {
@@ -4612,6 +4786,25 @@ function modelScheduleCategory(surface: TakeoffRoomComponent["surface"]) {
   return "Wall";
 }
 
+function modelSurfaceIsOpening(surface: ModelSurfaceSelection | null): surface is ModelSurfaceSelection & { componentId: string } {
+  return Boolean(surface?.componentId && (
+    surface.kind === "window" ||
+    surface.kind === "door" ||
+    surface.surface === "glass" ||
+    surface.surface === "door"
+  ));
+}
+
+function modelOpeningSurface(surface: ModelSurfaceSelection | null): "glass" | "door" {
+  return surface?.surface === "door" || surface?.kind === "door" ? "door" : "glass";
+}
+
+function modelSurfaceHasEditableOpeningPlacement(
+  surface: ModelSurfaceSelection | null,
+): surface is ModelSurfaceSelection & { componentId: string; wallStart: TakeoffPoint; wallEnd: TakeoffPoint } {
+  return modelSurfaceIsOpening(surface) && Boolean(surface.wallStart && surface.wallEnd);
+}
+
 function TakeoffModelPreview({
   floor,
   floors,
@@ -4678,6 +4871,10 @@ function TakeoffModelPreview({
   const [selectedSurface, setSelectedSurface] = useState<ModelSurfaceSelection | null>(null);
   const [hoveredSurface, setHoveredSurface] = useState<ModelSurfaceSelection | null>(null);
   const [selectedSurfaceAssembly, setSelectedSurfaceAssembly] = useState("");
+
+  useEffect(() => {
+    setSelectedSurface(null);
+  }, [activeFloorId]);
 
   const selectedSurfaceOptions = selectedSurface?.surface
     ? componentSchedule.filter((component) => component.category === modelScheduleCategory(selectedSurface.surface!))
@@ -4794,7 +4991,6 @@ function TakeoffModelPreview({
     const container = containerRef.current;
     if (!container) return;
     setHoveredSurface(null);
-    setSelectedSurface(null);
     const bounds = footprintBounds(floor);
     const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.depth / 2 };
     const width = Math.max(container.clientWidth, 720);
@@ -4975,8 +5171,16 @@ function TakeoffModelPreview({
             wallMesh.position.y += yOffset;
             scene.add(wallMesh);
           }
-          const generatedWallParts = ceilingWallMeshPartsForRoom(wallRoom, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial);
+          const generatedWallParts = ceilingWallMeshPartsForRoom(otherFloor, wallRoom, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial, passiveWallMaterial);
+          const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
           for (const part of generatedWallParts) {
+            const component = generatedWallComponents.find((candidate) =>
+              (!part.source || candidate.source === part.source) &&
+              (!part.direction || candidate.direction === part.direction)
+            );
+            if (component?.loadExempt || component?.adjacency === "conditioned") continue;
+            if (component?.adjacency === "outside") part.mesh.material = passiveWallMaterial;
+            if (component?.adjacency === "attic") part.mesh.material = passiveKneeWallMaterial;
             part.mesh.position.y += yOffset;
             scene.add(part.mesh);
           }
@@ -5127,20 +5331,29 @@ function TakeoffModelPreview({
         }
         const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
         const wallRoom = roomFor3DCeilingWallParts(sourceRoom, room, baseWallHeight);
-        const generatedWallParts = ceilingWallMeshPartsForRoom(wallRoom, center, floor.defaultCeilingHeight ?? 9, kneeWallMaterial);
+        const generatedExteriorWallMaterial = room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
+        const generatedWallParts = ceilingWallMeshPartsForRoom(floor, wallRoom, center, floor.defaultCeilingHeight ?? 9, kneeWallMaterial, generatedExteriorWallMaterial);
+        const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
         for (const part of generatedWallParts) {
-          const component = roomSurfaceComponents(room, "wall").find((candidate) =>
-            componentIsGeneratedCeilingWall(candidate) &&
+          const component = generatedWallComponents.find((candidate) =>
             (!part.source || candidate.source === part.source) &&
             (!part.direction || candidate.direction === part.direction)
           );
+          if (component?.loadExempt || component?.adjacency === "conditioned") continue;
+          const modelKind = component?.adjacency === "outside"
+            ? "load-wall"
+            : component?.adjacency === "attic"
+              ? "knee-wall"
+              : part.kind;
+          if (component?.adjacency === "outside") part.mesh.material = generatedExteriorWallMaterial;
+          if (component?.adjacency === "attic") part.mesh.material = kneeWallMaterial;
           part.mesh.position.y += activeFloorYOffset;
           part.mesh.userData.roomId = room.id;
           part.mesh.userData.modelSurface = {
             roomId: room.id,
             roomName: room.name,
-            kind: part.kind,
-            label: part.label,
+            kind: modelKind,
+            label: component?.label ?? part.label,
             surface: "wall",
             direction: part.direction,
             area: part.area,
@@ -5272,6 +5485,8 @@ function TakeoffModelPreview({
         const openingMesh = openingMeshForComponent(component, openingRoom, center, component.surface === "glass" ? glassMaterial : doorMaterial, openingFrameMaterial);
         if (openingMesh) {
           const verticalSpan = openingVerticalSpan(component);
+          const openingWall = openingMesh.userData.openingWall as { start: TakeoffPoint; end: TakeoffPoint; height: number } | undefined;
+          const openingPlacement = openingMesh.userData.openingPlacement as TakeoffPoint | undefined;
           openingMesh.position.y += activeFloorYOffset;
           openingMesh.userData.modelSurface = {
             roomId: room.id,
@@ -5287,6 +5502,10 @@ function TakeoffModelPreview({
             height: verticalSpan.height,
             sillHeight: verticalSpan.sillHeight,
             headHeight: verticalSpan.headHeight,
+            placement: openingPlacement ?? component.placement,
+            wallStart: openingWall?.start,
+            wallEnd: openingWall?.end,
+            wallHeight: openingWall?.height,
           } satisfies ModelSurfaceSelection;
           scene.add(openingMesh);
         }
@@ -5380,6 +5599,14 @@ function TakeoffModelPreview({
     const cameraEuler = new THREE.Euler().setFromQuaternion(camera.quaternion, "YXZ");
     let flyLookDrag: { pointerId: number; x: number; y: number } | null = null;
     let walkthroughLookDrag: { pointerId: number; x: number; y: number } | null = null;
+    let openingDrag: {
+      pointerId: number;
+      surface: ModelSurfaceSelection & { componentId: string; wallStart: TakeoffPoint; wallEnd: TakeoffPoint };
+      startX: number;
+      startY: number;
+      moved: boolean;
+      lastPatch: Partial<TakeoffRoomComponent> | null;
+    } | null = null;
     let lastAnimationTime = performance.now();
     const moveVector = new THREE.Vector3();
     const forwardVector = new THREE.Vector3();
@@ -5387,6 +5614,8 @@ function TakeoffModelPreview({
     const rightVector = new THREE.Vector3();
     const upVector = new THREE.Vector3(0, 1, 0);
     const walkthroughLookTarget = new THREE.Vector3();
+    const openingDragPlane = new THREE.Plane();
+    const openingDragHit = new THREE.Vector3();
 
     function isEditableKeyboardTarget(target: EventTarget | null) {
       if (!(target instanceof HTMLElement)) return false;
@@ -5515,8 +5744,49 @@ function TakeoffModelPreview({
       return undefined;
     }
 
+    function openingPatchFromPointer(event: PointerEvent, drag: NonNullable<typeof openingDrag>) {
+      const wallStart = drag.surface.wallStart;
+      const wallEnd = drag.surface.wallEnd;
+      const wallDx = wallEnd.x - wallStart.x;
+      const wallDz = wallEnd.y - wallStart.y;
+      const wallLength = Math.max(0.001, Math.hypot(wallDx, wallDz));
+      const wallUx = wallDx / wallLength;
+      const wallUz = wallDz / wallLength;
+      const wallNormal = new THREE.Vector3(-wallUz, 0, wallUx);
+      openingDragPlane.setFromNormalAndCoplanarPoint(
+        wallNormal,
+        new THREE.Vector3(wallStart.x - center.x, activeFloorYOffset, wallStart.y - center.y),
+      );
+      setPointerFromEvent(event);
+      raycaster.setFromCamera(pointer, camera);
+      if (!raycaster.ray.intersectPlane(openingDragPlane, openingDragHit)) return null;
+      const surfaceKind = modelOpeningSurface(drag.surface);
+      const openingWidth = Math.max(0.1, drag.surface.width ?? 3);
+      const openingHeight = Math.max(0.1, drag.surface.height ?? defaultOpeningHeight(surfaceKind));
+      const wallHeight = Math.max(openingHeight, drag.surface.wallHeight ?? drag.surface.headHeight ?? openingHeight);
+      const rawAlong = ((openingDragHit.x + center.x - wallStart.x) * wallUx) + ((openingDragHit.z + center.y - wallStart.y) * wallUz);
+      const along = wallLength <= openingWidth
+        ? wallLength / 2
+        : clamp(rawAlong, openingWidth / 2, wallLength - openingWidth / 2);
+      const maxCenterHeight = Math.max(openingHeight / 2, wallHeight - openingHeight / 2);
+      const rawCenterHeight = openingDragHit.y - activeFloorYOffset;
+      const centerHeight = wallHeight <= openingHeight
+        ? wallHeight / 2
+        : clamp(rawCenterHeight, openingHeight / 2, maxCenterHeight);
+      const sillHeight = Number(Math.max(0, centerHeight - openingHeight / 2).toFixed(3));
+      const headHeight = Number((sillHeight + openingHeight).toFixed(3));
+      return {
+        placement: {
+          x: Number((wallStart.x + wallUx * along).toFixed(3)),
+          y: Number((wallStart.y + wallUz * along).toFixed(3)),
+        },
+        sillHeight,
+        headHeight,
+      } satisfies Partial<TakeoffRoomComponent>;
+    }
+
     function updateHover(event: PointerEvent) {
-      if ((cameraModeRef.current !== "orbit" && cameraModeRef.current !== "walkthrough") || walkthroughLookDrag) {
+      if ((cameraModeRef.current !== "orbit" && cameraModeRef.current !== "walkthrough") || walkthroughLookDrag || openingDrag) {
         clearHover();
         return;
       }
@@ -5572,11 +5842,33 @@ function TakeoffModelPreview({
       if (surface) {
         setSelectedSurface(surface);
         onSelectRoom(surface.roomId);
+        if (modelSurfaceHasEditableOpeningPlacement(surface)) {
+          event.preventDefault();
+          renderer.domElement.focus();
+          openingDrag = {
+            pointerId: event.pointerId,
+            surface,
+            startX: event.clientX,
+            startY: event.clientY,
+            moved: false,
+            lastPatch: null,
+          };
+          controls.enabled = false;
+          renderer.domElement.setPointerCapture(event.pointerId);
+          clearHover();
+        }
         return;
       }
       if (hit.object.userData.roomId) onSelectRoom(hit.object.userData.roomId);
     }
     function handlePointerMove(event: PointerEvent) {
+      if (openingDrag && event.pointerId === openingDrag.pointerId) {
+        event.preventDefault();
+        const dragDistance = Math.hypot(event.clientX - openingDrag.startX, event.clientY - openingDrag.startY);
+        if (dragDistance > 3) openingDrag.moved = true;
+        if (openingDrag.moved) openingDrag.lastPatch = openingPatchFromPointer(event, openingDrag);
+        return;
+      }
       if (flyLookDrag && cameraModeRef.current === "fly" && event.pointerId === flyLookDrag.pointerId) {
         event.preventDefault();
         rotateInspectionCamera(event.clientX - flyLookDrag.x, event.clientY - flyLookDrag.y);
@@ -5594,6 +5886,26 @@ function TakeoffModelPreview({
       }
     }
     function handlePointerUp(event: PointerEvent) {
+      if (openingDrag && event.pointerId === openingDrag.pointerId) {
+        event.preventDefault();
+        const drag = openingDrag;
+        const patch = drag.moved
+          ? openingPatchFromPointer(event, drag) ?? drag.lastPatch
+          : null;
+        if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+        openingDrag = null;
+        controls.enabled = cameraModeRef.current === "orbit";
+        if (patch) {
+          const target = { roomId: drag.surface.roomId, componentId: drag.surface.componentId };
+          onUpdateOpeningComponent(target, patch);
+          setSelectedSurface((current) => (
+            current && current.componentId === drag.surface.componentId
+              ? { ...current, ...patch }
+              : current
+          ));
+        }
+        return;
+      }
       if (flyLookDrag && event.pointerId === flyLookDrag.pointerId) {
         if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
         flyLookDrag = null;
@@ -5737,21 +6049,35 @@ function TakeoffModelPreview({
       hoverOutlineMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [activeFloorId, cameraMode, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers, walkthroughComponentTransparency]);
+  }, [activeFloorId, cameraMode, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, onUpdateOpeningComponent, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers, walkthroughComponentTransparency]);
 
-  const selectedOpeningTarget = selectedSurface?.componentId && (selectedSurface.kind === "window" || selectedSurface.kind === "door")
+  const selectedOpeningTarget = modelSurfaceIsOpening(selectedSurface)
     ? { roomId: selectedSurface.roomId, componentId: selectedSurface.componentId }
     : null;
-  const selectedOpeningDimensions = selectedOpeningTarget
-    ? {
-        width: Math.max(0.1, selectedSurface?.width ?? 3),
-        height: Math.max(0.1, selectedSurface?.height ?? defaultOpeningHeight(selectedSurface?.surface === "door" ? "door" : "glass")),
-        sillHeight: Math.max(0, selectedSurface?.sillHeight ?? defaultOpeningSillHeight(selectedSurface?.surface === "door" ? "door" : "glass")),
-        headHeight: Math.max(0.1, selectedSurface?.headHeight ?? (selectedSurface?.sillHeight ?? 0) + (selectedSurface?.height ?? defaultWindowHeight)),
-      }
+  const selectedOpeningDimensions = selectedOpeningTarget && selectedSurface
+    ? (() => {
+        const surface = modelOpeningSurface(selectedSurface);
+        const width = Math.max(0.1, selectedSurface.width ?? 3);
+        const fallbackHeight = defaultOpeningHeight(surface);
+        const sillHeight = Math.max(0, selectedSurface.sillHeight ?? defaultOpeningSillHeight(surface));
+        const headHeight = Math.max(
+          sillHeight + 0.1,
+          selectedSurface.headHeight ?? sillHeight + Math.max(0.1, selectedSurface.height ?? fallbackHeight),
+        );
+        const height = Number(Math.max(0.1, headHeight - sillHeight).toFixed(3));
+        return {
+          surface,
+          width,
+          height,
+          sillHeight,
+          headHeight,
+          area: Number((width * height).toFixed(2)),
+          assembly: selectedSurface.assembly ?? "",
+        };
+      })()
     : null;
 
-  function updateSelectedOpeningVertical(patch: Partial<Pick<TakeoffRoomComponent, "height" | "sillHeight" | "headHeight" | "area">>) {
+  function updateSelectedOpeningComponent(patch: Partial<TakeoffRoomComponent>) {
     if (!selectedOpeningTarget || !selectedOpeningDimensions) return;
     onUpdateOpeningComponent(selectedOpeningTarget, patch);
     setSelectedSurface((current) => {
@@ -5853,42 +6179,96 @@ function TakeoffModelPreview({
           {selectedSurface.area !== undefined && <span>{Math.round(selectedSurface.area)} sf</span>}
           {selectedOpeningDimensions ? (
             <div className="takeoff-model-opening-controls">
-              <span>
+              <span className="takeoff-model-opening-summary">
                 {formatDimensionValue(selectedOpeningDimensions.width, dimensionInputMode)} x {formatDimensionValue(selectedOpeningDimensions.height, dimensionInputMode)}
+                {" · "}
+                sill {formatDimensionValue(selectedOpeningDimensions.sillHeight, dimensionInputMode)}
               </span>
               <label>
-                Sill
-                <DimensionInput
-                  value={selectedOpeningDimensions.sillHeight}
-                  mode={dimensionInputMode}
-                  min={0}
-                  step={0.25}
-                  onCommit={(value) => {
-                    const sillHeight = Number(Math.max(0, value).toFixed(3));
-                    const headHeight = Number((sillHeight + selectedOpeningDimensions.height).toFixed(3));
-                    updateSelectedOpeningVertical({ sillHeight, headHeight });
-                  }}
-                />
+                Assembly
+                <select
+                  value={selectedOpeningDimensions.assembly || selectedSurfaceOptions[0]?.code || ""}
+                  onChange={(event) => updateSelectedOpeningComponent({ assembly: event.target.value })}
+                >
+                  {selectedSurfaceOptions.map((option) => (
+                    <option key={option.id} value={option.code}>
+                      {option.code} - {option.description}
+                    </option>
+                  ))}
+                </select>
               </label>
-              <label>
-                Head
-                <DimensionInput
-                  value={selectedOpeningDimensions.headHeight}
-                  mode={dimensionInputMode}
-                  min={0.1}
-                  step={0.25}
-                  onCommit={(value) => {
-                    const headHeight = Number(Math.max(selectedOpeningDimensions.sillHeight + 0.1, value).toFixed(3));
-                    const height = Number((headHeight - selectedOpeningDimensions.sillHeight).toFixed(3));
-                    updateSelectedOpeningVertical({
-                      headHeight,
-                      height,
-                      area: Number((selectedOpeningDimensions.width * height).toFixed(2)),
-                    });
-                  }}
-                />
-              </label>
+              <div className="takeoff-model-opening-dimension-grid">
+                <label>
+                  Width
+                  <DimensionInput
+                    value={selectedOpeningDimensions.width}
+                    mode={dimensionInputMode}
+                    min={0.1}
+                    step={0.25}
+                    onCommit={(value) => {
+                      const width = Number(Math.max(0.1, value).toFixed(3));
+                      updateSelectedOpeningComponent({
+                        width,
+                        area: Number((width * selectedOpeningDimensions.height).toFixed(2)),
+                      });
+                    }}
+                  />
+                </label>
+                <label>
+                  Height
+                  <DimensionInput
+                    value={selectedOpeningDimensions.height}
+                    mode={dimensionInputMode}
+                    min={0.1}
+                    step={0.25}
+                    onCommit={(value) => {
+                      const height = Number(Math.max(0.1, value).toFixed(3));
+                      const headHeight = Number((selectedOpeningDimensions.sillHeight + height).toFixed(3));
+                      updateSelectedOpeningComponent({
+                        height,
+                        headHeight,
+                        area: Number((selectedOpeningDimensions.width * height).toFixed(2)),
+                      });
+                    }}
+                  />
+                </label>
+                <label>
+                  Sill
+                  <DimensionInput
+                    value={selectedOpeningDimensions.sillHeight}
+                    mode={dimensionInputMode}
+                    min={0}
+                    step={0.25}
+                    onCommit={(value) => {
+                      const sillHeight = Number(Math.max(0, value).toFixed(3));
+                      const headHeight = Number((sillHeight + selectedOpeningDimensions.height).toFixed(3));
+                      updateSelectedOpeningComponent({ sillHeight, headHeight });
+                    }}
+                  />
+                </label>
+                <label>
+                  Head
+                  <DimensionInput
+                    value={selectedOpeningDimensions.headHeight}
+                    mode={dimensionInputMode}
+                    min={0.1}
+                    step={0.25}
+                    onCommit={(value) => {
+                      const headHeight = Number(Math.max(selectedOpeningDimensions.sillHeight + 0.1, value).toFixed(3));
+                      const height = Number((headHeight - selectedOpeningDimensions.sillHeight).toFixed(3));
+                      updateSelectedOpeningComponent({
+                        headHeight,
+                        height,
+                        area: Number((selectedOpeningDimensions.width * height).toFixed(2)),
+                      });
+                    }}
+                  />
+                </label>
+              </div>
+              <span className="takeoff-model-opening-hint">Drag in 3D to slide on the wall and set height.</span>
             </div>
+          ) : selectedSurface.loadExempt || selectedSurface.adjacency === "conditioned" ? (
+            <span>Conditioned adjacency - no load.</span>
           ) : selectedSurface.surface && selectedSurfaceOptions.length > 0 ? (
             <>
               <select value={selectedSurfaceAssembly} onChange={(event) => setSelectedSurfaceAssembly(event.target.value)}>
@@ -7390,7 +7770,11 @@ export function TakeoffApp() {
     };
     const roomEdges = pointsToEdges(points);
     const wallComponents = roomSurfaceComponents(room, "wall");
-    const generatedWallComponents = wallComponents.filter(componentIsGeneratedCeilingWall);
+    const generatedWallComponents = wallComponents.filter((component) =>
+      componentIsGeneratedCeilingWall(component) &&
+      !component.loadExempt &&
+      component.adjacency !== "conditioned"
+    );
     const glassComponents = roomSurfaceComponents(room, "glass");
     const doorComponents = roomSurfaceComponents(room, "door");
     const floorComponent = roomSurfaceComponents(room, "floor")[0];
@@ -7613,6 +7997,11 @@ export function TakeoffApp() {
             if (matchingGeneratedWalls.length === 0) return [];
             return matchingGeneratedWalls.map((component) => {
               const active = isActive("wall", direction);
+              const generatedAdjacencyClass = component.adjacency === "outside"
+                ? "takeoff-room-sketch-wall--generated-exterior"
+                : component.adjacency === "attic"
+                  ? "takeoff-room-sketch-wall--attic"
+                  : "";
               if (component.source === "vault-gable") {
                 const peakPoints = gablePeakPointsForDirection(direction);
                 if (!peakPoints) return null;
@@ -7626,7 +8015,7 @@ export function TakeoffApp() {
                 return (
                   <g
                     key={`generated-${component.id}-${edge.a.x}-${edge.a.y}`}
-                    className={`takeoff-room-sketch-wall takeoff-room-sketch-wall--generated ${active ? "takeoff-room-sketch-panel--active" : ""}`}
+                    className={`takeoff-room-sketch-wall takeoff-room-sketch-wall--generated ${generatedAdjacencyClass} ${active ? "takeoff-room-sketch-panel--active" : ""}`}
                     onClick={() => focusRoomSketchPanel(room.id, "wall", direction)}
                   >
                     <polygon points={panel.map((point) => `${point.x},${point.y}`).join(" ")} />
@@ -7639,7 +8028,7 @@ export function TakeoffApp() {
               return (
                 <g
                   key={`generated-${component.id}-${edge.a.x}-${edge.a.y}`}
-                  className={`takeoff-room-sketch-wall takeoff-room-sketch-wall--generated ${component.adjacency === "attic" ? "takeoff-room-sketch-wall--attic" : ""} ${active ? "takeoff-room-sketch-panel--active" : ""}`}
+                  className={`takeoff-room-sketch-wall takeoff-room-sketch-wall--generated ${generatedAdjacencyClass} ${active ? "takeoff-room-sketch-panel--active" : ""}`}
                   onClick={() => focusRoomSketchPanel(room.id, "wall", direction)}
                 >
                   <polygon points={band.map((point) => `${point.x},${point.y}`).join(" ")} />
@@ -8027,7 +8416,8 @@ export function TakeoffApp() {
           const existing = components.find((component) => component.surface === "wall" && component.label === suggestion.label);
           const key = `${room.id}:${suggestion.key}`;
           const adjacency = wallAdjacencies[key] || existing?.adjacency || suggestion.adjacency;
-          const assembly = wallAssemblies[key] || existing?.assembly || defaultWallAssemblyForAdjacency(adjacency);
+          const loadExempt = adjacency === "conditioned";
+          const assembly = loadExempt ? "NO_LOAD" : wallAssemblies[key] || existing?.assembly || defaultWallAssemblyForAdjacency(adjacency);
           return {
             ...(existing ?? defaultComponent("wall", suggestion.area)),
             assembly,
@@ -8037,6 +8427,8 @@ export function TakeoffApp() {
             geometryLabel: suggestion.geometryLabel,
             source: suggestion.source,
             adjacency,
+            boundary: loadExempt ? "partition" : existing?.boundary,
+            loadExempt,
           };
         });
         const baseComponents = components.filter((component) =>
@@ -8102,10 +8494,30 @@ export function TakeoffApp() {
   }
 
   function updateOpeningComponentFromModel(target: OpeningMoveTarget, patch: Partial<TakeoffRoomComponent>) {
-    updateRoomComponent(target.roomId, target.componentId, patch);
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== target.roomId) return room;
+        return {
+          ...room,
+          components: roomComponents(room).map((component) => {
+            if (component.id !== target.componentId) return component;
+            const nextComponent = { ...component, ...patch };
+            if (!patch.placement || nextComponent.surface !== "glass") return nextComponent;
+            const adjacentKinds = adjacentKindsForPlacedOpening(current, room, nextComponent);
+            const solarDirection = adjacentKinds.includes("covered_porch") ? "Shaded" : undefined;
+            return {
+              ...nextComponent,
+              solarDirection,
+              label: isAutoOpeningLabel(nextComponent.label) ? defaultOpeningLabel("glass", solarDirection) : nextComponent.label,
+            };
+          }),
+        };
+      }),
+    }));
     setSelectedRoomId(target.roomId);
     setSelectedOpening(target);
-    setMessage("Opening vertical placement updated from 3D QA.");
+    setMessage(patch.placement ? "Opening moved from 3D QA." : "Opening updated from 3D QA.");
   }
 
   function updateRoomComponentAssembly(roomId: string, componentId: string, surface: TakeoffRoomComponent["surface"], assembly: string) {
@@ -12572,7 +12984,8 @@ export function TakeoffApp() {
                                     const key = `${selectedRoom.id}:${suggestion.key}`;
                                     const applied = ceilingWallSuggestionApplied(selectedRoom, suggestion);
                                     const selectedAdjacency = ceilingWallAdjacencies[key] || suggestion.adjacency;
-                                    const selectedAssembly = ceilingWallAssemblies[key] || defaultWallAssemblyForAdjacency(selectedAdjacency);
+                                    const suggestionNoLoad = selectedAdjacency === "conditioned";
+                                    const selectedAssembly = suggestionNoLoad ? "NO_LOAD" : ceilingWallAssemblies[key] || defaultWallAssemblyForAdjacency(selectedAdjacency);
                                     return (
                                       <button
                                         key={suggestion.key}
@@ -12611,15 +13024,15 @@ export function TakeoffApp() {
                                         </select>
                                         <select
                                           value={selectedAssembly}
-                                          disabled={applied}
+                                          disabled={applied || suggestionNoLoad}
                                           onClick={(event) => event.stopPropagation()}
                                           onChange={(event) => setCeilingWallAssemblies((current) => ({ ...current, [key]: event.target.value }))}
                                         >
-                                          {scheduleOptionsBySurface.wall.map((option) => (
+                                          {suggestionNoLoad ? <option value="NO_LOAD">NO_LOAD - Conditioned</option> : scheduleOptionsBySurface.wall.map((option) => (
                                             <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
                                           ))}
                                         </select>
-                                        <em>{applied ? "Added" : "Pending"}</em>
+                                        <em>{applied ? "Added" : suggestionNoLoad ? "No load" : "Pending"}</em>
                                       </button>
                                     );
                                   })}

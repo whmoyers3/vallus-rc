@@ -1656,7 +1656,7 @@ button.toolbar-primary:hover {
   font-size: 12px;
   gap: 6px;
   left: 12px;
-  max-width: 260px;
+  max-width: 292px;
   padding: 9px 10px;
   position: absolute;
   top: 222px;
@@ -1690,6 +1690,23 @@ button.toolbar-primary:hover {
   gap: 7px;
 }
 
+.takeoff-model-opening-summary,
+.takeoff-model-opening-hint {
+  color: #526575;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.takeoff-model-opening-hint {
+  font-weight: 600;
+}
+
+.takeoff-model-opening-dimension-grid {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .takeoff-model-opening-controls label {
   color: #5a6a77;
   display: grid;
@@ -1697,6 +1714,7 @@ button.toolbar-primary:hover {
   gap: 3px;
 }
 
+.takeoff-model-opening-controls select,
 .takeoff-model-opening-controls input {
   width: 100%;
 }
@@ -2776,6 +2794,11 @@ button.toolbar-primary:hover {
   stroke: #785696;
 }
 
+.takeoff-room-sketch-wall--generated-exterior polygon {
+  fill: rgba(72, 128, 93, 0.18);
+  stroke: #4e7f63;
+}
+
 .takeoff-room-sketch-ceiling polygon {
   fill: rgba(179, 91, 47, 0.16);
   stroke: #b35b2f;
@@ -2800,6 +2823,11 @@ button.toolbar-primary:hover {
 .takeoff-room-sketch--ceiling .takeoff-room-sketch-wall--attic polygon {
   fill: rgba(120, 86, 150, 0.16);
   stroke: #785696;
+}
+
+.takeoff-room-sketch--ceiling .takeoff-room-sketch-wall--generated-exterior polygon {
+  fill: rgba(72, 128, 93, 0.18);
+  stroke: #4e7f63;
 }
 
 .takeoff-room-sketch--ceiling .takeoff-room-sketch-opening circle {
