@@ -14,6 +14,7 @@ export type TakeoffRoomComponentSource =
   | "raised-ceiling"
   | "vault-gable"
   | "tray-knee-wall"
+  | "wall-gap-fill"
   | "band-joist"
   | "open-to-above-envelope"
   | "connected-volume";
@@ -55,6 +56,7 @@ export type TakeoffRoomComponent = {
   zMin?: number;
   zMax?: number;
   panelPolygons?: TakeoffPoint[][];
+  wallProfilePolygons?: TakeoffPoint[][];
   solarDirection?: "Shaded" | "Skylight";
 };
 
