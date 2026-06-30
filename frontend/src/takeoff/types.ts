@@ -43,6 +43,8 @@ export type TakeoffRoomComponent = {
   direction?: "N" | "NE" | "E" | "SE" | "S" | "SW" | "W" | "NW";
   label?: string;
   placement?: TakeoffPoint;
+  sillHeight?: number;
+  headHeight?: number;
   source?: TakeoffRoomComponentSource;
   adjacency?: TakeoffWallAdjacency;
   boundary?: TakeoffBoundaryType;
