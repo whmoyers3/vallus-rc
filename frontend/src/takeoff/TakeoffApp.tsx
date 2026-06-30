@@ -41,6 +41,10 @@ const pdfPreviewMaxDimension = 2800;
 const minPlanZoom = 0.5;
 const maxPlanZoom = 8;
 const planZoomStep = 0.25;
+const defaultWindowSillHeight = 3;
+const defaultWindowHeight = 5;
+const defaultDoorSillHeight = 0;
+const defaultDoorHeight = 6.67;
 const componentCategories: TakeoffComponentCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
 const allComponentSurfaces: TakeoffRoomComponent["surface"][] = ["floor", "ceiling", "wall", "glass", "door"];
 const defaultComponentSchedule: TakeoffComponentDefinition[] = [
@@ -86,6 +90,8 @@ type OpeningPlacement = {
   assembly: string;
   width: number;
   height: number;
+  sillHeight: number;
+  headHeight: number;
   label: string;
   solarDirection?: TakeoffRoomComponent["solarDirection"];
 } | null;
@@ -132,6 +138,10 @@ type ModelSurfaceSelection = {
   assembly?: string;
   source?: TakeoffRoomComponentSource;
   geometryLabel?: string;
+  width?: number;
+  height?: number;
+  sillHeight?: number;
+  headHeight?: number;
 };
 const walkthroughEyeHeightFt = 5 + 10 / 12;
 const walkthroughDefaultCameraDistanceFt = 0.35;
@@ -1340,18 +1350,78 @@ function defaultComponent(surface: TakeoffRoomComponent["surface"], area: number
     door: { assembly: "D1", label: "Door", direction: "S" },
   };
   const fallback = defaults[surface];
+  const openingDefaults = isOpeningSurface(surface)
+    ? {
+        width: 3,
+        height: defaultOpeningHeight(surface),
+        sillHeight: defaultOpeningSillHeight(surface),
+        headHeight: defaultOpeningSillHeight(surface) + defaultOpeningHeight(surface),
+      }
+    : null;
   return {
     id: nextId(`component-${surface}`),
     surface,
     assembly: fallback.assembly,
-    area: Math.max(0, Math.round(area)),
+    area: openingDefaults ? Number((openingDefaults.width * openingDefaults.height).toFixed(2)) : Math.max(0, Math.round(area)),
     direction: fallback.direction,
     label: fallback.label,
+    ...(openingDefaults ?? {}),
   };
 }
 
 function defaultRoomComponents(area: number): TakeoffRoomComponent[] {
   return [defaultComponent("floor", area), defaultComponent("ceiling", area)];
+}
+
+function isOpeningSurface(surface: TakeoffRoomComponent["surface"]): surface is "glass" | "door" {
+  return surface === "glass" || surface === "door";
+}
+
+function isOpeningComponent(component: TakeoffRoomComponent) {
+  return isOpeningSurface(component.surface);
+}
+
+function defaultOpeningSillHeight(surface: "glass" | "door") {
+  return surface === "door" ? defaultDoorSillHeight : defaultWindowSillHeight;
+}
+
+function defaultOpeningHeight(surface: "glass" | "door") {
+  return surface === "door" ? defaultDoorHeight : defaultWindowHeight;
+}
+
+function openingWidthForComponent(component: TakeoffRoomComponent) {
+  const fallbackHeight = isOpeningSurface(component.surface) ? defaultOpeningHeight(component.surface) : defaultWindowHeight;
+  if (component.width && component.width > 0) return component.width;
+  if (component.area > 0 && fallbackHeight > 0) return Number(Math.max(1.5, component.area / fallbackHeight).toFixed(3));
+  return 3;
+}
+
+function openingHeightForComponent(component: TakeoffRoomComponent) {
+  if (component.height && component.height > 0) return component.height;
+  const width = openingWidthForComponent(component);
+  if (component.area > 0 && width > 0) return Number(Math.max(0.5, component.area / width).toFixed(3));
+  return isOpeningSurface(component.surface) ? defaultOpeningHeight(component.surface) : defaultWindowHeight;
+}
+
+function openingVerticalSpan(component: TakeoffRoomComponent) {
+  const surface = isOpeningSurface(component.surface) ? component.surface : "glass";
+  const fallbackHeight = openingHeightForComponent(component);
+  const fallbackSill = defaultOpeningSillHeight(surface);
+  const hasSill = Number.isFinite(component.sillHeight);
+  const hasHead = Number.isFinite(component.headHeight);
+  const sillHeight = hasSill
+    ? Math.max(0, component.sillHeight!)
+    : hasHead
+      ? Math.max(0, component.headHeight! - fallbackHeight)
+      : fallbackSill;
+  const headHeight = hasHead
+    ? Math.max(sillHeight + 0.1, component.headHeight!)
+    : sillHeight + fallbackHeight;
+  return {
+    sillHeight: Number(sillHeight.toFixed(3)),
+    headHeight: Number(headHeight.toFixed(3)),
+    height: Number(Math.max(0.1, headHeight - sillHeight).toFixed(3)),
+  };
 }
 
 function componentSurfaceLabel(surface: TakeoffRoomComponent["surface"]) {
@@ -1451,11 +1521,16 @@ function assignedWallAreaByDirection(room: TakeoffRectRoom) {
   return walls;
 }
 
-function openingHostWallAreaByDirection(room: TakeoffRectRoom) {
+function openingHostWallAreaByDirection(room: TakeoffRectRoom, floor?: TakeoffFloor, floors: TakeoffFloor[] = floor ? [floor] : []) {
   const walls = new Map<(typeof directionOptions)[number], number>();
   for (const component of roomComponents(room)) {
     if (component.surface !== "wall" || !isCompassDirection(component.direction) || !wallCanHostOpenings(component)) continue;
     walls.set(component.direction, (walls.get(component.direction) ?? 0) + Math.max(0, component.area || 0));
+  }
+  if (floor) {
+    for (const extension of openToAboveWallExtensionsForRoom(floor, room, floors)) {
+      walls.set(extension.direction, (walls.get(extension.direction) ?? 0) + Math.max(0, extension.length * extension.addedHeight));
+    }
   }
   return walls;
 }
@@ -1539,6 +1614,72 @@ function exportedWallComponent(component: TakeoffRoomComponent): TakeoffRoomComp
   };
 }
 
+function intervalOverlap(aMin: number, aMax: number, bMin: number, bMax: number) {
+  return Math.max(0, Math.min(aMax, bMax) - Math.max(aMin, bMin));
+}
+
+function wallCanReceiveOpeningSubtractions(component: TakeoffRoomComponent) {
+  if (component.surface !== "wall" || !isCompassDirection(component.direction)) return false;
+  if (wallCanHostOpenings(component)) return true;
+  if (component.source !== "open-to-above-envelope") return false;
+  return component.adjacency == null || component.adjacency === "outside" || component.adjacency === "garage" || component.adjacency === "unknown";
+}
+
+function wallVerticalSpanForOpeningSubtraction(floor: TakeoffFloor, room: TakeoffRectRoom, component: TakeoffRoomComponent) {
+  if (Number.isFinite(component.zMin) && Number.isFinite(component.zMax) && component.zMax! > component.zMin!) {
+    return { zMin: Math.max(0, component.zMin!), zMax: Math.max(0, component.zMax!) };
+  }
+  return { zMin: 0, zMax: Math.max(0, baseEnvelopeHeightForWallSuggestion(floor, room)) };
+}
+
+function openingSubtractionsForRoom(room: TakeoffRectRoom) {
+  return roomComponents(room)
+    .filter((component) => isOpeningComponent(component) && isCompassDirection(component.direction))
+    .map((component) => {
+      const span = openingVerticalSpan(component);
+      return {
+        component,
+        direction: component.direction as (typeof directionOptions)[number],
+        area: Math.max(0, component.area || 0),
+        zMin: span.sillHeight,
+        zMax: span.headHeight,
+        height: Math.max(0.1, span.height),
+      };
+    })
+    .filter((entry) => entry.area > 0 && entry.zMax > entry.zMin);
+}
+
+function netWallComponentsOfOpenings(
+  floor: TakeoffFloor,
+  room: TakeoffRectRoom,
+  wallComponents: TakeoffRoomComponent[],
+) {
+  const remainingOpenings = openingSubtractionsForRoom(room).map((entry) => ({ ...entry, remainingArea: entry.area }));
+  return wallComponents.map((component) => {
+    if (!wallCanReceiveOpeningSubtractions(component)) return exportedWallComponent(component);
+    const grossArea = Math.max(0, component.area || 0);
+    if (grossArea <= 0) return exportedWallComponent(component);
+    const wallSpan = wallVerticalSpanForOpeningSubtraction(floor, room, component);
+    if (wallSpan.zMax <= wallSpan.zMin) return exportedWallComponent(component);
+    let subtract = 0;
+    for (const opening of remainingOpenings) {
+      if (opening.direction !== component.direction || opening.remainingArea <= 0) continue;
+      const overlapHeight = intervalOverlap(wallSpan.zMin, wallSpan.zMax, opening.zMin, opening.zMax);
+      if (overlapHeight <= 0) continue;
+      const proportionalOpeningArea = opening.area * (overlapHeight / opening.height);
+      const applied = Math.min(proportionalOpeningArea, opening.remainingArea, Math.max(0, grossArea - subtract));
+      if (applied <= 0) continue;
+      subtract += applied;
+      opening.remainingArea = Math.max(0, opening.remainingArea - applied);
+    }
+    return exportedWallComponent({
+      ...component,
+      area: Number(Math.max(0, grossArea - subtract).toFixed(3)),
+      label: subtract > 0 ? `${component.label || wallAdjacencyLabel(component.adjacency ?? "outside")} net of openings` : component.label,
+    });
+  });
+}
+
 function payloadDirectionForComponent(component: TakeoffRoomComponent) {
   if (component.surface === "glass" && component.solarDirection) return component.solarDirection;
   return component.direction;
@@ -1568,22 +1709,15 @@ function payloadFloorComponentsForRoom(
 }
 
 function payloadComponentsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom, floors: TakeoffFloor[]) {
-  const remainingOpenings = new Map(openingAreaByDirection(room));
-  return roomComponents(room)
+  const expandedComponents = roomComponents(room)
     .filter((component) => !component.loadExempt)
-    .flatMap((component) => payloadFloorComponentsForRoom(floor, floors, room, component))
-    .map((component) => {
-      if (component.surface !== "wall" || !isCompassDirection(component.direction) || !wallCanHostOpenings(component)) return exportedWallComponent(component);
-      const remaining = remainingOpenings.get(component.direction) ?? 0;
-      const grossArea = Math.max(0, component.area || 0);
-      const subtract = Math.min(grossArea, remaining);
-      remainingOpenings.set(component.direction, Math.max(0, remaining - subtract));
-      return exportedWallComponent({
-        ...component,
-        area: Number(Math.max(0, grossArea - subtract).toFixed(3)),
-        label: subtract > 0 ? `${component.label || wallAdjacencyLabel(component.adjacency ?? "outside")} net of openings` : component.label,
-      });
-    })
+    .flatMap((component) => payloadFloorComponentsForRoom(floor, floors, room, component));
+  const wallIds = new Set(expandedComponents.filter((component) => component.surface === "wall").map((component) => component.id));
+  const netWalls = netWallComponentsOfOpenings(floor, room, expandedComponents.filter((component) => component.surface === "wall"));
+  const netWallsById = new Map(netWalls.map((component) => [component.id, component]));
+  return expandedComponents
+    .map((component) => wallIds.has(component.id) ? netWallsById.get(component.id) ?? component : exportedWallComponent(component))
+    .filter((component): component is TakeoffRoomComponent => Boolean(component))
     .filter((component) => Math.max(0, component.area || 0) > 0);
 }
 
@@ -1644,7 +1778,7 @@ function payloadOpenToAboveEnvelopeComponentsForRoom(floor: TakeoffFloor, room: 
     return [] as Array<{ room: TakeoffRectRoom; component: TakeoffRoomComponent }>;
   }
 
-  return extensions
+  const extensionComponents = extensions
     .map(({ direction, adjacency, length, addedHeight, baseHeight, effectiveHeight }) => {
       const area = Number((length * addedHeight).toFixed(3));
       if (area <= 0.5) return null;
@@ -1663,9 +1797,12 @@ function payloadOpenToAboveEnvelopeComponentsForRoom(floor: TakeoffFloor, room: 
         zMin: baseHeight,
         zMax: effectiveHeight,
       };
-      return { room, component };
+      return component;
     })
-    .filter((entry): entry is { room: TakeoffRectRoom; component: TakeoffRoomComponent } => entry != null);
+    .filter((component): component is TakeoffRoomComponent => component != null);
+  return netWallComponentsOfOpenings(floor, room, extensionComponents)
+    .filter((component) => Math.max(0, component.area || 0) > 0)
+    .map((component) => ({ room, component }));
 }
 
 function rectFromPoints(a: TakeoffPoint, b: TakeoffPoint) {
@@ -3403,7 +3540,7 @@ function buildValidation(
     }
     const exteriorDirections = roomExteriorDirections(floor, room, floors);
     const openingAreas = openingAreaByDirection(room);
-    const openingHostWallAreas = openingHostWallAreaByDirection(room);
+    const openingHostWallAreas = openingHostWallAreaByDirection(room, floor, floors);
     const missingSuggestedWalls = missingSuggestedExteriorWalls(floor, room, floors);
     if (missingSuggestedWalls.length > 0) {
       issues.push({
@@ -3502,6 +3639,17 @@ function buildValidation(
       }
       if (component.area <= 0) {
         issues.push({ severity: "warning", message: `${room.name || "Room"} has a ${component.surface} component with no area.`, target: roomTarget });
+      }
+      if (isOpeningComponent(component)) {
+        const span = openingVerticalSpan(component);
+        const modeledWallHeight = computedOpenToAboveHeight(floor, room, floors);
+        if (span.headHeight > modeledWallHeight + 0.25) {
+          issues.push({
+            severity: "warning",
+            message: `${room.name || "Room"} has ${componentSurfaceLabel(component.surface).toLowerCase()} ${component.label || component.assembly} head height ${Number(span.headHeight.toFixed(1))} ft above the modeled ${Number(modeledWallHeight.toFixed(1))} ft wall height.`,
+            target: roomTarget,
+          });
+        }
       }
       if (component.surface === "glass" && component.placement && isCompassDirection(component.direction)) {
         const adjacentKinds = adjacentKindsForPlacedOpening(floor, room, component);
@@ -4188,15 +4336,18 @@ function nearestRoomEdge(point: TakeoffPoint, room: TakeoffRectRoom) {
 
 function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffRectRoom, center: TakeoffPoint, material: THREE.Material, frameMaterial: THREE.Material) {
   if (!component.placement) return null;
-  const width = Math.max(1.5, component.width ?? Math.sqrt(Math.max(component.area, 1) * 0.6));
-  const height = Math.max(2, component.height ?? Math.max(2, component.area / width));
+  const width = Math.max(1.5, openingWidthForComponent(component));
+  const span = openingVerticalSpan(component);
   const wallHeight = Math.max(0.5, room.ceilingHeight);
+  const explicitVerticalPlacement = Number.isFinite(component.sillHeight) || Number.isFinite(component.headHeight);
   const topPadding = component.surface === "glass" ? 0.75 : 0.25;
   const bottomPadding = 0.25;
-  const typicalWindowSillHeight = 3;
-  const visibleHeight = component.surface === "door"
-    ? Math.min(height, Math.max(0.5, wallHeight - topPadding))
-    : Math.min(height, Math.max(0.5, wallHeight - topPadding - bottomPadding));
+  const fallbackHeight = component.surface === "door"
+    ? Math.min(span.height, Math.max(0.5, wallHeight - topPadding))
+    : Math.min(span.height, Math.max(0.5, wallHeight - topPadding - bottomPadding));
+  const visibleHeight = explicitVerticalPlacement
+    ? span.height
+    : fallbackHeight;
   const edge = nearestRoomEdge(component.placement, room);
   if (!edge) return null;
   const dx = edge.b.x - edge.a.x;
@@ -4213,9 +4364,11 @@ function openingMeshForComponent(component: TakeoffRoomComponent, room: TakeoffR
     ? normalA
     : normalB;
   const maxOpeningBottom = Math.max(bottomPadding, wallHeight - topPadding - visibleHeight);
-  const openingBottom = component.surface === "door"
-    ? 0
-    : clamp(typicalWindowSillHeight, bottomPadding, maxOpeningBottom);
+  const openingBottom = explicitVerticalPlacement
+    ? Math.max(0, span.sillHeight)
+    : component.surface === "door"
+      ? 0
+      : clamp(defaultWindowSillHeight, bottomPadding, maxOpeningBottom);
   const verticalCenter = openingBottom + visibleHeight / 2;
   const group = new THREE.Group();
   group.position.set(edge.point.x + outward.x * 0.16 - center.x, verticalCenter, edge.point.y + outward.y * 0.16 - center.y);
@@ -4467,12 +4620,14 @@ function TakeoffModelPreview({
   referenceUrls,
   floorViewOptions,
   componentSchedule,
+  dimensionInputMode,
   selectedRoomId,
   connectedVolumes,
   onSelectRoom,
   onActivateFloor,
   onUpdateFloorViewOptions,
   onAssignSurfaceComponent,
+  onUpdateOpeningComponent,
 }: {
   floor: TakeoffFloor;
   floors: TakeoffFloor[];
@@ -4481,12 +4636,14 @@ function TakeoffModelPreview({
   referenceUrls: Record<string, string>;
   floorViewOptions: Record<string, FloorViewOptions>;
   componentSchedule: TakeoffComponentDefinition[];
+  dimensionInputMode: DimensionInputMode;
   selectedRoomId: string | null;
   connectedVolumes: TakeoffConnectedVolume[];
   onSelectRoom: (roomId: string) => void;
   onActivateFloor: (floorId: string) => void;
   onUpdateFloorViewOptions: (floorId: string, patch: Partial<FloorViewOptions>) => void;
   onAssignSurfaceComponent: (selection: ModelSurfaceSelection, assembly: string) => void;
+  onUpdateOpeningComponent: (target: OpeningMoveTarget, patch: Partial<TakeoffRoomComponent>) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -4871,7 +5028,7 @@ function TakeoffModelPreview({
         for (const component of roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door"))) {
           if (component.surface === "glass" && !visibleLayers.windows) continue;
           if (component.surface === "door" && !visibleLayers.doors) continue;
-          const openingRoom = { ...room, ceilingHeight: baseWallHeight };
+          const openingRoom = { ...room, ceilingHeight: Math.max(baseWallHeight, room.ceilingHeight) };
           const openingMesh = openingMeshForComponent(component, openingRoom, center, component.surface === "glass" ? passiveGlassMaterial : passiveDoorMaterial, openingFrameMaterial);
           if (openingMesh) {
             openingMesh.position.y += yOffset;
@@ -5111,9 +5268,10 @@ function TakeoffModelPreview({
       for (const component of roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door"))) {
         if (component.surface === "glass" && !visibleLayers.windows) continue;
         if (component.surface === "door" && !visibleLayers.doors) continue;
-        const openingRoom = { ...room, ceilingHeight: baseEnvelopeHeightForWallSuggestion(floor, sourceRoom) };
+        const openingRoom = { ...room, ceilingHeight: Math.max(baseEnvelopeHeightForWallSuggestion(floor, sourceRoom), room.ceilingHeight) };
         const openingMesh = openingMeshForComponent(component, openingRoom, center, component.surface === "glass" ? glassMaterial : doorMaterial, openingFrameMaterial);
         if (openingMesh) {
+          const verticalSpan = openingVerticalSpan(component);
           openingMesh.position.y += activeFloorYOffset;
           openingMesh.userData.modelSurface = {
             roomId: room.id,
@@ -5125,6 +5283,10 @@ function TakeoffModelPreview({
             area: component.area,
             componentId: component.id,
             assembly: component.assembly,
+            width: openingWidthForComponent(component),
+            height: verticalSpan.height,
+            sillHeight: verticalSpan.sillHeight,
+            headHeight: verticalSpan.headHeight,
           } satisfies ModelSurfaceSelection;
           scene.add(openingMesh);
         }
@@ -5577,6 +5739,27 @@ function TakeoffModelPreview({
     };
   }, [activeFloorId, cameraMode, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers, walkthroughComponentTransparency]);
 
+  const selectedOpeningTarget = selectedSurface?.componentId && (selectedSurface.kind === "window" || selectedSurface.kind === "door")
+    ? { roomId: selectedSurface.roomId, componentId: selectedSurface.componentId }
+    : null;
+  const selectedOpeningDimensions = selectedOpeningTarget
+    ? {
+        width: Math.max(0.1, selectedSurface?.width ?? 3),
+        height: Math.max(0.1, selectedSurface?.height ?? defaultOpeningHeight(selectedSurface?.surface === "door" ? "door" : "glass")),
+        sillHeight: Math.max(0, selectedSurface?.sillHeight ?? defaultOpeningSillHeight(selectedSurface?.surface === "door" ? "door" : "glass")),
+        headHeight: Math.max(0.1, selectedSurface?.headHeight ?? (selectedSurface?.sillHeight ?? 0) + (selectedSurface?.height ?? defaultWindowHeight)),
+      }
+    : null;
+
+  function updateSelectedOpeningVertical(patch: Partial<Pick<TakeoffRoomComponent, "height" | "sillHeight" | "headHeight" | "area">>) {
+    if (!selectedOpeningTarget || !selectedOpeningDimensions) return;
+    onUpdateOpeningComponent(selectedOpeningTarget, patch);
+    setSelectedSurface((current) => {
+      if (!current || current.componentId !== selectedOpeningTarget.componentId) return current;
+      return { ...current, ...patch };
+    });
+  }
+
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
       <div className="takeoff-model-caption">{cameraCaption}</div>
@@ -5668,7 +5851,45 @@ function TakeoffModelPreview({
           <span>{selectedSurface.roomName}</span>
           {selectedSurface.direction && <span>{selectedSurface.direction} facing</span>}
           {selectedSurface.area !== undefined && <span>{Math.round(selectedSurface.area)} sf</span>}
-          {selectedSurface.surface && selectedSurface.kind !== "window" && selectedSurface.kind !== "door" && selectedSurfaceOptions.length > 0 ? (
+          {selectedOpeningDimensions ? (
+            <div className="takeoff-model-opening-controls">
+              <span>
+                {formatDimensionValue(selectedOpeningDimensions.width, dimensionInputMode)} x {formatDimensionValue(selectedOpeningDimensions.height, dimensionInputMode)}
+              </span>
+              <label>
+                Sill
+                <DimensionInput
+                  value={selectedOpeningDimensions.sillHeight}
+                  mode={dimensionInputMode}
+                  min={0}
+                  step={0.25}
+                  onCommit={(value) => {
+                    const sillHeight = Number(Math.max(0, value).toFixed(3));
+                    const headHeight = Number((sillHeight + selectedOpeningDimensions.height).toFixed(3));
+                    updateSelectedOpeningVertical({ sillHeight, headHeight });
+                  }}
+                />
+              </label>
+              <label>
+                Head
+                <DimensionInput
+                  value={selectedOpeningDimensions.headHeight}
+                  mode={dimensionInputMode}
+                  min={0.1}
+                  step={0.25}
+                  onCommit={(value) => {
+                    const headHeight = Number(Math.max(selectedOpeningDimensions.sillHeight + 0.1, value).toFixed(3));
+                    const height = Number((headHeight - selectedOpeningDimensions.sillHeight).toFixed(3));
+                    updateSelectedOpeningVertical({
+                      headHeight,
+                      height,
+                      area: Number((selectedOpeningDimensions.width * height).toFixed(2)),
+                    });
+                  }}
+                />
+              </label>
+            </div>
+          ) : selectedSurface.surface && selectedSurfaceOptions.length > 0 ? (
             <>
               <select value={selectedSurfaceAssembly} onChange={(event) => setSelectedSurfaceAssembly(event.target.value)}>
                 {selectedSurfaceOptions.map((option) => (
@@ -5689,7 +5910,7 @@ function TakeoffModelPreview({
               </button>
             </>
           ) : (
-            <span>Selectable for review. Component assignment for this surface is coming next.</span>
+            <span>Selectable for review.</span>
           )}
         </div>
       )}
@@ -7520,6 +7741,7 @@ export function TakeoffApp() {
           const surface = component.surface;
           const options = scheduleOptionsBySurface[surface];
           const selectedDefinition = options.find((option) => option.code === component.assembly);
+          const openingSpan = isOpeningComponent(component) ? openingVerticalSpan(component) : null;
           const directionChoices = Array.from(new Set([
             ...exteriorDirections,
             ...(isCompassDirection(component.direction) ? [component.direction] : []),
@@ -7642,6 +7864,7 @@ export function TakeoffApp() {
                 {component.loadExempt ? <em>No load</em> : null}
                 {isStaleCeilingWall ? " · Stale ceiling-generated wall" : ""}
                 {component.surface === "glass" && component.solarDirection ? ` · Solar ${component.solarDirection}` : ""}
+                {openingSpan ? ` · Sill ${openingSpan.sillHeight} ft · Head ${openingSpan.headHeight} ft` : ""}
                 {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
                 {component.loadExempt ? "" : <>{" · "}{componentThermalSummary(selectedDefinition)}</>}
               </p>
@@ -7876,6 +8099,13 @@ export function TakeoffApp() {
         };
       }),
     }));
+  }
+
+  function updateOpeningComponentFromModel(target: OpeningMoveTarget, patch: Partial<TakeoffRoomComponent>) {
+    updateRoomComponent(target.roomId, target.componentId, patch);
+    setSelectedRoomId(target.roomId);
+    setSelectedOpening(target);
+    setMessage("Opening vertical placement updated from 3D QA.");
   }
 
   function updateRoomComponentAssembly(roomId: string, componentId: string, surface: TakeoffRoomComponent["surface"], assembly: string) {
@@ -8460,7 +8690,9 @@ export function TakeoffApp() {
       surface,
       assembly: option?.code ?? (surface === "glass" ? "G1" : "D1"),
       width: surface === "glass" ? 3 : 3,
-      height: surface === "glass" ? 5 : 6.67,
+      height: defaultOpeningHeight(surface),
+      sillHeight: defaultOpeningSillHeight(surface),
+      headHeight: defaultOpeningSillHeight(surface) + defaultOpeningHeight(surface),
       label: surface === "glass" ? "Window" : "Door",
     });
     setWorkflowStep("trace");
@@ -8492,6 +8724,18 @@ export function TakeoffApp() {
       const nextSurface = patch.surface ?? current.surface;
       const surfaceChanged = patch.surface && patch.surface !== current.surface;
       const option = surfaceChanged ? scheduleOptionsBySurface[nextSurface][0] : null;
+      const nextSillHeight = Number(Math.max(0, patch.sillHeight ?? (surfaceChanged ? defaultOpeningSillHeight(nextSurface) : current.sillHeight ?? defaultOpeningSillHeight(nextSurface))).toFixed(3));
+      let nextHeight = Number(Math.max(0.1, patch.height ?? (surfaceChanged ? defaultOpeningHeight(nextSurface) : current.height)).toFixed(3));
+      let nextHeadHeight = Number(Math.max(nextSillHeight + 0.1, patch.headHeight ?? current.headHeight ?? nextSillHeight + nextHeight).toFixed(3));
+      if (Object.prototype.hasOwnProperty.call(patch, "headHeight") && !Object.prototype.hasOwnProperty.call(patch, "height")) {
+        nextHeight = Number(Math.max(0.1, nextHeadHeight - nextSillHeight).toFixed(3));
+      } else if (
+        surfaceChanged ||
+        Object.prototype.hasOwnProperty.call(patch, "height") ||
+        Object.prototype.hasOwnProperty.call(patch, "sillHeight")
+      ) {
+        nextHeadHeight = Number((nextSillHeight + nextHeight).toFixed(3));
+      }
       const targetAdjacent = pendingOpeningTarget?.adjacentKinds ?? [];
       const solarDirectionProvided = Object.prototype.hasOwnProperty.call(patch, "solarDirection");
       const nextSolarDirection = nextSurface === "glass"
@@ -8507,7 +8751,9 @@ export function TakeoffApp() {
         ...patch,
         assembly: patch.assembly ?? option?.code ?? current.assembly,
         width: patch.width ?? (surfaceChanged ? 3 : current.width),
-        height: patch.height ?? (surfaceChanged ? (nextSurface === "glass" ? 5 : 6.67) : current.height),
+        height: nextHeight,
+        sillHeight: nextSillHeight,
+        headHeight: nextHeadHeight,
         label: patch.label ?? (shouldUseAutoLabel ? defaultOpeningLabel(nextSurface, nextSolarDirection) : current.label),
         solarDirection: nextSolarDirection,
       };
@@ -8590,6 +8836,8 @@ export function TakeoffApp() {
       width: openingPlacement.width,
       height: openingPlacement.height,
       direction: pendingOpeningTarget.direction,
+      sillHeight: openingPlacement.sillHeight,
+      headHeight: openingPlacement.headHeight,
       solarDirection: openingPlacement.surface === "glass"
         ? openingPlacement.solarDirection ?? (pendingOpeningTarget.adjacentKinds.includes("covered_porch") ? "Shaded" : undefined)
         : undefined,
@@ -8614,9 +8862,9 @@ export function TakeoffApp() {
 
   function openOpeningEditor(room: TakeoffRectRoom, component: TakeoffRoomComponent) {
     if (component.surface !== "glass" && component.surface !== "door") return;
-    const fallbackHeight = component.surface === "glass" ? 5 : 6.67;
-    const width = component.width ?? Number((Math.max(0, component.area || 0) / fallbackHeight).toFixed(2));
-    const height = component.height ?? fallbackHeight;
+    const span = openingVerticalSpan(component);
+    const width = openingWidthForComponent(component);
+    const height = span.height;
     setOpeningModeActive(false);
     setPendingOpeningTarget(null);
     setEditingOpeningTarget({ roomId: room.id, componentId: component.id });
@@ -8628,6 +8876,8 @@ export function TakeoffApp() {
       assembly: component.assembly,
       width,
       height,
+      sillHeight: span.sillHeight,
+      headHeight: span.headHeight,
       solarDirection: component.surface === "glass"
         ? component.solarDirection ?? (adjacentKinds.includes("covered_porch") ? "Shaded" : undefined)
         : undefined,
@@ -8668,6 +8918,8 @@ export function TakeoffApp() {
                       area,
                       width: openingPlacement.width,
                       height: openingPlacement.height,
+                      sillHeight: openingPlacement.sillHeight,
+                      headHeight: openingPlacement.headHeight,
                       label: openingPlacement.label || defaultOpeningLabel(openingPlacement.surface, openingPlacement.solarDirection),
                       solarDirection: openingPlacement.surface === "glass"
                         ? openingPlacement.solarDirection ?? (adjacentKinds.includes("covered_porch") ? "Shaded" : undefined)
@@ -11223,12 +11475,14 @@ export function TakeoffApp() {
                 referenceUrls={referenceUrls}
                 floorViewOptions={floorViewOptions}
                 componentSchedule={componentSchedule}
+                dimensionInputMode={dimensionInputMode}
                 selectedRoomId={selectedRoomId}
                 connectedVolumes={connectedVolumes}
                 onSelectRoom={setSelectedRoomId}
                 onActivateFloor={switchActiveFloor}
                 onUpdateFloorViewOptions={updateFloorViewOptions}
                 onAssignSurfaceComponent={assignModelSurfaceComponent}
+                onUpdateOpeningComponent={updateOpeningComponentFromModel}
               />
             ) : planReviewMode === "alignment" ? (
               <div className="takeoff-drawing-layer takeoff-alignment-layer" style={{ width: drawingWidth, height: drawingHeight }}>
@@ -13187,6 +13441,7 @@ export function TakeoffApp() {
                         <div className="takeoff-component-list">
                           {roomSurfaceComponents(selectedRoom, surface).map((component) => {
                             const selectedDefinition = options.find((option) => option.code === component.assembly);
+                            const openingSpan = isOpeningComponent(component) ? openingVerticalSpan(component) : null;
                             const directionChoices = Array.from(new Set([
                               ...exteriorDirections,
                               ...(isCompassDirection(component.direction) ? [component.direction] : []),
@@ -13273,6 +13528,7 @@ export function TakeoffApp() {
                                   {sourceLabel ? <em>{sourceLabel}</em> : null}
                                   {isStaleCeilingWall ? " · Stale ceiling-generated wall" : ""}
                                   {component.surface === "glass" && component.solarDirection ? ` · Solar ${component.solarDirection}` : ""}
+                                  {openingSpan ? ` · Sill ${openingSpan.sillHeight} ft · Head ${openingSpan.headHeight} ft` : ""}
                                   {selectedDefinition?.description ? ` · ${selectedDefinition.description}` : ""}
                                   {" · "}{componentThermalSummary(selectedDefinition)}
                                 </p>
@@ -13419,6 +13675,26 @@ export function TakeoffApp() {
                     step="0.1"
                     value={openingPlacement.height}
                     onChange={(event) => updateOpeningPlacement({ height: Number(event.target.value) })}
+                  />
+                </label>
+                <label className="takeoff-opening-field">
+                  Sill height ft
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={openingPlacement.sillHeight}
+                    onChange={(event) => updateOpeningPlacement({ sillHeight: Number(event.target.value) })}
+                  />
+                </label>
+                <label className="takeoff-opening-field">
+                  Head height ft
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={openingPlacement.headHeight}
+                    onChange={(event) => updateOpeningPlacement({ headHeight: Number(event.target.value) })}
                   />
                 </label>
                 <label className="takeoff-opening-field takeoff-opening-field--label">

@@ -1685,6 +1685,22 @@ button.toolbar-primary:hover {
   width: 100%;
 }
 
+.takeoff-model-opening-controls {
+  display: grid;
+  gap: 7px;
+}
+
+.takeoff-model-opening-controls label {
+  color: #5a6a77;
+  display: grid;
+  font-size: 11px;
+  gap: 3px;
+}
+
+.takeoff-model-opening-controls input {
+  width: 100%;
+}
+
 .takeoff-drawing-layer {
   position: relative;
 }
