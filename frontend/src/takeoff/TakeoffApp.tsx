@@ -177,6 +177,8 @@ type TakeoffBoundaryCandidate = {
   area: number;
   placement: TakeoffPoint;
   wallProfilePolygons?: TakeoffPoint[][];
+  exteriorProfileArea: number;
+  exteriorProfilePolygons?: TakeoffPoint[][];
   existingWallOverlapArea: number;
   wholeSectionArea: number;
   recommendedAdjacency: TakeoffWallAdjacency;
@@ -1612,7 +1614,14 @@ function openingAreaByDirection(room: TakeoffRectRoom) {
 function assignedWallAreaByDirection(room: TakeoffRectRoom) {
   const walls = new Map<(typeof directionOptions)[number], number>();
   for (const component of roomComponents(room)) {
-    if (!componentIsBaseWallArea(component) || !isCompassDirection(component.direction)) continue;
+    if (component.surface !== "wall" || !isCompassDirection(component.direction)) continue;
+    if (component.loadExempt || component.adjacency === "conditioned") continue;
+    if (
+      componentIsGeneratedCeilingWall(component) ||
+      componentIsConditionedWallProfile(component) ||
+      component.source === "open-to-above-envelope" ||
+      component.source === "connected-volume"
+    ) continue;
     walls.set(component.direction, (walls.get(component.direction) ?? 0) + Math.max(0, component.area || 0));
   }
   return walls;
@@ -1678,8 +1687,18 @@ function missingSuggestedExteriorWalls(floor: TakeoffFloor, room: TakeoffRectRoo
 
 function wallAdjacentSpaceMismatches(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const adjacent = adjacentKindsByDirection(floor, room);
+  const profileDirections = new Set(
+    roomSurfaceComponents(room, "wall")
+      .filter(componentHasWallProfileGeometry)
+      .map((component) => component.direction)
+      .filter(isCompassDirection)
+  );
+  for (const candidate of boundaryCandidatesForFloor(floor).filter((candidate) => candidate.roomId === room.id)) {
+    profileDirections.add(candidate.direction);
+  }
   return roomSurfaceComponents(room, "wall").flatMap((component) => {
     if (!isCompassDirection(component.direction) || !componentIsBaseWallArea(component)) return [];
+    if (profileDirections.has(component.direction)) return [];
     const adjacentKinds = adjacent.get(component.direction) ?? [];
     if (adjacentKinds.length === 0) return [];
     const recommendation = recommendedWallTreatment(adjacentKinds, component.assembly || "W1");
@@ -3008,6 +3027,7 @@ function wallProfileCandidatesForRoom(
   idPrefix: string,
 ): WallProfileCandidate[] {
   const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
   return roomExteriorSegments(floor, room, { includeConditionedAdjacency: true }).flatMap((segment) =>
     (floor.adjacentSpaces ?? []).flatMap((space) => {
       if (!predicate(space)) return [];
@@ -3019,8 +3039,8 @@ function wallProfileCandidatesForRoom(
         wallProfile.profile,
         span.start,
         span.end,
-        wallProfile.zMin,
-        wallProfile.zMax,
+        0,
+        Math.max(baseHeight, wallProfile.zMax),
       );
       const complementArea = Number(complementProfilePolygons.reduce((sum, polygon) => sum + polygonArea(polygon), 0).toFixed(3));
       const id = [
@@ -3059,6 +3079,7 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
   const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
   const candidates: TakeoffBoundaryCandidate[] = [];
   for (const room of floor.rooms) {
+    const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
     for (const segment of roomExteriorSegments(floor, room)) {
       for (const space of floor.adjacentSpaces ?? []) {
         if (!adjacentSpaceCanCreateKneeWall(space)) continue;
@@ -3067,7 +3088,15 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
         const wallProfile = adjacentWallProfileForSegment(space, room, segment, span, floor.defaultCeilingHeight ?? 9);
         if (!wallProfile) continue;
         const existingWallOverlapArea = wallProfile.area;
-        const wholeSectionArea = Number((span.length * room.ceilingHeight).toFixed(3));
+        const wholeSectionArea = Number((span.length * Math.max(baseHeight, wallProfile.zMax)).toFixed(3));
+        const exteriorProfilePolygons = wallProfileComplementPolygons(
+          wallProfile.profile,
+          span.start,
+          span.end,
+          0,
+          Math.max(baseHeight, wallProfile.zMax),
+        );
+        const exteriorProfileArea = Number(exteriorProfilePolygons.reduce((sum, polygon) => sum + polygonArea(polygon), 0).toFixed(3));
         const id = [
           "boundary",
           room.id,
@@ -3093,6 +3122,8 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
           area: wallProfile.area,
           placement: wallProfile.placement,
           wallProfilePolygons: [wallProfile.profile],
+          exteriorProfileArea,
+          exteriorProfilePolygons,
           existingWallOverlapArea,
           wholeSectionArea,
           recommendedAdjacency: "attic",
@@ -3148,12 +3179,13 @@ function wallGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoo
       const resolution = floor.boundaryCandidateResolutions?.[candidate.id];
       return !resolution || resolution === "ignore";
     })
+    .filter((candidate) => candidate.exteriorProfileArea > 0.5 && (candidate.exteriorProfilePolygons?.length ?? 0) > 0)
     .map((candidate) => ({
       key: candidate.id,
       direction: candidate.direction,
-      area: candidate.area,
+      area: candidate.exteriorProfileArea,
       label: `${candidate.direction} exterior wall gap fill`,
-      geometryLabel: `${candidate.adjacentSpaceName} wall gap fill ${candidate.zMin}-${candidate.zMax} ft`,
+      geometryLabel: `${candidate.adjacentSpaceName} exterior wall remainder ${candidate.zMin}-${candidate.zMax} ft`,
       adjacency: "outside" as const,
       assembly: defaultWallAssemblyForAdjacency("outside"),
       boundary: "exterior" as const,
@@ -3162,7 +3194,7 @@ function wallGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoo
       zMin: candidate.zMin,
       zMax: candidate.zMax,
       placement: candidate.placement,
-      wallProfilePolygons: candidate.wallProfilePolygons,
+      wallProfilePolygons: candidate.exteriorProfilePolygons,
     }));
   const conditionedProfileGapFills = conditionedWallProfileCandidatesForRoom(floor, room)
     .filter((candidate) => candidate.complementArea > 0.5 && candidate.complementProfilePolygons.length > 0)
@@ -5186,6 +5218,7 @@ function wallGapFillMeshPartsForRoom(
     return profiles.flatMap((profile, index) => {
       const cleanProfile = dedupeProfilePoints(profile).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
       if (cleanProfile.length < 3) return [];
+      const profileArea = Number(polygonArea(cleanProfile).toFixed(3));
       return [{
         mesh: createPanelMesh(
           cleanProfile.map((point) => modelPoint(pointAtSegmentDistance(segment, point.x), center, point.y)),
@@ -5195,7 +5228,7 @@ function wallGapFillMeshPartsForRoom(
         label: component.label || (isKneeWall ? `${component.direction} attic knee-wall profile` : `${component.direction} exterior wall gap fill`),
         surface: "wall",
         direction: component.direction,
-        area: Number((component.area || polygonArea(cleanProfile)).toFixed(3)),
+        area: profileArea,
         assembly: component.assembly,
         componentId: component.id,
         source: component.source,
@@ -5811,7 +5844,14 @@ function TakeoffModelPreview({
       }
 
       if (visibleLayers.walls) {
+        const wallProfileComponents = roomSurfaceComponents(room, "wall").filter(componentRendersWallProfile);
         for (const segment of roomExteriorSegments(floor, room)) {
+          const segmentHasProfile = wallProfileComponents.some((component) => {
+            if (component.direction !== segment.direction) return false;
+            const profileSegment = wallSegmentForProfileComponent(floor, room, component);
+            return Boolean(profileSegment && sharedSegmentLength(segment, profileSegment, Math.max(0.35, floor.scale.feetPerGrid * 0.35)) > 0.25);
+          });
+          if (segmentHasProfile) continue;
           const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
           const wallMesh = wallMeshForEdge(segment.a, segment.b, center, Math.max(baseWallHeight, 0.1), room.id === selectedRoomId ? selectedWallMaterial : wallMaterial);
           wallMesh.position.y += activeFloorYOffset;
@@ -8295,9 +8335,15 @@ export function TakeoffApp() {
     const roomEdges = pointsToEdges(points);
     const wallComponents = roomSurfaceComponents(room, "wall");
     const generatedWallComponents = wallComponents.filter((component) =>
-      (componentIsGeneratedCeilingWall(component) || componentIsWallGapFill(component)) &&
+      (componentIsGeneratedCeilingWall(component) || componentRendersWallProfile(component)) &&
       !component.loadExempt &&
       component.adjacency !== "conditioned"
+    );
+    const wallProfileDirections = new Set(
+      generatedWallComponents
+        .filter(componentRendersWallProfile)
+        .map((component) => component.direction)
+        .filter(isCompassDirection)
     );
     const glassComponents = roomSurfaceComponents(room, "glass");
     const doorComponents = roomSurfaceComponents(room, "door");
@@ -8326,7 +8372,9 @@ export function TakeoffApp() {
     const wallComponentForSketchEdge = (edge: { a: TakeoffPoint; b: TakeoffPoint }) => {
       const context = sketchWallContext(edge);
       if (!context.isLoadEdge) return null;
+      if (wallProfileDirections.has(context.direction)) return null;
       return wallComponents.find((component) => {
+        if (!componentIsBaseWallArea(component)) return false;
         if (!component.direction || component.direction !== context.direction) return false;
         const adjacency = component.adjacency ?? "outside";
         const adjacencyKey = String(adjacency);
@@ -8526,7 +8574,7 @@ export function TakeoffApp() {
                 : component.adjacency === "attic"
                   ? "takeoff-room-sketch-wall--attic"
                   : "";
-              if (componentIsWallGapFill(component)) {
+              if (componentRendersWallProfile(component)) {
                 const gapSegment = wallSegmentForProfileComponent(floor, room, component);
                 const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
                 if (!gapSegment || sharedSegmentLength(edge, gapSegment, tolerance) <= 0.25) return null;
@@ -9666,7 +9714,8 @@ export function TakeoffApp() {
     }
     pushUndoSnapshot("boundary suggestion");
     const kneeWallArea = resolution === "whole-section" ? candidate.wholeSectionArea : candidate.area;
-    const exteriorOverlapArea = resolution === "whole-section" ? candidate.wholeSectionArea : candidate.existingWallOverlapArea;
+    const replacedWallArea = candidate.wholeSectionArea;
+    const exteriorProfileArea = resolution === "slice" ? candidate.exteriorProfileArea : 0;
     setFloors((currentFloors) => currentFloors.map((entry) => {
       if (entry.id !== targetFloor.id) return entry;
       return {
@@ -9685,7 +9734,24 @@ export function TakeoffApp() {
             Math.abs((component.spanEnd ?? candidate.spanEnd) - candidate.spanEnd) <= 0.1 &&
             Math.abs((component.zMin ?? candidate.zMin) - candidate.zMin) <= 0.1 &&
             Math.abs((component.zMax ?? candidate.zMax) - candidate.zMax) <= 0.1;
+          const matchesExteriorProfile = (component: TakeoffRoomComponent) =>
+            component.surface === "wall" &&
+            component.direction === candidate.direction &&
+            component.adjacency === "outside" &&
+            componentHasWallProfileGeometry(component) &&
+            Math.abs((component.spanStart ?? candidate.spanStart) - candidate.spanStart) <= 0.1 &&
+            Math.abs((component.spanEnd ?? candidate.spanEnd) - candidate.spanEnd) <= 0.1;
+          const matchesBoundaryProfile = (component: TakeoffRoomComponent) =>
+            component.surface === "wall" &&
+            component.direction === candidate.direction &&
+            component.adjacency === candidate.recommendedAdjacency &&
+            component.boundary === candidate.recommendedBoundary &&
+            componentHasWallProfileGeometry(component) &&
+            Math.abs((component.spanStart ?? candidate.spanStart) - candidate.spanStart) <= 0.1 &&
+            Math.abs((component.spanEnd ?? candidate.spanEnd) - candidate.spanEnd) <= 0.1;
           const hasMatchingGapFill = components.some(matchesGapFill);
+          const hasMatchingExteriorProfile = components.some(matchesExteriorProfile);
+          const hasMatchingBoundaryProfile = components.some(matchesBoundaryProfile);
           const nextComponents = components.map((component) => {
             if (matchesGapFill(component)) {
               return {
@@ -9701,18 +9767,55 @@ export function TakeoffApp() {
                 loadExempt: false,
               };
             }
+            if (matchesExteriorProfile(component)) {
+              return {
+                ...component,
+                assembly: defaultWallAssemblyForAdjacency("outside"),
+                area: Math.round(exteriorProfileArea),
+                label: `${candidate.direction} exterior wall profile slice`,
+                adjacency: "outside" as const,
+                boundary: "exterior" as const,
+                geometryLabel: `${candidate.adjacentSpaceName} exterior remainder`,
+                placement: candidate.placement,
+                spanStart: candidate.spanStart,
+                spanEnd: candidate.spanEnd,
+                zMin: 0,
+                zMax: Math.max(candidate.zMax, component.zMax ?? candidate.zMax),
+                wallProfilePolygons: candidate.exteriorProfilePolygons,
+                loadExempt: false,
+              };
+            }
             if (
-              !hasMatchingGapFill &&
-              exteriorOverlapArea > 0 &&
+              replacedWallArea > 0 &&
               component.surface === "wall" &&
               component.direction === candidate.direction &&
               wallCanHostOpenings(component)
             ) {
-              return { ...component, area: Math.max(0, Math.round((component.area || 0) - exteriorOverlapArea)) };
+              return { ...component, area: Math.max(0, Math.round((component.area || 0) - replacedWallArea)) };
             }
             return component;
-          });
-          const addedBoundaryComponent: TakeoffRoomComponent = {
+          }).filter((component) => component.area > 0.05);
+          const addedExteriorComponent: TakeoffRoomComponent | null = resolution === "slice" && exteriorProfileArea > 0.5 && (candidate.exteriorProfilePolygons?.length ?? 0) > 0 && !hasMatchingExteriorProfile
+            ? {
+                id: nextId("component-exterior-wall-profile"),
+                surface: "wall",
+                assembly: defaultWallAssemblyForAdjacency("outside"),
+                direction: candidate.direction,
+                area: Math.round(exteriorProfileArea),
+                label: `${candidate.direction} exterior wall profile slice`,
+                source: "wall-gap-fill",
+                adjacency: "outside",
+                boundary: "exterior",
+                geometryLabel: `${candidate.adjacentSpaceName} exterior remainder`,
+                spanStart: candidate.spanStart,
+                spanEnd: candidate.spanEnd,
+                zMin: 0,
+                zMax: Math.max(candidate.zMax, room.ceilingHeight),
+                placement: candidate.placement,
+                wallProfilePolygons: candidate.exteriorProfilePolygons,
+              }
+            : null;
+          const addedBoundaryComponent: TakeoffRoomComponent | null = hasMatchingGapFill || hasMatchingBoundaryProfile ? null : {
             id: nextId("component-boundary-wall"),
             surface: "wall",
             assembly: candidate.recommendedAssembly,
@@ -9734,7 +9837,8 @@ export function TakeoffApp() {
             ...room,
             components: [
               ...nextComponents,
-              ...(hasMatchingGapFill ? [] : [addedBoundaryComponent]),
+              ...(addedExteriorComponent ? [addedExteriorComponent] : []),
+              ...(addedBoundaryComponent ? [addedBoundaryComponent] : []),
             ],
           };
         }),
