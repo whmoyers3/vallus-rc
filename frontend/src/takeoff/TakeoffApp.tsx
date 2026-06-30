@@ -823,6 +823,39 @@ function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
 }
 
+function stableIdPart(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "x";
+}
+
+function roomComponentStableId(roomId: string, component: Pick<TakeoffRoomComponent, "id" | "surface" | "label" | "direction" | "assembly" | "area" | "placement">) {
+  if (component.id) return component.id;
+  const placement = component.placement
+    ? `${Number(component.placement.x).toFixed(2)}-${Number(component.placement.y).toFixed(2)}`
+    : "no-placement";
+  return [
+    "component",
+    stableIdPart(roomId),
+    stableIdPart(component.surface),
+    stableIdPart(component.label),
+    stableIdPart(component.direction),
+    stableIdPart(component.assembly),
+    Math.round((component.area || 0) * 100),
+    stableIdPart(placement),
+  ].join("-");
+}
+
+function roomComponentMatchesId(roomId: string, component: TakeoffRoomComponent, componentId: string) {
+  return component.id === componentId || roomComponentStableId(roomId, component) === componentId;
+}
+
+function componentWithStableId(roomId: string, component: TakeoffRoomComponent) {
+  return component.id ? component : { ...component, id: roomComponentStableId(roomId, component) };
+}
+
 function rectArea(rect: Pick<TakeoffRectRoom, "width" | "depth"> & { polygon?: TakeoffPoint[]; areaAdjustment?: number }) {
   const baseArea = rect.polygon && rect.polygon.length >= 3 ? polygonArea(rect.polygon) : Math.max(0, rect.width) * Math.max(0, rect.depth);
   return baseArea + Math.max(0, rect.areaAdjustment ?? 0);
@@ -3662,7 +3695,7 @@ function buildValidation(
         issueType: "wall-component-geometry-suggestion",
         wallComponentGeometrySuggestion: {
           action: "resize",
-          componentId: component.id,
+          componentId: roomComponentStableId(room.id, component),
           direction: reconciliation.direction,
           area: reconciliation.suggestedGross,
           assembly: recommendation.assembly,
@@ -3699,7 +3732,7 @@ function buildValidation(
           wallComponentGeometrySuggestion: removableWallComponent
             ? {
                 action: "remove",
-                componentId: component.id,
+                componentId: roomComponentStableId(room.id, component),
                 direction: component.direction,
                 label: component.label || `${component.direction} wall`,
               }
@@ -3752,7 +3785,7 @@ function buildValidation(
             issueType: "glass-treatment-suggestion",
             glassTreatmentSuggestion: {
               action: "shade",
-              componentId: component.id,
+              componentId: roomComponentStableId(room.id, component),
               direction: component.direction,
               solarDirection: "Shaded",
               label: defaultOpeningLabel("glass", "Shaded"),
@@ -5487,6 +5520,7 @@ function TakeoffModelPreview({
           const verticalSpan = openingVerticalSpan(component);
           const openingWall = openingMesh.userData.openingWall as { start: TakeoffPoint; end: TakeoffPoint; height: number } | undefined;
           const openingPlacement = openingMesh.userData.openingPlacement as TakeoffPoint | undefined;
+          const componentId = roomComponentStableId(room.id, component);
           openingMesh.position.y += activeFloorYOffset;
           openingMesh.userData.modelSurface = {
             roomId: room.id,
@@ -5496,7 +5530,7 @@ function TakeoffModelPreview({
             surface: component.surface,
             direction: component.direction,
             area: component.area,
-            componentId: component.id,
+            componentId,
             assembly: component.assembly,
             width: openingWidthForComponent(component),
             height: verticalSpan.height,
@@ -8487,7 +8521,11 @@ export function TakeoffApp() {
         if (room.id !== roomId) return room;
         return {
           ...room,
-          components: roomComponents(room).map((component) => (component.id === componentId ? { ...component, ...patch } : component)),
+          components: roomComponents(room).map((component) => (
+            roomComponentMatchesId(room.id, component, componentId)
+              ? { ...componentWithStableId(room.id, component), ...patch }
+              : component
+          )),
         };
       }),
     }));
@@ -8501,8 +8539,8 @@ export function TakeoffApp() {
         return {
           ...room,
           components: roomComponents(room).map((component) => {
-            if (component.id !== target.componentId) return component;
-            const nextComponent = { ...component, ...patch };
+            if (!roomComponentMatchesId(room.id, component, target.componentId)) return component;
+            const nextComponent = { ...componentWithStableId(room.id, component), ...patch };
             if (!patch.placement || nextComponent.surface !== "glass") return nextComponent;
             const adjacentKinds = adjacentKindsForPlacedOpening(current, room, nextComponent);
             const solarDirection = adjacentKinds.includes("covered_porch") ? "Shaded" : undefined;
@@ -8528,13 +8566,13 @@ export function TakeoffApp() {
         return {
           ...room,
           components: roomComponents(room).map((component) => {
-            if (component.id !== componentId) return component;
+            if (!roomComponentMatchesId(room.id, component, componentId)) return component;
             const nextLabel = surface === "ceiling"
               ? component.label
               : surface === "floor"
                 ? component.label
                 : component.label;
-            return { ...component, assembly, label: nextLabel };
+            return { ...componentWithStableId(room.id, component), assembly, label: nextLabel };
           }),
         };
       }),
@@ -8774,9 +8812,9 @@ export function TakeoffApp() {
         return {
           ...room,
           components: roomComponents(room).map((component) => {
-            if (component.id !== suggestion.componentId || component.surface !== "glass") return component;
+            if (!roomComponentMatchesId(room.id, component, suggestion.componentId) || component.surface !== "glass") return component;
             return {
-              ...component,
+              ...componentWithStableId(room.id, component),
               solarDirection: suggestion.solarDirection,
               label: isAutoOpeningLabel(component.label)
                 ? suggestion.label || defaultOpeningLabel("glass", suggestion.solarDirection)
@@ -8964,7 +9002,7 @@ export function TakeoffApp() {
       ...current,
       rooms: current.rooms.map((room) => (
         room.id === roomId
-          ? { ...room, components: roomComponents(room).filter((component) => component.id !== componentId) }
+          ? { ...room, components: roomComponents(room).filter((component) => !roomComponentMatchesId(room.id, component, componentId)) }
           : room
       )),
     }));
@@ -9277,10 +9315,11 @@ export function TakeoffApp() {
     const span = openingVerticalSpan(component);
     const width = openingWidthForComponent(component);
     const height = span.height;
+    const componentId = roomComponentStableId(room.id, component);
     setOpeningModeActive(false);
     setPendingOpeningTarget(null);
-    setEditingOpeningTarget({ roomId: room.id, componentId: component.id });
-    setSelectedOpening({ roomId: room.id, componentId: component.id });
+    setEditingOpeningTarget({ roomId: room.id, componentId });
+    setSelectedOpening({ roomId: room.id, componentId });
     setSelectedRoomId(room.id);
     const adjacentKinds = adjacentKindsForPlacedOpening(floor, room, component);
     setOpeningPlacement({
@@ -9307,7 +9346,7 @@ export function TakeoffApp() {
       return false;
     }
     const editingRoom = floor.rooms.find((room) => room.id === editingOpeningTarget.roomId);
-    const editingComponent = editingRoom ? roomComponents(editingRoom).find((component) => component.id === editingOpeningTarget.componentId) : null;
+    const editingComponent = editingRoom ? roomComponents(editingRoom).find((component) => roomComponentMatchesId(editingRoom.id, component, editingOpeningTarget.componentId)) : null;
     const adjacentKinds = editingRoom && editingComponent ? adjacentKindsForPlacedOpening(floor, editingRoom, editingComponent) : [];
     if (openingPlacement.surface === "glass" && editingRoom && editingComponent?.placement) {
       if (adjacentKinds.includes("garage")) {
@@ -9322,9 +9361,9 @@ export function TakeoffApp() {
           ? {
               ...room,
               components: roomComponents(room).map((component) => (
-                component.id === editingOpeningTarget.componentId
+                roomComponentMatchesId(room.id, component, editingOpeningTarget.componentId)
                   ? {
-                      ...component,
+                      ...componentWithStableId(room.id, component),
                       surface: openingPlacement.surface,
                       assembly: openingPlacement.assembly,
                       area,
@@ -9369,7 +9408,7 @@ export function TakeoffApp() {
       ...current,
       rooms: current.rooms.map((room) => {
         if (room.id !== target.roomId) return room;
-        const component = roomComponents(room).find((existing) => existing.id === target.componentId);
+        const component = roomComponents(room).find((existing) => roomComponentMatchesId(room.id, existing, target.componentId));
         if (!component) return room;
         const placement = projectedOpeningPlacement(current, point, room, component);
         if (!placement) return room;
@@ -9380,9 +9419,9 @@ export function TakeoffApp() {
         return {
           ...room,
           components: roomComponents(room).map((existing) => (
-            existing.id === target.componentId
+            roomComponentMatchesId(room.id, existing, target.componentId)
               ? {
-                  ...existing,
+                  ...componentWithStableId(room.id, existing),
                   placement,
                   solarDirection,
                   label: existing.surface === "glass" && isAutoOpeningLabel(existing.label)
@@ -9399,7 +9438,7 @@ export function TakeoffApp() {
   function removeSelectedOpening() {
     if (!selectedOpening) return;
     const room = floor.rooms.find((candidate) => candidate.id === selectedOpening.roomId);
-    const component = room ? roomComponents(room).find((candidate) => candidate.id === selectedOpening.componentId) : null;
+    const component = room ? roomComponents(room).find((candidate) => roomComponentMatchesId(room.id, candidate, selectedOpening.componentId)) : null;
     if (component && !window.confirm(`Remove ${component.label || "this opening"} from ${room?.name || "this room"}? This cannot be undone.`)) return;
     removeRoomComponent(selectedOpening.roomId, selectedOpening.componentId);
     setEditingOpeningTarget(null);
@@ -12367,10 +12406,11 @@ export function TakeoffApp() {
                     {Math.round(rectArea(room))} sf
                   </text>
                   {roomSurfaceComponents(room, "glass").concat(roomSurfaceComponents(room, "door")).filter((component) => component.placement).map((component) => {
-                    const isSelectedOpening = selectedOpening?.roomId === room.id && selectedOpening.componentId === component.id;
+                    const componentId = roomComponentStableId(room.id, component);
+                    const isSelectedOpening = selectedOpening?.roomId === room.id && selectedOpening.componentId === componentId;
                     return (
                     <g
-                      key={`${room.id}-${component.id}-marker`}
+                      key={`${room.id}-${componentId}-marker`}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -12387,7 +12427,7 @@ export function TakeoffApp() {
                         event.stopPropagation();
                         const placement = component.placement;
                         if (!placement) return;
-                        const target = { roomId: room.id, componentId: component.id };
+                        const target = { roomId: room.id, componentId };
                         setSelectedOpening(target);
                         setDragState({ kind: "move-opening", start: placement, current: placement, openingTarget: target });
                       }}
@@ -13996,7 +14036,7 @@ export function TakeoffApp() {
       {(pendingOpeningTarget || editingOpeningTarget) && openingPlacement && (() => {
         const editingRoom = editingOpeningTarget ? floor.rooms.find((room) => room.id === editingOpeningTarget.roomId) : null;
         const editingComponent = editingRoom && editingOpeningTarget
-          ? roomComponents(editingRoom).find((component) => component.id === editingOpeningTarget.componentId)
+          ? roomComponents(editingRoom).find((component) => roomComponentMatchesId(editingRoom.id, component, editingOpeningTarget.componentId))
           : null;
         const targetRoomName = pendingOpeningTarget?.roomName ?? editingRoom?.name ?? "room";
         const targetDirection = pendingOpeningTarget?.direction ?? editingComponent?.direction ?? "wall";
