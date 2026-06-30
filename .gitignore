@@ -42,3 +42,6 @@ frontend/dist/
 
 # Claude Code local settings
 .claude/
+
+# Local shelves for parked prototypes and experiments
+.shelved/

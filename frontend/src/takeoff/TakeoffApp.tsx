@@ -1539,6 +1539,25 @@ function componentIsGeneratedEnvelopeWall(component: TakeoffRoomComponent) {
   return componentIsGeneratedCeilingWall(component) || componentIsWallGapFill(component) || componentIsConditionedWallProfile(component) || component.source === "open-to-above-envelope" || component.source === "connected-volume";
 }
 
+function componentHasWallProfileGeometry(component: TakeoffRoomComponent) {
+  if (component.surface !== "wall") return false;
+  if (component.wallProfilePolygons?.some((polygon) => polygon.length >= 3)) return true;
+  return (
+    Number.isFinite(component.spanStart) &&
+    Number.isFinite(component.spanEnd) &&
+    Number.isFinite(component.zMin) &&
+    Number.isFinite(component.zMax)
+  );
+}
+
+function componentIsBaseWallArea(component: TakeoffRoomComponent) {
+  if (component.surface !== "wall") return false;
+  if (component.loadExempt) return false;
+  if (componentIsGeneratedEnvelopeWall(component)) return false;
+  if (componentHasWallProfileGeometry(component)) return false;
+  return true;
+}
+
 function staleGeneratedCeilingWallComponents(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const currentSuggestions = ceilingWallSuggestionsForRoom(floor, room, floor.defaultCeilingHeight ?? 9);
   return roomSurfaceComponents(room, "wall").filter((component) => {
@@ -1562,6 +1581,7 @@ function componentRequiresDirection(component: TakeoffRoomComponent) {
 function wallCanHostOpenings(component: TakeoffRoomComponent) {
   if (component.surface !== "wall") return false;
   if (componentIsGeneratedEnvelopeWall(component)) return false;
+  if (componentHasWallProfileGeometry(component)) return false;
   return component.adjacency == null || component.adjacency === "outside" || component.adjacency === "garage" || component.adjacency === "unknown";
 }
 
@@ -1592,7 +1612,7 @@ function openingAreaByDirection(room: TakeoffRectRoom) {
 function assignedWallAreaByDirection(room: TakeoffRectRoom) {
   const walls = new Map<(typeof directionOptions)[number], number>();
   for (const component of roomComponents(room)) {
-    if (component.surface !== "wall" || !isCompassDirection(component.direction) || componentIsGeneratedEnvelopeWall(component)) continue;
+    if (!componentIsBaseWallArea(component) || !isCompassDirection(component.direction)) continue;
     walls.set(component.direction, (walls.get(component.direction) ?? 0) + Math.max(0, component.area || 0));
   }
   return walls;
@@ -1659,7 +1679,7 @@ function missingSuggestedExteriorWalls(floor: TakeoffFloor, room: TakeoffRectRoo
 function wallAdjacentSpaceMismatches(floor: TakeoffFloor, room: TakeoffRectRoom) {
   const adjacent = adjacentKindsByDirection(floor, room);
   return roomSurfaceComponents(room, "wall").flatMap((component) => {
-    if (!isCompassDirection(component.direction) || componentIsGeneratedEnvelopeWall(component)) return [];
+    if (!isCompassDirection(component.direction) || !componentIsBaseWallArea(component)) return [];
     const adjacentKinds = adjacent.get(component.direction) ?? [];
     if (adjacentKinds.length === 0) return [];
     const recommendation = recommendedWallTreatment(adjacentKinds, component.assembly || "W1");
@@ -4051,7 +4071,7 @@ function buildValidation(
       const tolerance = Math.max(1, reconciliation.suggestedGross * 0.02);
       if (Math.abs(delta) <= tolerance) continue;
       const component = roomSurfaceComponents(room, "wall").find((entry) =>
-        entry.direction === reconciliation.direction && !componentIsGeneratedEnvelopeWall(entry)
+        entry.direction === reconciliation.direction && componentIsBaseWallArea(entry)
       );
       if (!component) continue;
       const recommendation = recommendedWallTreatment(reconciliation.adjacentKinds, component.assembly || "W1");
@@ -4088,7 +4108,8 @@ function buildValidation(
       if (
         componentRequiresDirection(component) &&
         isCompassDirection(component.direction) &&
-        !exteriorDirections.includes(component.direction)
+        !exteriorDirections.includes(component.direction) &&
+        !componentHasWallProfileGeometry(component)
       ) {
         const removableWallComponent = component.surface === "wall" && !componentIsGeneratedEnvelopeWall(component);
         issues.push({
@@ -5121,7 +5142,7 @@ function ceilingWallMeshPartsForRoom(
 }
 
 function wallSegmentForProfileComponent(floor: TakeoffFloor, room: TakeoffRectRoom, component: TakeoffRoomComponent) {
-  const segments = roomExteriorSegments(floor, room, { includeConditionedAdjacency: componentIsWallGapFill(component) || componentIsConditionedWallProfile(component) })
+  const segments = roomExteriorSegments(floor, room, { includeConditionedAdjacency: componentIsWallGapFill(component) || componentIsConditionedWallProfile(component) || componentHasWallProfileGeometry(component) })
     .filter((segment) => segment.direction === component.direction);
   if (segments.length === 0) return null;
   if (!component.placement) return segments[0];
@@ -5133,6 +5154,12 @@ function wallSegmentForProfileComponent(floor: TakeoffFloor, room: TakeoffRectRo
     .sort((first, second) => first.distance - second.distance)[0]?.segment ?? segments[0];
 }
 
+function componentRendersWallProfile(component: TakeoffRoomComponent) {
+  if (component.surface !== "wall" || component.loadExempt || component.adjacency === "conditioned") return false;
+  if (componentIsConditionedWallProfile(component)) return false;
+  return componentIsWallGapFill(component) || componentHasWallProfileGeometry(component);
+}
+
 function wallGapFillMeshPartsForRoom(
   floor: TakeoffFloor,
   room: TakeoffRectRoom,
@@ -5141,12 +5168,13 @@ function wallGapFillMeshPartsForRoom(
   exteriorWallMaterial: THREE.Material,
 ): ModelMeshPart[] {
   return roomSurfaceComponents(room, "wall").flatMap((component) => {
-    if (!componentIsWallGapFill(component) || component.loadExempt || component.adjacency === "conditioned") return [];
+    if (!componentRendersWallProfile(component)) return [];
     if (!isCompassDirection(component.direction)) return [];
     const segment = wallSegmentForProfileComponent(floor, room, component);
     if (!segment) return [];
-    const material = component.adjacency === "attic" ? kneeWallMaterial : exteriorWallMaterial;
-    const kind: ModelSurfaceKind = component.adjacency === "attic" ? "knee-wall" : "load-wall";
+    const isKneeWall = component.adjacency === "attic" || component.boundary === "attic_knee_wall";
+    const material = isKneeWall ? kneeWallMaterial : exteriorWallMaterial;
+    const kind: ModelSurfaceKind = isKneeWall ? "knee-wall" : "load-wall";
     const profiles = component.wallProfilePolygons?.length
       ? component.wallProfilePolygons
       : [[
@@ -5164,7 +5192,7 @@ function wallGapFillMeshPartsForRoom(
           material,
         ),
         kind,
-        label: component.label || (component.adjacency === "attic" ? `${component.direction} attic knee-wall gap fill` : `${component.direction} exterior wall gap fill`),
+        label: component.label || (isKneeWall ? `${component.direction} attic knee-wall profile` : `${component.direction} exterior wall gap fill`),
         surface: "wall",
         direction: component.direction,
         area: Number((component.area || polygonArea(cleanProfile)).toFixed(3)),
@@ -9351,9 +9379,9 @@ export function TakeoffApp() {
         return {
           ...room,
           components: roomComponents(room).map((component) => (
-            component.id === suggestion.componentId
+            roomComponentMatchesId(room.id, component, suggestion.componentId)
               ? {
-                  ...component,
+                  ...componentWithStableId(room.id, component),
                   area: Math.round(Math.max(0, suggestion.area ?? component.area)),
                   assembly: suggestion.assembly ?? component.assembly,
                   adjacency: suggestion.adjacency ?? component.adjacency,
@@ -9590,12 +9618,12 @@ export function TakeoffApp() {
       rooms: current.rooms.map((room) => {
         if (room.id !== roomId) return room;
         const components = roomComponents(room);
-        const existing = components.find((component) => component.surface === "wall" && component.direction === suggestion.direction);
+        const existing = components.find((component) => component.direction === suggestion.direction && componentIsBaseWallArea(component));
         if (existing) {
           return {
             ...room,
-            components: components.map((component) => component.id === existing.id
-              ? { ...component, assembly, adjacency, area: Math.round(suggestion.area), label: `${suggestion.direction} ${label.toLowerCase()}`, geometryLabel: suggestion.geometryLabel, source: "exterior-perimeter" }
+            components: components.map((component) => roomComponentMatchesId(room.id, component, roomComponentStableId(room.id, existing))
+              ? { ...componentWithStableId(room.id, component), assembly, adjacency, area: Math.round(suggestion.area), label: `${suggestion.direction} ${label.toLowerCase()}`, geometryLabel: suggestion.geometryLabel, source: "exterior-perimeter" }
               : component),
           };
         }
