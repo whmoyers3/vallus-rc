@@ -4,7 +4,7 @@ import "./styles.css";
 import { TakeoffApp } from "./takeoff/TakeoffApp";
 import { RoomProfileLayoutPrototype } from "./takeoff/RoomProfileLayoutPrototype";
 import PlanSchematic from "./PlanSchematic";
-import { ventilationCfmForBedrooms } from "./loadRules";
+import { codeComplianceWarningsForTypeDefinitions, ventilationCfmForBedrooms } from "./loadRules";
 import { allowNextUnsavedNavigation, confirmUnsavedNavigation, registerUnsavedNavigationGuard, shouldBlockUnsavedUnload } from "./navigationGuard";
 
 type AssemblyRow = { code: string; u_value?: number | null; shgc?: number | null; label: string };
@@ -90,6 +90,7 @@ type Loads = {
   system_tons: number;
   system_kw: number;
   system_cfm: number;
+  warnings?: string[];
   units: Array<{
     id: string;
     name: string;
@@ -789,6 +790,10 @@ function App() {
   const calculatedLevelVolume = useMemo(() => project.rooms.reduce((sum, room) => sum + roomVolume(room), 0), [project.rooms]);
   const selectedSystemTons = useMemo(() => project.units.reduce((sum, unit) => sum + Number(unit.selected_tons ?? 0), 0), [project.units]);
   const selectedSystemKw = useMemo(() => project.units.reduce((sum, unit) => sum + Number(unit.selected_kw ?? 0), 0), [project.units]);
+  const codeComplianceWarnings = useMemo(
+    () => codeComplianceWarningsForTypeDefinitions(project.location, project.type_definitions),
+    [project.location, project.type_definitions]
+  );
   const roomResults = useMemo<RoomLoadResult[]>(
     () => activeLevel?.rooms ?? project.rooms.map((room) => ({ name: room.name, cooling_btuh: 0, heating_btuh: 0, cfm_cool: 0, cfm_heat: 0, cfm_avg: 0 })),
     [activeLevel, project.rooms]
@@ -1763,10 +1768,11 @@ function App() {
       }
       setLoads(freshLoads);
       setWorstCase(await calculateWorstCase(calculationProject));
+      const warningSuffix = freshLoads.warnings?.length ? ` ${freshLoads.warnings.join(" ")}` : "";
       setValidationMessage(
         raisedUnitCount
-          ? `Calculated current draft and increased selected tons to standard unit sizes for ${raisedUnitCount} unit${raisedUnitCount === 1 ? "" : "s"}. Not saved.`
-          : "Calculated current draft. Not saved."
+          ? `Calculated current draft and increased selected tons to standard unit sizes for ${raisedUnitCount} unit${raisedUnitCount === 1 ? "" : "s"}. Not saved.${warningSuffix}`
+          : `Calculated current draft. Not saved.${warningSuffix}`
       );
     } catch (error) {
       setValidationMessage(error instanceof Error ? error.message : "Could not calculate current draft.");
@@ -2459,6 +2465,11 @@ function App() {
                 {!filteredAssemblies.length && <p className="modal-empty">{assemblyLibraryLoading ? "Loading library..." : "No shared components found."}</p>}
               </div>
             </div>}
+            {codeComplianceWarnings.length > 0 && (
+              <div className="validation-message">
+                {codeComplianceWarnings.map((warning, index) => <div key={index}>{warning}</div>)}
+              </div>
+            )}
             <div className="component-table-wrap">
               <table>
                 <thead>

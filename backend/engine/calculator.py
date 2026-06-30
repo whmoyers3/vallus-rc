@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import re
 
 from .constants import (
     BTUH_PER_KW,
@@ -94,13 +95,96 @@ def _line_result(item: LineItem, cooling_btuh: float, heating_btuh: float) -> Li
     return LineResult(item.name, cooling_btuh, heating_btuh, item.room_name)
 
 
-def infer_cooling_cltd(item: LineItem) -> float:
+_ROOF_CEILING_ASSEMBLY_CODES = {"R1", "R2", "C1", "C2"}
+_FOAMED_ATTIC_PATTERN = re.compile(
+    r"\b(spray|sprayed|foam|foamed|open[\s-]*cell|closed[\s-]*cell|"
+    r"air[\s-]*impermeable|roof[\s-]*deck|roof[\s-]*line|unvented|"
+    r"encapsulated|conditioned attic|indirectly conditioned)\b",
+    flags=re.IGNORECASE,
+)
+_ORDINARY_ATTIC_PATTERN = re.compile(
+    r"\b(blown|batt|fiberglass|cellulose|vented|ordinary|traditional)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _truthy_metadata(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "sprayed", "foam", "foamed", "conditioned", "encapsulated"}
+    return False
+
+
+def project_uses_foamed_attic_w3_method(project: Project) -> bool:
+    """Return whether W3 cooling should use the reduced foamed-attic CLTD.
+
+    The rule is deliberately driven by roof/ceiling evidence, not the W3 row by itself.
+    If multiple roof/ceiling assemblies are present and any ordinary/blank context remains,
+    require an explicit line-item CLTD override for the W3 rows tied to the foamed area.
+    """
+
+    metadata = project.metadata or {}
+    for key in (
+        "foamed_attic",
+        "foamed_attic_w3",
+        "sprayed_attic",
+        "sprayed_attic_w3",
+        "conditioned_attic",
+        "conditioned_attic_w3",
+        "encapsulated_attic",
+        "reduced_w3_cltd",
+        "w3_foamed_attic_method",
+    ):
+        if _truthy_metadata(metadata.get(key)):
+            return True
+    for key in ("w3_cooling_cltd", "w3_cltd"):
+        try:
+            if float(metadata.get(key)) == SPECIAL_CLTD["FOAMED_ATTIC_WALL"]:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    roof_ceiling_assemblies = [
+        assembly
+        for code, assembly in project.assemblies.items()
+        if (assembly.code or code).upper() in _ROOF_CEILING_ASSEMBLY_CODES
+    ]
+    if roof_ceiling_assemblies:
+        return all(
+            assembly.description.strip() and _FOAMED_ATTIC_PATTERN.search(assembly.description)
+            for assembly in roof_ceiling_assemblies
+        )
+
+    notes = " ".join(
+        str(metadata.get(key) or "")
+        for key in (
+            "load_design_notes",
+            "plan_notes",
+            "ceiling_notes",
+            "roof_notes",
+            "attic_notes",
+        )
+    )
+    return bool(notes and _FOAMED_ATTIC_PATTERN.search(notes) and not _ORDINARY_ATTIC_PATTERN.search(notes))
+
+
+def _is_w3_item(item: LineItem) -> bool:
+    return bool(item.assembly and item.assembly.code.upper() == "W3")
+
+
+def infer_cooling_cltd(item: LineItem, *, foamed_attic_w3: bool = False) -> float:
     if item.cooling_cltd is not None:
         return item.cooling_cltd
     assembly_code = item.assembly.code.upper() if item.assembly else ""
     name = item.name.upper()
     direction = item.direction.upper() if item.direction else None
     boundary = (item.boundary or "").upper().replace("-", "_")
+
+    if foamed_attic_w3 and _is_w3_item(item):
+        return SPECIAL_CLTD["FOAMED_ATTIC_WALL"]
 
     if boundary in {"ATTIC", "ATTIC_KNEE_WALL", "KNEE_WALL"}:
         return SPECIAL_CLTD["ATTIC_WALL"]
@@ -212,6 +296,7 @@ def calculate_line_item(
     ventilation_cfm: float | None = None,
     combined_glass_factors: dict[str, int] | None = None,
     infiltration_scale: float = 1.0,
+    foamed_attic_w3: bool = False,
 ) -> LineResult:
     if item.kind == "manual":
         return _line_result(item, item.cooling_btuh or 0.0, item.heating_btuh or 0.0)
@@ -245,7 +330,7 @@ def calculate_line_item(
     if item.kind == "opaque":
         if item.assembly is None or item.assembly.u_value is None:
             raise ValueError(f"Opaque item {item.name!r} requires assembly U-value")
-        cooling_cltd = infer_cooling_cltd(item)
+        cooling_cltd = infer_cooling_cltd(item, foamed_attic_w3=foamed_attic_w3)
         cooling = cooling_component_load(
             item.area,
             item.assembly.u_value,
@@ -288,6 +373,7 @@ def calculate_level(
     ventilation_cfm: float | None = None,
     combined_glass_factors: dict[str, int] | None = None,
     infiltration_scale: float = 1.0,
+    foamed_attic_w3: bool = False,
 ) -> LevelResult:
     line_results = [
         calculate_line_item(
@@ -297,6 +383,7 @@ def calculate_level(
             ventilation_cfm=ventilation_cfm,
             combined_glass_factors=combined_glass_factors,
             infiltration_scale=infiltration_scale,
+            foamed_attic_w3=foamed_attic_w3,
         )
         for item in level.line_items
     ]
@@ -495,6 +582,7 @@ def _ventilation_cfm_by_level(project: Project) -> list[float | None]:
 def calculate_project(project: Project) -> ProjectResult:
     ventilation_by_level = _ventilation_cfm_by_level(project)
     combined_glass_factors = combined_glass_factors_for(project.building_type)
+    foamed_attic_w3 = project_uses_foamed_attic_w3_method(project)
     # Effective air-change rate drives the infiltration load. The standard factors
     # correspond to 0.25 ACH, so scale = effective_ach / 0.25 (None → 1.0, current model).
     #  - Mechanical ventilation (tight/ACH50 homes): outside-air CFM supersedes natural
@@ -515,6 +603,7 @@ def calculate_project(project: Project) -> ProjectResult:
             ventilation_cfm=ventilation_by_level[index],
             combined_glass_factors=combined_glass_factors,
             infiltration_scale=infiltration_scale,
+            foamed_attic_w3=foamed_attic_w3,
         )
         for index, level in enumerate(project.levels)
     ]

@@ -1,6 +1,6 @@
 """Pure calculation engine for residential heat gain/loss loads."""
 
-from .calculator import calculate_project, calculate_level, calculate_line_item
+from .calculator import calculate_project, calculate_level, calculate_line_item, project_uses_foamed_attic_w3_method
 from .formulas import (
     glass_load_factor,
     cooling_component_load,
@@ -29,6 +29,7 @@ __all__ = [
     "calculate_line_item",
     "calculate_level",
     "calculate_project",
+    "project_uses_foamed_attic_w3_method",
     "cooling_component_load",
     "glass_load_factor",
     "heating_component_load",

@@ -50,6 +50,9 @@ SPECIAL_CLTD: dict[str, int] = {
     "GARAGE_WALL": 30,
     "PARTITION": 10,
     "ATTIC_WALL": 55,
+    # Salas-style conditioned/foamed attic W3 method. Do not apply from W3 alone;
+    # calculator.py only uses this when roof/ceiling assembly evidence says sprayed/foam.
+    "FOAMED_ATTIC_WALL": 15,
     "KNEEWALL": 55,
     "FLAT_CEILING": 55,
     # VAULTED/cathedral ceiling = flat-ceiling CLTD (55) x √2 ≈ 78, a 45° roof-slope

@@ -15,6 +15,7 @@ from backend.engine.calculator import (
     LineResult,
     ProjectResult,
     infer_cooling_cltd,
+    project_uses_foamed_attic_w3_method,
 )
 from backend.engine.formulas import glass_load_factor, round_half_up_decimal
 from backend.engine.models import LineItem
@@ -65,7 +66,7 @@ def _assembly_spec_key(type_code: str, u_value: float | None, cltd_or_clf: float
     return (type_code, u_value, cltd_or_clf)
 
 
-def _vrc_spec_for_line(item: LineItem, lr: LineResult) -> tuple | None:
+def _vrc_spec_for_line(item: LineItem, lr: LineResult, *, foamed_attic_w3: bool = False) -> tuple | None:
     """Derive the assembly spec key for a Baseline line result.
 
     Returns None for items that should be excluded (infiltration, lighting,
@@ -92,7 +93,7 @@ def _vrc_spec_for_line(item: LineItem, lr: LineResult) -> tuple | None:
             clf = item.cooling_load_factor
         return _assembly_spec_key(assembly_code, u_value, clf)
     else:
-        cltd = infer_cooling_cltd(item)
+        cltd = infer_cooling_cltd(item, foamed_attic_w3=foamed_attic_w3)
         return _assembly_spec_key(assembly_code, u_value, cltd)
 
 
@@ -102,6 +103,8 @@ def _build_room_variance(
     room_name: str,
     vrc_lines: list[tuple[LineItem, LineResult]],
     salas_components: list[dict[str, Any]],
+    *,
+    foamed_attic_w3: bool = False,
 ) -> dict[str, Any]:
     """Build component variance data for a single room."""
     component_heat_available = any(
@@ -113,7 +116,7 @@ def _build_room_variance(
     # Group Baseline lines by assembly spec
     vrc_by_spec: dict[tuple, dict[str, float]] = {}
     for item, lr in vrc_lines:
-        spec = _vrc_spec_for_line(item, lr)
+        spec = _vrc_spec_for_line(item, lr, foamed_attic_w3=foamed_attic_w3)
         if spec is None:
             continue
         bucket = vrc_by_spec.setdefault(spec, {"cool": 0.0, "heat": 0.0, "qty": 0.0})
@@ -224,6 +227,7 @@ def _build_project_entry(
 
     project = project_from_payload(payload)
     result = calculate_project(project)
+    foamed_attic_w3 = project_uses_foamed_attic_w3_method(project)
 
     meta = payload.get("project", {}).get("metadata", {})
     comparison = meta.get("salas_obrien_comparison")
@@ -301,7 +305,7 @@ def _build_project_entry(
         }
 
         if salas_components:
-            variance = _build_room_variance(room_name, vrc_lines, salas_components)
+            variance = _build_room_variance(room_name, vrc_lines, salas_components, foamed_attic_w3=foamed_attic_w3)
             room_entry["component_heat_available"] = variance["component_heat_available"]
             room_entry["by_type"] = variance["by_type"]
             room_entry["components"] = variance["components"]

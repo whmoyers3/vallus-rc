@@ -18,6 +18,17 @@ Record engine changes here with the snapshot filename so results can be traced b
 
 <!-- Add entries below, newest first -->
 
+## 2026-06-30 — Foamed/sprayed attic W3 cooling CLTD
+
+**Changed:**
+- `calculator.py` now detects project-level foamed/sprayed attic evidence from roof/ceiling assemblies (`R1`/`R2`/`C1`/`C2`) or explicit metadata flags and applies W3 cooling CLTD `15` instead of the vented-attic W3 default `55`.
+- The rule does not trigger from W3 alone. If multiple roof/ceiling assemblies are present and any ordinary/blank condition remains, global W3 reduction is withheld unless the W3 row has an explicit `cooling_cltd` override.
+- Component diagnostics and detail-report variance keys now use the same project-level W3 method as the load calculation.
+
+**Reason:** Dusty King's load-design/component evidence showed `R1`/`R2` as sprayed roof/ceiling insulation. Salas treated the W3 attic/kneewall cooling row with CLTD `15`, while the default VRC attic-wall CLTD `55` over-predicted cooling. This implements the general rule from the baseline-takeoff handoff while preserving W3 geometry and full heating delta-T.
+
+**Result:** Focused W3 inference tests cover default, sprayed/foam, ordinary, and mixed ceiling evidence. Explicit row `cooling_cltd` still wins.
+
 ## 2026-06-07 — UBsmt room metrics, source filename identity, and directional wall inference
 
 **Changed:**

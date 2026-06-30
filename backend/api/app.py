@@ -17,6 +17,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
 from backend.api.airflow_export import build_airflow_workbook, _orientation_table, _group_units, _plan_label
+from backend.api.code_compliance import build_code_compliance_warnings, code_minimums_response
 from backend.api.component_diagnostics import build_component_diagnostics, diagnostics_filename
 from backend.api.database import Database, ProjectNotFound, TakeoffProjectNotFound, TakeoffAssetNotFound, BatteryError
 from backend.api.detail_report import build_detail_report
@@ -212,6 +213,10 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
     def list_assemblies() -> list[dict[str, Any]]:
         return database.list_assemblies()
 
+    @api.get("/api/code-minimums")
+    def code_minimums() -> dict[str, Any]:
+        return code_minimums_response()
+
     @api.post("/api/assemblies", status_code=201)
     def create_assembly(payload: AssemblyPayload) -> dict[str, Any]:
         code = payload.code.upper().strip()
@@ -365,8 +370,9 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
 
     @api.post("/api/calculate")
     def calculate_payload(payload: ProjectPayload) -> dict[str, Any]:
-        result = calculate_project(project_from_payload(payload.model_dump()))
-        return loads_response(result)
+        raw = payload.model_dump()
+        result = calculate_project(project_from_payload(raw))
+        return {**loads_response(result), "warnings": build_code_compliance_warnings(raw)}
 
     @api.post("/api/export/airflow")
     def export_airflow(payload: ProjectPayload) -> Response:
@@ -424,7 +430,7 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
         except ProjectNotFound as exc:
             raise HTTPException(status_code=404, detail="Project not found") from exc
         result = calculate_project(project_from_payload(payload))
-        return loads_response(result)
+        return {**loads_response(result), "warnings": build_code_compliance_warnings(payload)}
 
     # ── PDF report ────────────────────────────────────────────────────────────
 
@@ -453,7 +459,11 @@ def create_app(_legacy_db_path: Optional[str] = None) -> FastAPI:
             try:
                 wrapped = {"project": project_dict} if "project" not in project_dict else project_dict
                 result = calculate_project(project_from_payload(wrapped))
-                results.append({"ok": True, "result": loads_response(result)})
+                results.append({
+                    "ok": True,
+                    "result": loads_response(result),
+                    "warnings": build_code_compliance_warnings(wrapped),
+                })
             except Exception as exc:
                 results.append({"ok": False, "error": str(exc)})
         return {"results": results}

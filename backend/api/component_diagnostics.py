@@ -13,6 +13,7 @@ from backend.engine.calculator import (
     combined_glass_factors_for,
     infer_cooling_cltd,
     infer_heating_delta_t,
+    project_uses_foamed_attic_w3_method,
     recommended_standard_tons,
 )
 from backend.engine.constants import DIRECTIONS
@@ -94,6 +95,7 @@ def _infiltration_scale(project: Project) -> float:
 def _line_result_for_item(project: Project, level_index: int, item: LineItem, steps: int = 0):
     rotated = _rotate_item(item, steps)
     ventilation = _ventilation_by_level(project)[level_index]
+    foamed_attic_w3 = project_uses_foamed_attic_w3_method(project)
     return rotated, calculate_line_item(
         rotated,
         design_conditions=project.design_conditions,
@@ -101,6 +103,7 @@ def _line_result_for_item(project: Project, level_index: int, item: LineItem, st
         ventilation_cfm=ventilation,
         combined_glass_factors=combined_glass_factors_for(project.building_type),
         infiltration_scale=_infiltration_scale(project),
+        foamed_attic_w3=foamed_attic_w3,
     )
 
 
@@ -147,6 +150,7 @@ def _component_row(
 ) -> dict[str, Any]:
     line_result = result.levels[level_index].line_results[item_index]
     assembly = item.assembly
+    foamed_attic_w3 = project_uses_foamed_attic_w3_method(project)
     row: dict[str, Any] = {
         "level": project.levels[level_index].name,
         "index": item_index,
@@ -166,7 +170,7 @@ def _component_row(
         "u_value": assembly.u_value if assembly else None,
         "shgc": assembly.shgc if assembly else None,
         "cooling_factor": _cooling_factor(item, project),
-        "cooling_cltd": infer_cooling_cltd(item) if item.kind == "opaque" else item.cooling_cltd,
+        "cooling_cltd": infer_cooling_cltd(item, foamed_attic_w3=foamed_attic_w3) if item.kind == "opaque" else item.cooling_cltd,
         "heating_delta_t": infer_heating_delta_t(item, project.design_conditions) if assembly else item.heating_delta_t,
         "cooling_btuh_raw": line_result.cooling_btuh,
         "heating_btuh_raw": line_result.heating_btuh,
