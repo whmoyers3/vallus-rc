@@ -2774,8 +2774,8 @@ button.toolbar-primary:hover {
 }
 
 .takeoff-room-sketch-wall--load polygon {
-  fill: rgba(72, 128, 93, 0.18);
-  stroke: #4e7f63;
+  fill: rgba(31, 111, 178, 0.2);
+  stroke: #1f6fb2;
 }
 
 .takeoff-room-sketch-wall--garage polygon {
@@ -2784,19 +2784,19 @@ button.toolbar-primary:hover {
 }
 
 .takeoff-room-sketch-wall--generated polygon {
-  fill: rgba(179, 91, 47, 0.18);
-  stroke: #9a4d28;
+  fill: rgba(201, 51, 44, 0.2);
+  stroke: #c9332c;
   stroke-dasharray: 3 3;
 }
 
 .takeoff-room-sketch-wall--attic polygon {
-  fill: rgba(120, 86, 150, 0.16);
-  stroke: #785696;
+  fill: rgba(201, 51, 44, 0.22);
+  stroke: #c9332c;
 }
 
 .takeoff-room-sketch-wall--generated-exterior polygon {
-  fill: rgba(72, 128, 93, 0.18);
-  stroke: #4e7f63;
+  fill: rgba(31, 111, 178, 0.2);
+  stroke: #1f6fb2;
 }
 
 .takeoff-room-sketch-ceiling polygon {
@@ -2816,18 +2816,18 @@ button.toolbar-primary:hover {
 }
 
 .takeoff-room-sketch--ceiling .takeoff-room-sketch-wall--generated polygon {
-  fill: rgba(179, 91, 47, 0.2);
-  stroke: #9a4d28;
+  fill: rgba(201, 51, 44, 0.22);
+  stroke: #c9332c;
 }
 
 .takeoff-room-sketch--ceiling .takeoff-room-sketch-wall--attic polygon {
-  fill: rgba(120, 86, 150, 0.16);
-  stroke: #785696;
+  fill: rgba(201, 51, 44, 0.22);
+  stroke: #c9332c;
 }
 
 .takeoff-room-sketch--ceiling .takeoff-room-sketch-wall--generated-exterior polygon {
-  fill: rgba(72, 128, 93, 0.18);
-  stroke: #4e7f63;
+  fill: rgba(31, 111, 178, 0.2);
+  stroke: #1f6fb2;
 }
 
 .takeoff-room-sketch--ceiling .takeoff-room-sketch-opening circle {
