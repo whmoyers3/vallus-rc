@@ -104,6 +104,11 @@ type CanvasPointerPosition = {
   svgY: number;
   point: TakeoffPoint;
 };
+type PendingPlanFocus = {
+  floorId: string;
+  point: TakeoffPoint;
+  zoom: number;
+};
 type PrecisionLoupeState = CanvasPointerPosition & {
   shiftKey: boolean;
 };
@@ -2589,6 +2594,53 @@ function traceQaIssue(
     evidence,
     target: traceQaTarget(floor),
   };
+}
+
+function pointFromTraceQaEvidence(value: unknown): TakeoffPoint | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.x === "number" && typeof candidate.y === "number" && Number.isFinite(candidate.x) && Number.isFinite(candidate.y)
+    ? { x: candidate.x, y: candidate.y }
+    : null;
+}
+
+function nestedTraceQaPoint(value: unknown, key: string) {
+  if (!value || typeof value !== "object") return null;
+  return pointFromTraceQaEvidence((value as Record<string, unknown>)[key]);
+}
+
+function averagedTraceQaPoint(points: TakeoffPoint[]) {
+  if (points.length === 0) return null;
+  return {
+    x: Number((points.reduce((sum, point) => sum + point.x, 0) / points.length).toFixed(3)),
+    y: Number((points.reduce((sum, point) => sum + point.y, 0) / points.length).toFixed(3)),
+  };
+}
+
+function traceQaFocusPoint(issue: TakeoffValidationIssue): TakeoffPoint | null {
+  if (issue.checkType !== "trace-geometry-qa" || !issue.evidence) return null;
+  const evidence = issue.evidence;
+  const category = evidence.category;
+  if (category === "tiny-segment") {
+    const a = pointFromTraceQaEvidence(evidence.a);
+    const b = pointFromTraceQaEvidence(evidence.b);
+    return averagedTraceQaPoint([a, b].filter((point): point is TakeoffPoint => Boolean(point)));
+  }
+  if (category === "close-point-cluster") {
+    const first = nestedTraceQaPoint(evidence.first, "point");
+    const second = nestedTraceQaPoint(evidence.second, "point");
+    return averagedTraceQaPoint([first, second].filter((point): point is TakeoffPoint => Boolean(point)));
+  }
+  if (category === "narrow-parallel-gap") {
+    const points = [
+      nestedTraceQaPoint(evidence.first, "a"),
+      nestedTraceQaPoint(evidence.first, "b"),
+      nestedTraceQaPoint(evidence.second, "a"),
+      nestedTraceQaPoint(evidence.second, "b"),
+    ].filter((point): point is TakeoffPoint => Boolean(point));
+    return averagedTraceQaPoint(points);
+  }
+  return null;
 }
 
 function traceGeometryQaIssues(floor: TakeoffFloor): TakeoffValidationIssue[] {
@@ -8501,6 +8553,7 @@ export function TakeoffApp() {
   const [pendingOpeningTarget, setPendingOpeningTarget] = useState<PendingOpeningTarget>(null);
   const [editingOpeningTarget, setEditingOpeningTarget] = useState<EditingOpeningTarget>(null);
   const [selectedOpening, setSelectedOpening] = useState<OpeningMoveTarget | null>(null);
+  const [pendingPlanFocus, setPendingPlanFocus] = useState<PendingPlanFocus | null>(null);
   const [precisionLoupe, setPrecisionLoupe] = useState<PrecisionLoupeState | null>(null);
   const [precisionLoupeZoom, setPrecisionLoupeZoom] = useState(defaultPrecisionLoupeZoom);
   const inlineRoomNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -9032,6 +9085,31 @@ export function TakeoffApp() {
     ? Math.abs((nextFloorAbove.elevation ?? 0) - expectedNextFloorElevation) > 0.01
     : false;
 
+  useEffect(() => {
+    if (!pendingPlanFocus) return;
+    if (activeFloorId !== pendingPlanFocus.floorId || planReviewMode !== "plan") return;
+    if (Math.abs(zoom - pendingPlanFocus.zoom) > 0.001) return;
+    const targetX = offsetX + pendingPlanFocus.point.x * baseScale * pendingPlanFocus.zoom;
+    const targetY = offsetY + pendingPlanFocus.point.y * baseScale * pendingPlanFocus.zoom;
+    let cancelled = false;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (cancelled) return;
+        const scroll = canvasScrollRef.current;
+        if (!scroll) {
+          setPendingPlanFocus(null);
+          return;
+        }
+        scroll.scrollLeft = Math.max(0, targetX - scroll.clientWidth / 2);
+        scroll.scrollTop = Math.max(0, targetY - scroll.clientHeight / 2);
+        setPendingPlanFocus(null);
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeFloorId, baseScale, pendingPlanFocus, planReviewMode, zoom]);
+
   function updateFloor(patch: Partial<TakeoffFloor>) {
     setFloor((current) => ({ ...current, ...patch }));
   }
@@ -9120,6 +9198,7 @@ export function TakeoffApp() {
     setPendingOpeningTarget(null);
     setEditingOpeningTarget(null);
     setSelectedOpening(null);
+    setPendingPlanFocus(null);
     setDragState(null);
     setAlignmentDrag(null);
     setWorkflowStep("trace");
@@ -12705,14 +12784,20 @@ export function TakeoffApp() {
     }
     if (!issue.target) return;
     if (issue.target.type === "floor") {
+      const focusPoint = traceQaFocusPoint(issue);
       setSelectedRoomId(null);
       setSelectedUnassignedRegionId(null);
       setPlanReviewMode("plan");
       setWorkflowStep("trace");
       setTraceTool("select");
       setZoom(maxPlanZoom);
+      if (focusPoint) {
+        setPendingPlanFocus({ floorId: issueFloor.id, point: focusPoint, zoom: maxPlanZoom });
+      }
       setRightPanelOpen(true);
-      setMessage(`${issueFloor.name || "Floor"} trace geometry selected. Review the close points or narrow segments at max zoom.`);
+      setMessage(focusPoint
+        ? `${issueFloor.name || "Floor"} trace geometry selected and centered at ${shortPointLabel(focusPoint)}.`
+        : `${issueFloor.name || "Floor"} trace geometry selected. Review the close points or narrow segments at max zoom.`);
       return;
     }
     if (issue.target.type === "room" && issue.target.roomId) {
@@ -12915,6 +13000,20 @@ export function TakeoffApp() {
   function maxZoomPlan() {
     setZoom(maxPlanZoom);
     setMessage("Zoomed to 800%.");
+  }
+
+  function focusFirstTraceGeometryIssue() {
+    const traceEntry = visibleProjectValidation.find((entry) => entry.floor.id === activeFloorId && entry.issue.checkType === "trace-geometry-qa")
+      ?? visibleProjectValidation.find((entry) => entry.issue.checkType === "trace-geometry-qa");
+    if (traceEntry) {
+      focusValidationIssue(traceEntry.issue, traceEntry.key, traceEntry.floor);
+      return;
+    }
+    setPlanReviewMode("plan");
+    setWorkflowStep("trace");
+    setTraceTool("select");
+    setZoom(maxPlanZoom);
+    setMessage("Trace QA review opened at max zoom. Hold Option/Alt for the loupe while checking close points.");
   }
 
   function clampPrecisionLoupeZoom(value: number) {
@@ -13860,18 +13959,7 @@ export function TakeoffApp() {
             <div className="takeoff-form-actions">
               <button type="button" onClick={recheckValidation}>Recheck</button>
               <button type="button" onClick={resetValidationDecisions} disabled={validationDecisionCount === 0}>Reset Dismissed</button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPlanReviewMode("plan");
-                  setWorkflowStep("trace");
-                  setTraceTool("select");
-                  setZoom(maxPlanZoom);
-                  setMessage("Trace QA review opened at max zoom. Hold Option/Alt for the loupe while checking close points.");
-                }}
-              >
-                Review Trace
-              </button>
+              <button type="button" onClick={focusFirstTraceGeometryIssue}>Review Trace</button>
             </div>
             <p className="takeoff-note">
               Generated wall segments can be rebuilt after trace geometry is confirmed; ceiling settings remain unchanged.
