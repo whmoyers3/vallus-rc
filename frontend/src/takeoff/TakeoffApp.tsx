@@ -365,6 +365,51 @@ function ReferencePlanImage({ floor, src, alt, crop }: { floor: TakeoffFloor; sr
   );
 }
 
+function SvgReferencePlanImage({
+  floor,
+  src,
+  crop = referenceCropForFloor(floor),
+  width,
+  height,
+}: {
+  floor: TakeoffFloor;
+  src: string;
+  crop?: PlanRect;
+  width: number;
+  height: number;
+}) {
+  const rotationDeg = normalizeReferenceRotation(floor.reference?.rotationDeg);
+  const mirroredX = Boolean(floor.reference?.mirroredX);
+  const fullCrop = referenceFullCropForFloor(floor, rotationDeg);
+  const source = referenceSourceSizeForFloor(floor);
+  const center = { x: fullCrop.width / 2, y: fullCrop.depth / 2 };
+  return (
+    <svg
+      x="0"
+      y="0"
+      width={Math.max(0, width)}
+      height={Math.max(0, height)}
+      viewBox={`${crop.x} ${crop.y} ${Math.max(crop.width, 1)} ${Math.max(crop.depth, 1)}`}
+      preserveAspectRatio="none"
+      overflow="hidden"
+    >
+      <rect x={crop.x} y={crop.y} width={Math.max(crop.width, 1)} height={Math.max(crop.depth, 1)} fill="#ffffff" />
+      <g transform={`translate(${center.x} ${center.y}) rotate(${rotationDeg})`}>
+        <g transform={mirroredX ? "scale(-1 1)" : undefined}>
+          <image
+            href={src}
+            x={-source.width / 2}
+            y={-source.depth / 2}
+            width={source.width}
+            height={source.depth}
+            preserveAspectRatio="none"
+          />
+        </g>
+      </g>
+    </svg>
+  );
+}
+
 function referenceSourceUvForRotatedPoint(floor: TakeoffFloor, point: TakeoffPoint) {
   const rotationDeg = normalizeReferenceRotation(floor.reference?.rotationDeg);
   const source = referenceSourceSizeForFloor(floor);
@@ -8312,7 +8357,7 @@ export function TakeoffApp() {
 
   useEffect(() => {
     function syncPrecisionLoupeFromKeyboard(event: KeyboardEvent) {
-      if (planReviewMode !== "plan") return;
+      if (planReviewMode === "elevation" || planReviewMode === "alignment") return;
       const activeElement = document.activeElement;
       if (
         activeElement instanceof HTMLInputElement ||
@@ -8343,7 +8388,7 @@ export function TakeoffApp() {
   }, [planReviewMode]);
 
   useEffect(() => {
-    if (planReviewMode !== "plan") {
+    if (planReviewMode === "elevation" || planReviewMode === "alignment") {
       lastCanvasPointerRef.current = null;
       setPrecisionLoupe(null);
     }
@@ -11365,7 +11410,7 @@ export function TakeoffApp() {
     const pointer = canvasPointerPositionFromEvent(event);
     if (!pointer) return null;
     lastCanvasPointerRef.current = pointer;
-    if (planReviewMode === "plan" && event.altKey) {
+    if (planReviewMode !== "elevation" && planReviewMode !== "alignment" && event.altKey) {
       setPrecisionLoupe({ ...pointer, shiftKey: event.shiftKey });
     } else {
       setPrecisionLoupe(null);
@@ -13147,7 +13192,41 @@ export function TakeoffApp() {
     return null;
   })();
   const planContentId = "takeoff-plan-content";
+  const planReferenceContentId = "takeoff-plan-reference-content";
   const precisionLoupeClipId = "takeoff-precision-loupe-clip";
+  const planReferenceLayers = [
+    ...orderedFloors.filter((entry) => entry.id !== floor.id).flatMap((entry) => {
+      const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
+      const src = referenceUrls[entry.id] ?? "";
+      if (!options.visible || !options.reference || !src || !entry.reference) return [];
+      return [{
+        id: `reference-${entry.id}`,
+        floor: entry,
+        src,
+        crop: referenceCropForFloor(entry),
+        display: referenceDisplayRectForFloor(entry),
+        opacity: 0.32,
+        transform: null,
+      }];
+    }),
+    ...(activeFloorViewOptions.visible && activeFloorViewOptions.reference && referenceUrl && floor.reference
+      ? [{
+          id: `reference-${floor.id}`,
+          floor,
+          src: referenceUrl,
+          crop: visibleCrop,
+          display: referenceDisplay,
+          opacity: 0.72,
+          transform: floor.alignment?.transform
+            ? {
+                translateX: alignmentTransform.translateX,
+                translateY: alignmentTransform.translateY,
+                scale: alignmentEffectiveScale,
+              }
+            : null,
+        }]
+      : []),
+  ];
   const precisionLoupeScaleFactor = precisionLoupe ? precisionLoupeZoom / Math.max(zoom, 0.01) : 1;
   const precisionLoupeTargetPoint = precisionLoupe ? precisionTargetPointForCursor(precisionLoupe.point, precisionLoupe.shiftKey) : null;
   const precisionLoupeTargetScreenPoint = precisionLoupe && precisionLoupeTargetPoint
@@ -13897,6 +13976,25 @@ export function TakeoffApp() {
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
                   <path d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`} fill="none" stroke="#dce4ea" strokeWidth="1" />
                 </pattern>
+                <g id={planReferenceContentId}>
+                  {planReferenceLayers.map((layer) => (
+                    <g
+                      key={layer.id}
+                      opacity={layer.opacity}
+                      transform={`translate(${offsetX + layer.display.x * scale} ${offsetY + layer.display.y * scale})`}
+                    >
+                      <g transform={layer.transform ? `translate(${layer.transform.translateX * scale} ${layer.transform.translateY * scale}) scale(${layer.transform.scale})` : undefined}>
+                        <SvgReferencePlanImage
+                          floor={layer.floor}
+                          src={layer.src}
+                          crop={layer.crop}
+                          width={layer.display.width * scale}
+                          height={layer.display.depth * scale}
+                        />
+                      </g>
+                    </g>
+                  ))}
+                </g>
                 {precisionLoupe && (
                   <clipPath id={precisionLoupeClipId}>
                     <circle cx={precisionLoupe.svgX} cy={precisionLoupe.svgY} r={precisionLoupeRadius} />
@@ -13904,7 +14002,7 @@ export function TakeoffApp() {
                 )}
               </defs>
               <g id={planContentId}>
-              <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill={referenceUrl && activeFloorViewOptions.visible && activeFloorViewOptions.reference ? "transparent" : "#f8fafb"} />
+              <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill={planReferenceLayers.length > 0 ? "transparent" : "#f8fafb"} />
               <rect x={offsetX} y={offsetY} width={floor.designGrid.width * scale} height={floor.designGrid.depth * scale} fill="url(#takeoff-grid-small)" stroke="#b7c4cf" strokeWidth="1.5" />
               {orderedFloors.filter((entry) => entry.id !== floor.id).flatMap((entry) => {
                 const options = floorViewOptions[entry.id] ?? defaultFloorViewOptions();
@@ -14393,6 +14491,12 @@ export function TakeoffApp() {
                       height={precisionLoupeRadius * 2}
                       fill="#f8fafb"
                     />
+                    {planReferenceLayers.length > 0 && (
+                      <use
+                        href={`#${planReferenceContentId}`}
+                        transform={`translate(${precisionLoupe.svgX} ${precisionLoupe.svgY}) scale(${precisionLoupeScaleFactor}) translate(${-precisionLoupe.svgX} ${-precisionLoupe.svgY})`}
+                      />
+                    )}
                     <use
                       href={`#${planContentId}`}
                       transform={`translate(${precisionLoupe.svgX} ${precisionLoupe.svgY}) scale(${precisionLoupeScaleFactor}) translate(${-precisionLoupe.svgX} ${-precisionLoupe.svgY})`}
