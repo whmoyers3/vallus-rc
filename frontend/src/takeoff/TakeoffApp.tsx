@@ -127,6 +127,7 @@ type ModelMeshPart = {
   source?: TakeoffRoomComponentSource;
   geometryLabel?: string;
   adjacency?: TakeoffWallAdjacency;
+  boundary?: TakeoffBoundaryType;
   loadExempt?: boolean;
 };
 type ModelSurfaceSelection = {
@@ -142,6 +143,7 @@ type ModelSurfaceSelection = {
   source?: TakeoffRoomComponentSource;
   geometryLabel?: string;
   adjacency?: TakeoffWallAdjacency;
+  boundary?: TakeoffBoundaryType;
   loadExempt?: boolean;
   width?: number;
   height?: number;
@@ -1773,14 +1775,27 @@ function wallCanHostOpenings(component: TakeoffRoomComponent) {
   return component.adjacency == null || component.adjacency === "outside" || component.adjacency === "garage" || component.adjacency === "unknown";
 }
 
-function componentIsAtticKneeWallTreatment(component?: Pick<TakeoffRoomComponent, "assembly" | "adjacency" | "boundary"> | null) {
-  if (!component) return false;
-  return component.assembly === "W3" || component.adjacency === "attic" || component.boundary === "attic_knee_wall";
+type WallTreatmentFields = Partial<Pick<TakeoffRoomComponent, "assembly" | "adjacency" | "boundary" | "label" | "geometryLabel" | "source">>;
+type WallTreatmentKind = "exterior" | "attic" | "other";
+
+function componentWallTreatmentKind(component?: WallTreatmentFields | null): WallTreatmentKind {
+  if (!component) return "other";
+  const label = `${component.label ?? ""} ${component.geometryLabel ?? ""}`.toLowerCase();
+  if (component.assembly === "W3") return "attic";
+  if (component.assembly === "W1") return "exterior";
+  if (component.adjacency === "outside" || component.boundary === "exterior" || label.includes("exterior")) return "exterior";
+  if (component.adjacency === "attic" || component.boundary === "attic_knee_wall" || label.includes("attic") || label.includes("knee-wall") || label.includes("kneewall")) return "attic";
+  return "other";
 }
 
-function componentIsExteriorWallTreatment(component?: Pick<TakeoffRoomComponent, "adjacency" | "boundary"> | null) {
+function componentIsAtticKneeWallTreatment(component?: WallTreatmentFields | null) {
+  return componentWallTreatmentKind(component) === "attic";
+}
+
+function componentIsExteriorWallTreatment(component?: WallTreatmentFields | null) {
   if (!component) return false;
-  return component.adjacency == null || component.adjacency === "outside" || component.boundary === "exterior";
+  const treatment = componentWallTreatmentKind(component);
+  return treatment === "exterior" || (treatment === "other" && component.adjacency == null && component.boundary == null);
 }
 
 function componentIsFloorOverGarage(component: TakeoffRoomComponent) {
@@ -3098,6 +3113,47 @@ function boundaryForAdjacency(adjacency: TakeoffWallAdjacency): TakeoffBoundaryT
   return "unknown";
 }
 
+function wallAdjacencyForAssignedAssembly(
+  assembly: string,
+  selection?: Pick<ModelSurfaceSelection, "adjacency" | "boundary" | "label" | "geometryLabel">,
+  existing?: Pick<TakeoffRoomComponent, "adjacency" | "boundary" | "label" | "geometryLabel">,
+): TakeoffWallAdjacency {
+  if (assembly === "W1") return "outside";
+  if (assembly === "W3") return "attic";
+  const currentAdjacency = selection?.adjacency ?? existing?.adjacency;
+  if (currentAdjacency) return currentAdjacency;
+  const currentBoundary = selection?.boundary ?? existing?.boundary;
+  if (currentBoundary === "exterior") return "outside";
+  if (currentBoundary === "attic_knee_wall") return "attic";
+  if (currentBoundary === "garage_wall") return "garage";
+  if (currentBoundary === "crawlspace_wall") return "crawlspace";
+  if (currentBoundary === "partition") return "conditioned";
+  const label = `${selection?.label ?? ""} ${selection?.geometryLabel ?? ""} ${existing?.label ?? ""} ${existing?.geometryLabel ?? ""}`.toLowerCase();
+  if (label.includes("attic") || label.includes("knee-wall") || label.includes("kneewall")) return "attic";
+  if (label.includes("garage")) return "garage";
+  if (label.includes("crawl")) return "crawlspace";
+  if (label.includes("conditioned")) return "conditioned";
+  return "outside";
+}
+
+function wallLabelForAssignedAssembly(
+  selection: Pick<ModelSurfaceSelection, "direction" | "label">,
+  existing: Pick<TakeoffRoomComponent, "label"> | undefined,
+  option: Pick<TakeoffComponentDefinition, "description"> | undefined,
+  assembly: string,
+  adjacency: TakeoffWallAdjacency,
+) {
+  const label = selection.label || existing?.label || option?.description || "";
+  const lowerLabel = label.toLowerCase();
+  if (assembly === "W1" && (lowerLabel.includes("attic") || lowerLabel.includes("knee-wall") || lowerLabel.includes("kneewall"))) {
+    return `${selection.direction ?? "Exterior"} exterior wall`;
+  }
+  if (assembly === "W3" && lowerLabel.includes("exterior")) {
+    return `${selection.direction ?? "Attic"} attic knee wall`;
+  }
+  return label;
+}
+
 function componentBoundaryForSurface(component: TakeoffRoomComponent): TakeoffBoundaryType | undefined {
   if (component.boundary) return component.boundary;
   if (component.surface === "wall") return boundaryForAdjacency(component.adjacency ?? "outside");
@@ -3432,6 +3488,51 @@ function wallProfileRemainderGapFillSuggestionsForRoom(floor: TakeoffFloor, room
   return suggestions;
 }
 
+function wallSegmentContinuityGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): WallGapFillSuggestion[] {
+  const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
+  const profileComponents = roomSurfaceComponents(room, "wall").filter(componentDefinesWallProfileCoverage);
+  if (profileComponents.length === 0 || baseHeight <= 0.05) return [];
+
+  const suggestions: WallGapFillSuggestion[] = [];
+  for (const segment of roomExteriorSegments(floor, room, { includeConditionedAdjacency: true })) {
+    const segmentProfileComponents = wallProfileComponentsForSegment(floor, room, segment, profileComponents);
+    if (segmentProfileComponents.length === 0) continue;
+    const profileRanges = segmentProfileComponents
+      .map((component) => wallProfileSpanRangeForComponent(component, segment.length, baseHeight))
+      .filter((range) => range.end - range.start > 0.05);
+    const uncoveredRanges = uncoveredSegmentRanges(profileRanges, segment.length);
+    uncoveredRanges.forEach((range, rangeIndex) => {
+      const spanLength = range.end - range.start;
+      const area = Number((spanLength * baseHeight).toFixed(3));
+      if (spanLength <= 0.25 || area <= 0.5) return;
+      const polygon = [
+        { x: Number(range.start.toFixed(3)), y: 0 },
+        { x: Number(range.end.toFixed(3)), y: 0 },
+        { x: Number(range.end.toFixed(3)), y: Number(baseHeight.toFixed(3)) },
+        { x: Number(range.start.toFixed(3)), y: Number(baseHeight.toFixed(3)) },
+      ];
+      suggestions.push({
+        key: `segment-continuity:${room.id}:${segment.direction}:${Math.round(range.start * 10)}:${Math.round(range.end * 10)}:${rangeIndex}`,
+        direction: segment.direction,
+        area,
+        label: `${segment.direction} exterior wall continuity panel`,
+        geometryLabel: `Exterior continuity panel ${Number(range.start.toFixed(1))}-${Number(range.end.toFixed(1))} lf beside generated profiles`,
+        adjacency: "outside",
+        assembly: defaultWallAssemblyForAdjacency("outside"),
+        boundary: "exterior",
+        spanStart: Number(range.start.toFixed(3)),
+        spanEnd: Number(range.end.toFixed(3)),
+        zMin: 0,
+        zMax: Number(baseHeight.toFixed(3)),
+        placement: pointAtSegmentDistance(segment, (range.start + range.end) / 2),
+        wallProfilePolygons: [polygon],
+      });
+    });
+  }
+
+  return suggestions;
+}
+
 function wallGapFillSuggestionsOverlap(first: WallGapFillSuggestion, second: WallGapFillSuggestion) {
   if (first.direction !== second.direction) return false;
   const spanOverlap = intervalOverlap(first.spanStart, first.spanEnd, second.spanStart, second.spanEnd);
@@ -3505,7 +3606,9 @@ function wallGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoo
   const specificGapFills = [...boundaryGapFills, ...conditionedProfileGapFills];
   const profileRemainderGapFills = wallProfileRemainderGapFillSuggestionsForRoom(floor, room)
     .filter((suggestion) => !specificGapFills.some((existing) => wallGapFillSuggestionsOverlap(existing, suggestion)));
-  return [...specificGapFills, ...profileRemainderGapFills];
+  const continuityGapFills = wallSegmentContinuityGapFillSuggestionsForRoom(floor, room)
+    .filter((suggestion) => ![...specificGapFills, ...profileRemainderGapFills].some((existing) => wallGapFillSuggestionsOverlap(existing, suggestion)));
+  return [...specificGapFills, ...profileRemainderGapFills, ...continuityGapFills];
 }
 
 function wallGapFillSuggestionApplied(room: TakeoffRectRoom, suggestion: WallGapFillSuggestion) {
@@ -5495,9 +5598,9 @@ function wallGapFillMeshPartsForRoom(
     if (!isCompassDirection(component.direction)) return [];
     const segment = wallSegmentForProfileComponent(floor, room, component);
     if (!segment) return [];
-    const isKneeWall = componentIsAtticKneeWallTreatment(component);
-    const material = isKneeWall ? kneeWallMaterial : exteriorWallMaterial;
-    const kind: ModelSurfaceKind = isKneeWall ? "knee-wall" : "load-wall";
+    const treatment = componentWallTreatmentKind(component);
+    const material = treatment === "attic" ? kneeWallMaterial : exteriorWallMaterial;
+    const kind: ModelSurfaceKind = treatment === "attic" ? "knee-wall" : "load-wall";
     const profiles = component.wallProfilePolygons?.length
       ? component.wallProfilePolygons
       : [[
@@ -5516,7 +5619,7 @@ function wallGapFillMeshPartsForRoom(
           material,
         ),
         kind,
-        label: component.label || (isKneeWall ? `${component.direction} attic knee-wall profile` : `${component.direction} exterior wall gap fill`),
+        label: component.label || (treatment === "attic" ? `${component.direction} attic knee-wall profile` : `${component.direction} exterior wall gap fill`),
         surface: "wall",
         direction: component.direction,
         area: profileArea,
@@ -5524,6 +5627,8 @@ function wallGapFillMeshPartsForRoom(
         componentId: component.id,
         source: component.source,
         geometryLabel: component.geometryLabel || `Wall gap fill ${index + 1}`,
+        adjacency: component.adjacency,
+        boundary: component.boundary,
       }];
     });
   });
@@ -5916,7 +6021,8 @@ function TakeoffModelPreview({
     const doorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: modelComponentOpacity(0.82, 0.9), side: THREE.DoubleSide });
     const openingFrameMaterial = new THREE.MeshBasicMaterial({ color: 0x2f3b1f, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
     const lineMaterial = new THREE.LineBasicMaterial({ color: 0xb35b2f });
-    const hoverOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x0f5fa8, depthTest: false, transparent: true, opacity: 0.95 });
+    const hoverOutlineMaterial = new THREE.LineBasicMaterial({ color: 0x39ff14, linewidth: 4, depthTest: false, depthWrite: false, transparent: true, opacity: 1 });
+    const hoverFillMaterial = new THREE.MeshBasicMaterial({ color: 0x39ff14, depthTest: false, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
     const ghostReferenceMaterial = new THREE.MeshBasicMaterial({ color: 0x4a6070, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
     const ghostRoomMaterial = new THREE.MeshPhongMaterial({ color: 0x8799a8, depthWrite: false, transparent: true, opacity: 0.18, side: THREE.DoubleSide });
     const ghostExteriorMaterial = new THREE.MeshBasicMaterial({ color: 0x5f7f9b, depthWrite: false, transparent: true, opacity: 0.12, side: THREE.DoubleSide });
@@ -6009,8 +6115,9 @@ function TakeoffModelPreview({
               (!part.direction || candidate.direction === part.direction)
             );
             if (component?.loadExempt || component?.adjacency === "conditioned") continue;
-            if (componentIsExteriorWallTreatment(component)) part.mesh.material = passiveWallMaterial;
-            if (componentIsAtticKneeWallTreatment(component)) part.mesh.material = passiveKneeWallMaterial;
+            const treatment = componentWallTreatmentKind(component);
+            if (treatment === "exterior") part.mesh.material = passiveWallMaterial;
+            if (treatment === "attic") part.mesh.material = passiveKneeWallMaterial;
             part.mesh.position.y += yOffset;
             scene.add(part.mesh);
           }
@@ -6175,6 +6282,8 @@ function TakeoffModelPreview({
               direction: segment.direction,
               area: Number(((range.end - range.start) * Math.max(baseWallHeight, 0)).toFixed(3)),
               assembly: baseWallComponent?.assembly,
+              adjacency: baseWallComponent?.adjacency,
+              boundary: baseWallComponent?.boundary,
             } satisfies ModelSurfaceSelection;
             scene.add(wallMesh);
           }
@@ -6191,13 +6300,14 @@ function TakeoffModelPreview({
             (!part.direction || candidate.direction === part.direction)
           );
           if (component?.loadExempt || component?.adjacency === "conditioned") continue;
-          const modelKind = componentIsAtticKneeWallTreatment(component)
+          const treatment = componentWallTreatmentKind(component);
+          const modelKind = treatment === "attic"
               ? "knee-wall"
-              : componentIsExteriorWallTreatment(component)
+              : treatment === "exterior"
                 ? "load-wall"
                 : part.kind;
-          if (componentIsExteriorWallTreatment(component)) part.mesh.material = generatedExteriorWallMaterial;
-          if (componentIsAtticKneeWallTreatment(component)) part.mesh.material = generatedKneeWallMaterial;
+          if (treatment === "exterior") part.mesh.material = generatedExteriorWallMaterial;
+          if (treatment === "attic") part.mesh.material = generatedKneeWallMaterial;
           part.mesh.position.y += activeFloorYOffset;
           part.mesh.userData.roomId = room.id;
           part.mesh.userData.modelSurface = {
@@ -6212,6 +6322,8 @@ function TakeoffModelPreview({
             componentId: component?.id,
             source: component?.source ?? part.source,
             geometryLabel: component?.geometryLabel ?? part.geometryLabel,
+            adjacency: component?.adjacency ?? part.adjacency,
+            boundary: component?.boundary ?? part.boundary,
           } satisfies ModelSurfaceSelection;
           scene.add(part.mesh);
         }
@@ -6230,6 +6342,8 @@ function TakeoffModelPreview({
             componentId: part.componentId,
             source: part.source,
             geometryLabel: part.geometryLabel,
+            adjacency: part.adjacency,
+            boundary: part.boundary,
           } satisfies ModelSurfaceSelection;
           scene.add(part.mesh);
         }
@@ -6260,6 +6374,8 @@ function TakeoffModelPreview({
             componentId: component?.id,
             source: component?.source ?? part.source,
             geometryLabel: component?.geometryLabel ?? part.geometryLabel,
+            adjacency: component?.adjacency,
+            boundary: component?.boundary,
           } satisfies ModelSurfaceSelection;
           scene.add(part.mesh);
         }
@@ -6470,7 +6586,7 @@ function TakeoffModelPreview({
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    let hoverOutline: THREE.LineSegments | null = null;
+    let hoverOutline: THREE.Group | null = null;
     let hoverSurfaceKey = "";
     const pressedKeys = new Set<string>();
     const cameraEuler = new THREE.Euler().setFromQuaternion(camera.quaternion, "YXZ");
@@ -6602,8 +6718,30 @@ function TakeoffModelPreview({
     function clearHoverOutline() {
       if (!hoverOutline) return;
       hoverOutline.parent?.remove(hoverOutline);
-      hoverOutline.geometry.dispose();
+      hoverOutline.traverse((child) => {
+        if (child instanceof THREE.LineSegments || child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+        }
+      });
       hoverOutline = null;
+    }
+
+    function createHoverHighlight(mesh: THREE.Mesh) {
+      const group = new THREE.Group();
+      group.userData.hoverOutline = true;
+      const fill = new THREE.Mesh(mesh.geometry.clone(), hoverFillMaterial);
+      fill.userData.hoverOutline = true;
+      fill.renderOrder = 998;
+      group.add(fill);
+      for (let index = 0; index < 3; index += 1) {
+        const outline = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), hoverOutlineMaterial);
+        outline.userData.hoverOutline = true;
+        outline.renderOrder = 999 + index;
+        const scale = 1 + index * 0.0025;
+        outline.scale.setScalar(scale);
+        group.add(outline);
+      }
+      return group;
     }
 
     function setPointerFromEvent(event: PointerEvent) {
@@ -6678,9 +6816,7 @@ function TakeoffModelPreview({
       if (hit && surface) {
         const mesh = meshFromObject(hit.object);
         if (mesh) {
-          hoverOutline = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), hoverOutlineMaterial);
-          hoverOutline.userData.hoverOutline = true;
-          hoverOutline.renderOrder = 999;
+          hoverOutline = createHoverHighlight(mesh);
           mesh.add(hoverOutline);
         }
       }
@@ -6924,6 +7060,7 @@ function TakeoffModelPreview({
       });
       loadedTextures.forEach((texture) => texture.dispose());
       hoverOutlineMaterial.dispose();
+      hoverFillMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
   }, [activeFloorId, cameraMode, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, onUpdateOpeningComponent, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers, walkthroughComponentTransparency]);
@@ -7161,6 +7298,20 @@ function TakeoffModelPreview({
                 onClick={() => {
                   if (!selectedSurfaceAssembly) return;
                   onAssignSurfaceComponent(selectedSurface, selectedSurfaceAssembly);
+                  if (selectedSurface.surface === "wall") {
+                    const adjacency = wallAdjacencyForAssignedAssembly(selectedSurfaceAssembly, selectedSurface);
+                    setSelectedSurface((current) => (
+                      current && modelSurfaceKey(current) === modelSurfaceKey(selectedSurface)
+                        ? {
+                            ...current,
+                            assembly: selectedSurfaceAssembly,
+                            adjacency,
+                            boundary: boundaryForAdjacency(adjacency),
+                            kind: adjacency === "attic" ? "knee-wall" : "load-wall",
+                          }
+                        : current
+                    ));
+                  }
                 }}
               >
                 Apply Component
@@ -9378,9 +9529,9 @@ export function TakeoffApp() {
             matchesGapFillSuggestion(component, suggestion)
           );
           const key = `${room.id}:${suggestion.key}`;
-          const adjacency = wallAdjacencies[key] || existing?.adjacency || suggestion.adjacency;
+          const adjacency = wallAdjacencies[key] || suggestion.adjacency || existing?.adjacency || "outside";
           const loadExempt = adjacency === "conditioned";
-          const assembly = loadExempt ? "NO_LOAD" : wallAssemblies[key] || existing?.assembly || suggestion.assembly || defaultWallAssemblyForAdjacency(adjacency);
+          const assembly = loadExempt ? "NO_LOAD" : wallAssemblies[key] || suggestion.assembly || existing?.assembly || defaultWallAssemblyForAdjacency(adjacency);
           return {
             ...(existing ?? defaultComponent("wall", suggestion.area)),
             assembly,
@@ -9428,6 +9579,7 @@ export function TakeoffApp() {
             component.source === "raised-ceiling" ||
             component.source === "vault-gable" ||
             component.source === "tray-knee-wall" ||
+            component.source === "wall-gap-fill" ||
             component.source === "conditioned-wall-profile" ||
             (component.label != null && suggestionLabels.has(component.label))
           )) &&
@@ -9542,7 +9694,22 @@ export function TakeoffApp() {
               : surface === "floor"
                 ? component.label
                 : component.label;
-            return { ...componentWithStableId(room.id, component), assembly, label: nextLabel };
+            if (surface !== "wall") return { ...componentWithStableId(room.id, component), assembly, label: nextLabel };
+            const adjacency = wallAdjacencyForAssignedAssembly(assembly, undefined, component);
+            return {
+              ...componentWithStableId(room.id, component),
+              assembly,
+              label: wallLabelForAssignedAssembly(
+                { direction: component.direction, label: nextLabel ?? "" },
+                component,
+                componentSchedule.find((entry) => entry.code === assembly),
+                assembly,
+                adjacency,
+              ),
+              adjacency,
+              boundary: boundaryForAdjacency(adjacency),
+              loadExempt: adjacency === "conditioned",
+            };
           }),
         };
       }),
@@ -9563,18 +9730,25 @@ export function TakeoffApp() {
         const components = roomComponents(room);
         const existing = components.find((component) => {
           if (component.surface !== surface) return false;
+          if (surface === "wall" && selection.componentId) return roomComponentMatchesId(room.id, component, selection.componentId);
           if (surface === "wall" && selection.kind === "load-wall") return wallCanHostOpenings(component) && component.direction === selection.direction;
-          if (surface === "wall") return component.id === selection.componentId;
           return true;
         });
+        const wallAdjacency = surface === "wall" ? wallAdjacencyForAssignedAssembly(assembly, selection, existing) : undefined;
+        const wallLoadExempt = surface === "wall" && wallAdjacency === "conditioned";
         const nextComponent: TakeoffRoomComponent = {
-          ...(existing ?? defaultComponent(surface, selection.area ?? rectArea(room))),
+          ...componentWithStableId(room.id, existing ?? defaultComponent(surface, selection.area ?? rectArea(room))),
           assembly,
           area: Number((selection.area ?? existing?.area ?? rectArea(room)).toFixed(3)),
           direction: selection.direction ?? existing?.direction,
-          label: selection.label || option?.description || existing?.label,
+          label: surface === "wall"
+            ? wallLabelForAssignedAssembly(selection, existing, option, assembly, wallAdjacency ?? "outside")
+            : selection.label || option?.description || existing?.label,
           source: selection.source ?? existing?.source,
           geometryLabel: selection.geometryLabel ?? existing?.geometryLabel,
+          adjacency: surface === "wall" ? wallAdjacency : existing?.adjacency,
+          boundary: surface === "wall" && wallAdjacency ? boundaryForAdjacency(wallAdjacency) : existing?.boundary,
+          loadExempt: surface === "wall" ? wallLoadExempt : existing?.loadExempt,
         };
         return {
           ...room,
