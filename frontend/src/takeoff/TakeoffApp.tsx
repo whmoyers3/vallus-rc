@@ -50,7 +50,10 @@ const pdfPreviewMaxDimension = 2800;
 const minPlanZoom = 0.5;
 const maxPlanZoom = 8;
 const planZoomStep = 0.25;
-const precisionLoupeZoom = 10;
+const defaultPrecisionLoupeZoom = 10;
+const minPrecisionLoupeZoom = 10;
+const maxPrecisionLoupeZoom = 30;
+const precisionLoupeZoomStep = 2;
 const precisionLoupeRadius = 180;
 const defaultWindowSillHeight = 3;
 const defaultWindowHeight = 5;
@@ -8227,6 +8230,7 @@ export function TakeoffApp() {
   const [editingOpeningTarget, setEditingOpeningTarget] = useState<EditingOpeningTarget>(null);
   const [selectedOpening, setSelectedOpening] = useState<OpeningMoveTarget | null>(null);
   const [precisionLoupe, setPrecisionLoupe] = useState<PrecisionLoupeState | null>(null);
+  const [precisionLoupeZoom, setPrecisionLoupeZoom] = useState(defaultPrecisionLoupeZoom);
   const inlineRoomNameInputRef = useRef<HTMLInputElement | null>(null);
   const roomMergeMenuRef = useRef<HTMLDivElement | null>(null);
   const roomTypeMenuRef = useRef<HTMLDivElement | null>(null);
@@ -12575,6 +12579,14 @@ export function TakeoffApp() {
     setMessage("Zoomed to 800%.");
   }
 
+  function clampPrecisionLoupeZoom(value: number) {
+    return Number(clamp(value, minPrecisionLoupeZoom, maxPrecisionLoupeZoom).toFixed(2));
+  }
+
+  function stepPrecisionLoupeZoom(delta: number) {
+    setPrecisionLoupeZoom((current) => clampPrecisionLoupeZoom(current + delta));
+  }
+
   function planFitBounds() {
     if (floor.exteriorPolygon.length >= 3) return polygonBounds(floor.exteriorPolygon);
     const roomBounds = rectsBounds(floor.rooms.map((room) => polygonBounds(roomCorners(room))));
@@ -13727,11 +13739,30 @@ export function TakeoffApp() {
                 <span><b>{Math.round(assignedArea)}</b> assigned</span>
                 <span><b>{Math.max(0, Math.round(unassignedArea))}</b> open</span>
               </div>
-              <div className="takeoff-stage-tools" aria-label="Plan zoom controls">
+              <div className="takeoff-stage-tools" aria-label="Plan and loupe zoom controls">
                 <div className="takeoff-stage-tool-group">
                   <button data-tooltip="Fit the full drawable grid workspace." aria-label="Fit the full drawable grid workspace" onClick={fitGrid}>Fit Grid</button>
                   <button data-tooltip="Fit the traced exterior plan, or the plan reference before tracing." aria-label="Fit the traced exterior plan or plan reference" onClick={fitPlan}>Fit Plan</button>
                   <button data-tooltip="Jump directly to 800% zoom." aria-label="Jump directly to 800 percent zoom" onClick={maxZoomPlan}>Max Zoom</button>
+                </div>
+                <div className="takeoff-zoom-group takeoff-loupe-zoom-group" aria-label="Loupe zoom level">
+                  <button
+                    data-tooltip="Decrease loupe zoom by 200%."
+                    aria-label="Decrease loupe zoom by 200 percent"
+                    disabled={precisionLoupeZoom <= minPrecisionLoupeZoom}
+                    onClick={() => stepPrecisionLoupeZoom(-precisionLoupeZoomStep)}
+                  >
+                    -
+                  </button>
+                  <span>Loupe {Math.round(precisionLoupeZoom * 100)}%</span>
+                  <button
+                    data-tooltip="Increase loupe zoom by 200%."
+                    aria-label="Increase loupe zoom by 200 percent"
+                    disabled={precisionLoupeZoom >= maxPrecisionLoupeZoom}
+                    onClick={() => stepPrecisionLoupeZoom(precisionLoupeZoomStep)}
+                  >
+                    +
+                  </button>
                 </div>
                 <div className="takeoff-zoom-group" aria-label="Zoom level">
                   <button data-tooltip="Zoom out one step." aria-label="Zoom out one step" onClick={() => stepPlanZoom(-planZoomStep)}>-</button>

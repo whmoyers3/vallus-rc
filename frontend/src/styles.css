@@ -1277,6 +1277,10 @@ button.toolbar-primary:hover {
   text-align: center;
 }
 
+.takeoff-loupe-zoom-group span {
+  min-width: 82px;
+}
+
 .takeoff-floor-visibility {
   position: relative;
 }
