@@ -55,6 +55,8 @@ const defaultWindowHeight = 5;
 const defaultDoorSillHeight = 0;
 const defaultDoorHeight = 6.67;
 const wallPanelVisualOverlapFt = 0.08;
+const appCommitSha = __APP_COMMIT_SHA__ || "local";
+const appCommitLabel = appCommitSha.length > 12 ? appCommitSha.slice(0, 12) : appCommitSha;
 const componentCategories: TakeoffComponentCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
 const allComponentSurfaces: TakeoffRoomComponent["surface"][] = ["floor", "ceiling", "wall", "glass", "door"];
 const defaultComponentSchedule: TakeoffComponentDefinition[] = [
@@ -1578,6 +1580,13 @@ function componentHasWallProfileGeometry(component: TakeoffRoomComponent) {
     Number.isFinite(component.spanEnd) &&
     Number.isFinite(component.zMin) &&
     Number.isFinite(component.zMax)
+  );
+}
+
+function roomUsesPersistedEnvelopeWallGeometry(room: TakeoffRectRoom) {
+  if (room.envelopeCompilerPreviewDisabled) return true;
+  return roomSurfaceComponents(room, "wall").some((component) =>
+    isEnvelopeCompilerGeneratedWall(component) || componentHasWallProfileGeometry(component)
   );
 }
 
@@ -6309,6 +6318,7 @@ function TakeoffModelPreview({
       selectable: boolean,
       passive = false,
     ) => {
+      if (roomUsesPersistedEnvelopeWallGeometry(sourceRoom)) return false;
       const panels = envelopePanelsForRoom(envelopeCompilation, targetFloor.id, sourceRoom.id)
         .filter((panel) => panel.surface === "wall" && panel.loadState !== "gap")
         .filter((panel) => panel.loadState !== "no-load" || visibleLayers.interiorWalls);
@@ -10495,11 +10505,20 @@ export function TakeoffApp() {
   function removeRoomComponent(roomId: string, componentId: string) {
     setFloor((current) => ({
       ...current,
-      rooms: current.rooms.map((room) => (
-        room.id === roomId
-          ? { ...room, components: roomComponents(room).filter((component) => !roomComponentMatchesId(room.id, component, componentId)) }
-          : room
-      )),
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room;
+        const components = roomComponents(room);
+        const removedComponent = components.find((component) => roomComponentMatchesId(room.id, component, componentId));
+        const disablesCompilerPreview = Boolean(
+          removedComponent?.surface === "wall" &&
+          (isEnvelopeCompilerGeneratedWall(removedComponent) || componentHasWallProfileGeometry(removedComponent))
+        );
+        return {
+          ...room,
+          components: components.filter((component) => !roomComponentMatchesId(room.id, component, componentId)),
+          envelopeCompilerPreviewDisabled: room.envelopeCompilerPreviewDisabled || disablesCompilerPreview || undefined,
+        };
+      }),
     }));
     setSelectedOpening((current) => (current?.roomId === roomId && current.componentId === componentId ? null : current));
   }
@@ -10637,6 +10656,7 @@ export function TakeoffApp() {
         if (room.id !== selectedRoom.id) return room;
         return {
           ...room,
+          envelopeCompilerPreviewDisabled: true,
           components: [
             ...roomComponents(room).filter((component) => !isEnvelopeCompilerGeneratedWall(component)),
             ...drafts.map(envelopeDraftToRoomComponent),
@@ -12995,7 +13015,10 @@ export function TakeoffApp() {
     <main className="takeoff-root">
       <header className="takeoff-toolbar">
         <div>
-          <h1>Takeoff V1</h1>
+          <div className="takeoff-toolbar-title-row">
+            <h1>Takeoff V1</h1>
+            <span className="takeoff-build-version" title={`Commit ${appCommitSha}`}>Commit {appCommitLabel}</span>
+          </div>
           <p>
             {floor.name} · {Math.round(assignedArea)} sf assigned · {Math.max(0, Math.round(unassignedArea))} sf open
             {takeoffId ? ` · Takeoff #${takeoffId}` : ""}

@@ -132,6 +132,7 @@ export type TakeoffRectRoom = {
   peopleOverride?: number;
   applianceWattsOverride?: number;
   components?: TakeoffRoomComponent[];
+  envelopeCompilerPreviewDisabled?: boolean;
   verticalLinks?: TakeoffVerticalSpaceLink[];
   polygon?: TakeoffPoint[];
   areaAdjustment?: number;

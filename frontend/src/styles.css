@@ -655,6 +655,25 @@ button.toolbar-primary:hover {
   margin: 0;
 }
 
+.takeoff-toolbar-title-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.takeoff-build-version {
+  background: #f2f6f8;
+  border: 1px solid #cfd9e2;
+  border-radius: 999px;
+  color: #526373;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
 .takeoff-toolbar p {
   color: #66727e;
   font-size: 12px;
