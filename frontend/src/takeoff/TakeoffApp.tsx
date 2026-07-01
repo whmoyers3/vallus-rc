@@ -6,6 +6,13 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ventilationCfmForBedrooms } from "../loadRules";
 import { allowNextUnsavedNavigation, registerUnsavedNavigationGuard } from "../navigationGuard";
+import {
+  compileEnvelope,
+  envelopeDraftsForRoom,
+  envelopePanelsForRoom,
+  isEnvelopeCompilerGeneratedWall,
+  type EnvelopeComponentDraft,
+} from "./envelope/compiler";
 import type {
   TakeoffAdjacentSpace,
   TakeoffAdjacentSpaceKind,
@@ -8145,6 +8152,7 @@ export function TakeoffApp() {
     () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule, connectedVolumes),
     [componentSchedule, connectedVolumes, dimensionInputMode, floors, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
   );
+  const envelopeCompilation = useMemo(() => compileEnvelope(takeoffProject), [takeoffProject]);
   const currentUndoSnapshot = useMemo(() => takeoffSnapshot(persistableTakeoffProject(takeoffProject)), [takeoffProject]);
   function pushUndoSnapshot(label: string) {
     if (undoRestoreInProgressRef.current) return;
@@ -8249,6 +8257,15 @@ export function TakeoffApp() {
   const selectedRoomManualSliceCandidates = selectedRoom
     ? roomIntersectionWallSliceCandidatesForRoom(floor, selectedRoom)
     : [];
+  const selectedRoomEnvelopePanels = selectedRoom
+    ? envelopePanelsForRoom(envelopeCompilation, floor.id, selectedRoom.id)
+    : [];
+  const selectedRoomEnvelopeDrafts = selectedRoom
+    ? envelopeDraftsForRoom(envelopeCompilation, floor.id, selectedRoom.id)
+    : [];
+  const selectedRoomEnvelopeIssues = selectedRoom
+    ? envelopeCompilation.issues.filter((issue) => issue.floorId === floor.id && issue.roomId === selectedRoom.id)
+    : [];
   const filteredLibraryComponents = libraryComponents.filter((component) => {
     const needle = componentSearch.trim().toLowerCase();
     const matchesSearch = !needle || `${component.code} ${component.description} ${component.category}`.toLowerCase().includes(needle);
@@ -8349,7 +8366,7 @@ export function TakeoffApp() {
       ...orderedFloors.filter((entry) => entry.id === activeFloorId),
       ...orderedFloors.filter((entry) => entry.id !== activeFloorId),
     ];
-    return activeFirstFloors.flatMap((entry) =>
+    const standardEntries = activeFirstFloors.flatMap((entry) =>
       buildValidation(entry, entry.id === activeFloorId ? unassignedRegions : [], floors, connectedVolumes).map((issue, index) => ({
         floor: entry,
         issue,
@@ -8357,7 +8374,22 @@ export function TakeoffApp() {
         key: projectValidationIssueKey(entry.id, issue, index),
       }))
     );
-  }, [activeFloorId, connectedVolumes, floors, orderedFloors, unassignedRegions]);
+    const envelopeEntries = activeFirstFloors.flatMap((entry) =>
+      envelopeCompilation.issues
+        .filter((issue) => issue.floorId === entry.id)
+        .map((envelopeIssue, index) => ({
+          floor: entry,
+          issue: {
+            severity: envelopeIssue.severity,
+            message: envelopeIssue.message,
+            target: envelopeIssue.roomId ? { type: "room" as const, roomId: envelopeIssue.roomId } : undefined,
+          },
+          index: standardEntries.length + index,
+          key: `envelope:${envelopeIssue.id}`,
+        }))
+    );
+    return [...standardEntries, ...envelopeEntries];
+  }, [activeFloorId, connectedVolumes, envelopeCompilation, floors, orderedFloors, unassignedRegions]);
   const visibleProjectValidation = useMemo(
     () => projectValidation.filter((entry) => !dismissedValidationKeys.has(entry.key)),
     [dismissedValidationKeys, projectValidation],
@@ -10414,6 +10446,58 @@ export function TakeoffApp() {
       }),
     }));
     setMessage(`${Math.round(candidate.area)} sf wall slice added where ${candidate.roomName} meets ${candidate.adjacentRoomName}.`);
+  }
+
+  function envelopeDraftComponentSource(draft: EnvelopeComponentDraft): TakeoffRoomComponentSource {
+    if (draft.loadExempt || draft.adjacency === "conditioned") return "conditioned-wall-profile";
+    if (draft.adjacency === "outside") return "exterior-perimeter";
+    return "wall-gap-fill";
+  }
+
+  function envelopeDraftToRoomComponent(draft: EnvelopeComponentDraft): TakeoffRoomComponent {
+    return {
+      id: nextId("component-envelope"),
+      surface: "wall",
+      assembly: draft.assembly,
+      direction: draft.direction,
+      area: Math.round(draft.area),
+      label: draft.label,
+      geometryLabel: draft.geometryLabel,
+      source: envelopeDraftComponentSource(draft),
+      adjacency: draft.adjacency,
+      boundary: draft.boundary,
+      loadExempt: draft.loadExempt,
+      spanStart: draft.spanStart,
+      spanEnd: draft.spanEnd,
+      zMin: draft.zMin,
+      zMax: draft.zMax,
+      placement: draft.placement,
+      wallProfilePolygons: draft.wallProfilePolygons,
+    };
+  }
+
+  function rebuildSelectedRoomEnvelopeGeometry() {
+    if (!selectedRoom) return;
+    const drafts = envelopeDraftsForRoom(envelopeCompilation, floor.id, selectedRoom.id);
+    if (drafts.length === 0) {
+      setMessage(`${selectedRoom.name || "Room"} has no compiler-generated envelope wall panels to rebuild.`);
+      return;
+    }
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== selectedRoom.id) return room;
+        return {
+          ...room,
+          components: [
+            ...roomComponents(room).filter((component) => !isEnvelopeCompilerGeneratedWall(component)),
+            ...drafts.map(envelopeDraftToRoomComponent),
+          ],
+        };
+      }),
+    }));
+    setActiveValidationTarget(null);
+    setMessage(`${selectedRoom.name || "Room"} envelope geometry rebuilt from ${drafts.length} compiler panel group${drafts.length === 1 ? "" : "s"}.`);
   }
 
   function resolveBoundaryCandidate(candidateId: string, resolution: "slice" | "whole-section" | "ignore", floorId = activeFloorId) {
@@ -14025,6 +14109,47 @@ export function TakeoffApp() {
             </section>
 
             <section className="takeoff-panel takeoff-room-profile-panel takeoff-room-profile-panel--workbench">
+              {unassignedRegions.length > 0 && (
+                <div className="takeoff-wall-suggestions takeoff-wall-suggestions--workbench">
+                  <div className="takeoff-component-head">
+                    <div>
+                      <h3>Unassigned slices</h3>
+                      <p className="takeoff-muted">
+                        {selectedUnassignedRegion ? `${selectedUnassignedRegion.label}: ` : ""}
+                        {Math.round(unassignedCellArea)} sf highlighted.
+                      </p>
+                    </div>
+                    <button className="toolbar-primary" onClick={assignHighlightedSlices}>Attribute Highlighted Area</button>
+                  </div>
+                  <div className="takeoff-form-actions">
+                    <select
+                      value={selectedUnassignedRegion?.id ?? ""}
+                      onChange={(event) => {
+                        const region = unassignedRegions.find((candidate) => candidate.id === event.target.value) ?? null;
+                        setSelectedUnassignedRegionId(region?.id ?? null);
+                        if (region?.adjacentRoomIds[0]) setSliceRoomId(region.adjacentRoomIds[0]);
+                        else if (floor.rooms[0]) setSliceRoomId(floor.rooms[0].id);
+                      }}
+                    >
+                      {unassignedRegions.map((region) => (
+                        <option key={region.id} value={region.id}>
+                          {region.label} - {Math.round(region.area)} sf
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={selectedSliceRoomId}
+                      onChange={(event) => setSliceRoomId(event.target.value)}
+                    >
+                      {sliceRoomOptions.map((room) => (
+                        <option key={room.id} value={room.id}>
+                          {room.name}{selectedUnassignedAdjacentRoomIds.includes(room.id) ? " (adjacent)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
               {selectedRoom ? (
                 (() => {
                   const roomArea = rectArea(selectedRoom);
@@ -14212,6 +14337,33 @@ export function TakeoffApp() {
                         })()
                       )}
                       {renderRoomTypeSuggestion(selectedRoom)}
+
+                      {selectedRoomEnvelopeDrafts.length > 0 && (
+                        <div className="takeoff-wall-suggestions takeoff-wall-suggestions--workbench">
+                          <div className="takeoff-component-head">
+                            <div>
+                              <h3>Envelope compiler</h3>
+                              <p className="takeoff-muted">
+                                {selectedRoomEnvelopePanels.length} panels · {selectedRoomEnvelopeDrafts.length} generated groups
+                                {selectedRoomEnvelopeIssues.length > 0 ? ` · ${selectedRoomEnvelopeIssues.length} review flag${selectedRoomEnvelopeIssues.length === 1 ? "" : "s"}` : ""}
+                              </p>
+                            </div>
+                            <button className="toolbar-primary" onClick={rebuildSelectedRoomEnvelopeGeometry}>Rebuild Envelope Geometry</button>
+                          </div>
+                          {selectedRoomEnvelopeDrafts.map((draft) => (
+                            <div key={draft.id} className="takeoff-wall-suggestion-row takeoff-wall-suggestion-row--workbench">
+                              <span>
+                                <strong>{Math.round(draft.area)} sf</strong>
+                                <small>
+                                  {draft.direction} {wallAdjacencyLabel(draft.adjacency).toLowerCase()} · {draft.assembly}
+                                  {draft.loadExempt ? " · no load" : ""} · {draft.panelIds.length} panel{draft.panelIds.length === 1 ? "" : "s"}
+                                </small>
+                              </span>
+                              <span>{draft.geometryLabel}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {showSuggestionReview && (
                         <div id={validationTargetId("wall-suggestions")} className={`takeoff-wall-suggestions takeoff-wall-suggestions--workbench ${suggestionHighlightClass}`}>
@@ -15063,40 +15215,6 @@ export function TakeoffApp() {
                     );
                   })()
                 ))}
-              </div>
-            )}
-            {unassignedRegions.length > 0 && (
-              <div className="takeoff-slice-tools">
-                <p className="takeoff-muted">
-                  {selectedUnassignedRegion ? `${selectedUnassignedRegion.label}: ` : ""}
-                  {Math.round(unassignedCellArea)} sf highlighted as unassigned slices.
-                </p>
-                <select
-                  value={selectedUnassignedRegion?.id ?? ""}
-                  onChange={(event) => {
-                    const region = unassignedRegions.find((candidate) => candidate.id === event.target.value) ?? null;
-                    setSelectedUnassignedRegionId(region?.id ?? null);
-                    if (region?.adjacentRoomIds[0]) setSliceRoomId(region.adjacentRoomIds[0]);
-                    else if (floor.rooms[0]) setSliceRoomId(floor.rooms[0].id);
-                  }}
-                >
-                  {unassignedRegions.map((region) => (
-                    <option key={region.id} value={region.id}>
-                      {region.label} - {Math.round(region.area)} sf
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={selectedSliceRoomId}
-                  onChange={(event) => setSliceRoomId(event.target.value)}
-                >
-                  {sliceRoomOptions.map((room) => (
-                    <option key={room.id} value={room.id}>
-                      {room.name}{selectedUnassignedAdjacentRoomIds.includes(room.id) ? " (adjacent)" : ""}
-                    </option>
-                  ))}
-                </select>
-                <button onClick={assignHighlightedSlices}>Attribute Highlighted Area</button>
               </div>
             )}
           </section>

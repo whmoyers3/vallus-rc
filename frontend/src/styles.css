@@ -2259,15 +2259,6 @@ button.toolbar-primary:hover {
   align-self: end;
 }
 
-.takeoff-slice-tools {
-  border-top: 1px solid #e1e7ec;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-  padding-top: 10px;
-}
-
 .takeoff-adjacent-list {
   border: 1px solid #e8edf1;
   border-radius: 7px;
