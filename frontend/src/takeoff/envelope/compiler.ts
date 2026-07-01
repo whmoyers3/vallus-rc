@@ -12,7 +12,7 @@ import type {
   TakeoffWallAdjacency,
 } from "../types";
 
-const { difference, intersection } = polygonClipping;
+const { difference, intersection, union } = polygonClipping;
 
 export type EnvelopeDirection = NonNullable<TakeoffRoomComponent["direction"]>;
 export type EnvelopeSurface = "wall" | "ceiling" | "floor" | "roof";
@@ -847,10 +847,103 @@ function clipPolygonArea(polygon: Polygon) {
 }
 
 function simplePolygonsFromMultiPolygon(multiPolygon: MultiPolygon) {
-  return multiPolygon
+  const pieces = multiPolygon
+    .flatMap(simplePolygonsFromClipPolygon)
     .map((polygon) => ({ polygon, area: clipPolygonArea(polygon) }))
     .filter((entry) => entry.area > 0.5 && entry.polygon.length >= 1)
     .sort((a, b) => b.area - a.area);
+  return mergeConnectedSimplePolygons(pieces);
+}
+
+function simplePolygonsFromClipPolygon(polygon: Polygon) {
+  if (polygon.length <= 1) return clipPolygonArea(polygon) > 0.5 ? [polygon] : [];
+  const [outer, ...holes] = polygon;
+  if (!outer) return [];
+  const outerPoints = clipRingToPoints(outer);
+  const holePoints = holes.map(clipRingToPoints);
+  const outerBounds = polygonBounds(outerPoints);
+  const xCuts = new Set([outerBounds.x, outerBounds.x + outerBounds.width]);
+  const yCuts = new Set([outerBounds.y, outerBounds.y + outerBounds.depth]);
+
+  for (const hole of holes) {
+    const bounds = polygonBounds(clipRingToPoints(hole));
+    xCuts.add(bounds.x);
+    xCuts.add(bounds.x + bounds.width);
+    yCuts.add(bounds.y);
+    yCuts.add(bounds.y + bounds.depth);
+  }
+
+  const xs = Array.from(xCuts).sort((a, b) => a - b);
+  const ys = Array.from(yCuts).sort((a, b) => a - b);
+  const pieces: Polygon[] = [];
+
+  for (let xIndex = 0; xIndex < xs.length - 1; xIndex += 1) {
+    for (let yIndex = 0; yIndex < ys.length - 1; yIndex += 1) {
+      const rect = {
+        x: xs[xIndex],
+        y: ys[yIndex],
+        width: xs[xIndex + 1] - xs[xIndex],
+        depth: ys[yIndex + 1] - ys[yIndex],
+      };
+      if (rect.width < 0.25 || rect.depth < 0.25) continue;
+      const center = { x: rect.x + rect.width / 2, y: rect.y + rect.depth / 2 };
+      if (!pointInPolygon(center, outerPoints)) continue;
+      if (holePoints.some((hole) => pointInPolygon(center, hole))) continue;
+      const candidate = pointsToClipPolygon(rectToPoints(rect));
+      const clipped = intersection([candidate], [polygon]);
+      for (const clippedPolygon of clipped) {
+        if (clippedPolygon.length === 1 && clipPolygonArea(clippedPolygon) > 0.5) pieces.push(clippedPolygon);
+      }
+    }
+  }
+
+  return pieces;
+}
+
+function polygonsShareBoundary(first: Polygon, second: Polygon) {
+  const firstEdges = pointsToEdges(clipPolygonToPoints(first));
+  const secondEdges = pointsToEdges(clipPolygonToPoints(second));
+  return firstEdges.some((firstEdge) =>
+    secondEdges.some((secondEdge) => (sharedSegment(firstEdge, secondEdge, 0.18)?.length ?? 0) > 0.05)
+  );
+}
+
+function mergeConnectedSimplePolygons(entries: Array<{ polygon: Polygon; area: number }>) {
+  const remaining = new Set(entries.map((_, index) => index));
+  const mergedEntries: Array<{ polygon: Polygon; area: number }> = [];
+
+  while (remaining.size > 0) {
+    const firstIndex = remaining.values().next().value as number;
+    const queue = [firstIndex];
+    const group: Array<{ polygon: Polygon; area: number }> = [];
+    remaining.delete(firstIndex);
+
+    while (queue.length > 0) {
+      const currentIndex = queue.shift()!;
+      const current = entries[currentIndex];
+      group.push(current);
+      for (const candidateIndex of Array.from(remaining)) {
+        if (!group.some((groupEntry) => polygonsShareBoundary(groupEntry.polygon, entries[candidateIndex].polygon))) continue;
+        remaining.delete(candidateIndex);
+        queue.push(candidateIndex);
+      }
+    }
+
+    const [firstPolygon, ...remainingPolygons] = group.map((entry) => entry.polygon);
+    const merged = union(firstPolygon, ...remainingPolygons);
+    const simpleMerged = merged
+      .filter((polygon) => polygon.length === 1)
+      .map((polygon) => ({ polygon, area: clipPolygonArea(polygon) }))
+      .filter((entry) => entry.area > 0.5);
+
+    if (simpleMerged.length > 0 && simpleMerged.reduce((sum, entry) => sum + entry.area, 0) >= group.reduce((sum, entry) => sum + entry.area, 0) - 0.5) {
+      mergedEntries.push(...simpleMerged);
+    } else {
+      mergedEntries.push(...group);
+    }
+  }
+
+  return mergedEntries.sort((a, b) => b.area - a.area);
 }
 
 function cleanPolygon(points: TakeoffPoint[]) {
