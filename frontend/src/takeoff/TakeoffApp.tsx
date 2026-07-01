@@ -32,6 +32,9 @@ import type {
   TakeoffRoomType,
   TakeoffScaleLine,
   TakeoffSurfaceTreatmentSuggestion,
+  TakeoffValidationDecision,
+  TakeoffValidationDecisionMap,
+  TakeoffValidationDecisionStatus,
   TakeoffValidationIssue,
   TakeoffVerticalProfile,
   TakeoffWallAdjacency,
@@ -231,8 +234,8 @@ type RoomIntersectionWallSliceCandidate = {
 };
 type OrientationLoadResult = { facing: string; cooling: number; heating: number; tons: number };
 type TakeoffCalcResult = OrientationLoadResult & { orientations: OrientationLoadResult[]; baseFacing: string };
-type ValidationSection = "merge" | "wall-suggestions" | "wall-components" | "glass-components" | "door-components" | "floor-components" | "ceiling-components" | "ceiling-geometry" | "room-profile";
-type LeftSetupSection = "project" | "mode" | "scale" | "grid" | "exterior";
+type ValidationSection = "merge" | "trace-geometry" | "wall-suggestions" | "wall-components" | "glass-components" | "door-components" | "floor-components" | "ceiling-components" | "ceiling-geometry" | "room-profile";
+type LeftSetupSection = "project" | "qa" | "mode" | "scale" | "grid" | "exterior";
 type ActiveValidationTarget = {
   key: string;
   floorId?: string;
@@ -241,6 +244,7 @@ type ActiveValidationTarget = {
   section: ValidationSection;
   message: string;
   issueType?: TakeoffValidationIssue["issueType"];
+  checkType?: TakeoffValidationIssue["checkType"];
   surfaceTreatmentSuggestion?: TakeoffValidationIssue["surfaceTreatmentSuggestion"];
   wallComponentGeometrySuggestion?: TakeoffValidationIssue["wallComponentGeometrySuggestion"];
   glassTreatmentSuggestion?: TakeoffValidationIssue["glassTreatmentSuggestion"];
@@ -607,6 +611,7 @@ function makeTakeoffProject(
   floors: TakeoffFloor | TakeoffFloor[],
   componentSchedule: TakeoffComponentDefinition[],
   connectedVolumes: TakeoffConnectedVolume[] = [],
+  validationDecisions: TakeoffValidationDecisionMap = {},
 ): TakeoffProject {
   const projectFloors = Array.isArray(floors) ? floors : [floors];
   return {
@@ -620,6 +625,7 @@ function makeTakeoffProject(
     componentSchedule,
     floors: projectFloors.length ? projectFloors : [makeInitialFloor()],
     connectedVolumes,
+    validationDecisions,
   };
 }
 
@@ -1630,6 +1636,35 @@ function componentIsGeneratedEnvelopeWall(component: TakeoffRoomComponent) {
   return componentIsGeneratedCeilingWall(component) || componentIsWallGapFill(component) || componentIsConditionedWallProfile(component) || component.source === "open-to-above-envelope" || component.source === "connected-volume";
 }
 
+function componentIsGeneratedCeilingProfileOutput(component: TakeoffRoomComponent) {
+  if (component.surface !== "wall") return false;
+  if (componentIsGeneratedCeilingWall(component) || componentIsWallGapFill(component) || componentIsConditionedWallProfile(component)) return true;
+  const label = `${component.label ?? ""} ${component.geometryLabel ?? ""}`.toLowerCase();
+  const looksGeneratedProfile = (
+    label.includes("gap fill") ||
+    label.includes("profile") ||
+    label.includes("slice") ||
+    label.includes("remainder") ||
+    label.includes("generated")
+  );
+  if (component.source === "exterior-perimeter" && componentHasWallProfileGeometry(component)) return true;
+  return component.source !== "manual" && componentHasWallProfileGeometry(component) && looksGeneratedProfile;
+}
+
+function componentIsEnvelopeRebuildOutput(component: TakeoffRoomComponent) {
+  if (component.surface !== "wall") return false;
+  if (isEnvelopeCompilerGeneratedWall(component)) return true;
+  if (componentIsGeneratedCeilingProfileOutput(component)) return true;
+  const label = `${component.label ?? ""} ${component.geometryLabel ?? ""}`.toLowerCase();
+  return component.source !== "manual" && componentHasWallProfileGeometry(component) && (
+    label.includes("envelope") ||
+    label.includes("gap") ||
+    label.includes("profile") ||
+    label.includes("slice") ||
+    label.includes("remainder")
+  );
+}
+
 function componentHasWallProfileGeometry(component: TakeoffRoomComponent) {
   if (component.surface !== "wall") return false;
   if (component.wallProfilePolygons?.some((polygon) => polygon.length >= 3)) return true;
@@ -2487,6 +2522,167 @@ function pointInRoom(point: TakeoffPoint, room: TakeoffRectRoom) {
 
 function pointsToEdges(points: TakeoffPoint[]) {
   return points.map((point, index) => ({ a: point, b: points[(index + 1) % points.length] })).filter(({ a, b }) => distance(a, b) > 0.001);
+}
+
+type TraceQaPoint = {
+  sourceType: "exterior" | "room" | "adjacent";
+  sourceId: string;
+  sourceLabel: string;
+  pointIndex: number;
+  point: TakeoffPoint;
+};
+
+type TraceQaSegment = {
+  sourceType: TraceQaPoint["sourceType"];
+  sourceId: string;
+  sourceLabel: string;
+  segmentIndex: number;
+  a: TakeoffPoint;
+  b: TakeoffPoint;
+  length: number;
+};
+
+function traceQaPointSources(floor: TakeoffFloor): TraceQaPoint[] {
+  const sources: TraceQaPoint[] = [];
+  const addPoints = (sourceType: TraceQaPoint["sourceType"], sourceId: string, sourceLabel: string, points: TakeoffPoint[]) => {
+    points.forEach((point, pointIndex) => {
+      sources.push({ sourceType, sourceId, sourceLabel, pointIndex, point });
+    });
+  };
+  addPoints("exterior", floor.id, "Exterior trace", floor.exteriorPolygon);
+  for (const room of floor.rooms) addPoints("room", room.id, room.name || "Room", roomCorners(room));
+  for (const space of floor.adjacentSpaces ?? []) addPoints("adjacent", space.id, space.name || adjacentSpaceLabel(space.kind), adjacentSpaceCorners(space));
+  return sources;
+}
+
+function traceQaSegmentSources(floor: TakeoffFloor): TraceQaSegment[] {
+  const sources: TraceQaSegment[] = [];
+  const addSegments = (sourceType: TraceQaPoint["sourceType"], sourceId: string, sourceLabel: string, points: TakeoffPoint[]) => {
+    pointsToEdges(points).forEach((edge, segmentIndex) => {
+      sources.push({ sourceType, sourceId, sourceLabel, segmentIndex, a: edge.a, b: edge.b, length: distance(edge.a, edge.b) });
+    });
+  };
+  addSegments("exterior", floor.id, "Exterior trace", floor.exteriorPolygon);
+  for (const room of floor.rooms) addSegments("room", room.id, room.name || "Room", roomCorners(room));
+  for (const space of floor.adjacentSpaces ?? []) addSegments("adjacent", space.id, space.name || adjacentSpaceLabel(space.kind), adjacentSpaceCorners(space));
+  return sources;
+}
+
+function shortPointLabel(point: TakeoffPoint) {
+  return `${Number(point.x.toFixed(2))}, ${Number(point.y.toFixed(2))}`;
+}
+
+function traceQaTarget(floor: TakeoffFloor): TakeoffValidationIssue["target"] {
+  return { type: "floor", floorId: floor.id };
+}
+
+function traceQaIssue(
+  floor: TakeoffFloor,
+  message: string,
+  evidence: Record<string, unknown>,
+): TakeoffValidationIssue {
+  return {
+    severity: "warning",
+    message,
+    issueType: "trace-geometry-qa",
+    checkType: "trace-geometry-qa",
+    evidence,
+    target: traceQaTarget(floor),
+  };
+}
+
+function traceGeometryQaIssues(floor: TakeoffFloor): TakeoffValidationIssue[] {
+  const issues: TakeoffValidationIssue[] = [];
+  const pointSources = traceQaPointSources(floor);
+  const segmentSources = traceQaSegmentSources(floor);
+  const maxFindings = 10;
+  const minimumSnapMissFt = 0.05;
+  const closePointReviewFt = 5;
+  const nearAxisToleranceFt = 0.25;
+  const tinySegmentFt = 0.5;
+  const narrowParallelGapFt = 3;
+
+  for (const segment of segmentSources) {
+    if (issues.length >= maxFindings) break;
+    if (segment.length <= tinySegmentFt) {
+      issues.push(traceQaIssue(
+        floor,
+        `${segment.sourceLabel} has a ${Number(segment.length.toFixed(2))} ft trace segment that may create a tiny wall panel.`,
+        {
+          category: "tiny-segment",
+          sourceType: segment.sourceType,
+          sourceId: segment.sourceId,
+          sourceLabel: segment.sourceLabel,
+          segmentIndex: segment.segmentIndex,
+          length: Number(segment.length.toFixed(3)),
+          a: segment.a,
+          b: segment.b,
+        },
+      ));
+    }
+  }
+
+  for (let firstIndex = 0; firstIndex < pointSources.length && issues.length < maxFindings; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < pointSources.length && issues.length < maxFindings; secondIndex += 1) {
+      const first = pointSources[firstIndex];
+      const second = pointSources[secondIndex];
+      if (first.sourceType === second.sourceType && first.sourceId === second.sourceId) continue;
+      const gap = distance(first.point, second.point);
+      if (gap <= minimumSnapMissFt || gap > closePointReviewFt) continue;
+      const axisAligned = Math.min(Math.abs(first.point.x - second.point.x), Math.abs(first.point.y - second.point.y)) <= nearAxisToleranceFt;
+      if (!axisAligned && gap > 0.75) continue;
+      issues.push(traceQaIssue(
+        floor,
+        `${first.sourceLabel} and ${second.sourceLabel} have close trace points ${Number(gap.toFixed(2))} ft apart near ${shortPointLabel(first.point)}. Snap or confirm before rebuilding geometry.`,
+        {
+          category: "close-point-cluster",
+          gap: Number(gap.toFixed(3)),
+          first: { sourceType: first.sourceType, sourceId: first.sourceId, sourceLabel: first.sourceLabel, pointIndex: first.pointIndex, point: first.point },
+          second: { sourceType: second.sourceType, sourceId: second.sourceId, sourceLabel: second.sourceLabel, pointIndex: second.pointIndex, point: second.point },
+        },
+      ));
+    }
+  }
+
+  for (let firstIndex = 0; firstIndex < segmentSources.length && issues.length < maxFindings; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < segmentSources.length && issues.length < maxFindings; secondIndex += 1) {
+      const first = segmentSources[firstIndex];
+      const second = segmentSources[secondIndex];
+      if (first.sourceType === second.sourceType && first.sourceId === second.sourceId) continue;
+      if (first.length < 1 || second.length < 1) continue;
+      const firstDx = first.b.x - first.a.x;
+      const firstDy = first.b.y - first.a.y;
+      const secondDx = second.b.x - second.a.x;
+      const secondDy = second.b.y - second.a.y;
+      const firstLength = Math.hypot(firstDx, firstDy);
+      const secondLength = Math.hypot(secondDx, secondDy);
+      if (firstLength <= 0.001 || secondLength <= 0.001) continue;
+      const cross = Math.abs(firstDx * secondDy - firstDy * secondDx) / (firstLength * secondLength);
+      if (cross > 0.035) continue;
+      const lineGap = Math.abs(firstDx * (first.a.y - second.a.y) - firstDy * (first.a.x - second.a.x)) / firstLength;
+      if (lineGap <= minimumSnapMissFt || lineGap > narrowParallelGapFt) continue;
+      const unit = { x: firstDx / firstLength, y: firstDy / firstLength };
+      const firstRange = [0, firstLength] as const;
+      const secondProjectionStart = (second.a.x - first.a.x) * unit.x + (second.a.y - first.a.y) * unit.y;
+      const secondProjectionEnd = (second.b.x - first.a.x) * unit.x + (second.b.y - first.a.y) * unit.y;
+      const secondRange = [Math.min(secondProjectionStart, secondProjectionEnd), Math.max(secondProjectionStart, secondProjectionEnd)] as const;
+      const overlap = Math.max(0, Math.min(firstRange[1], secondRange[1]) - Math.max(firstRange[0], secondRange[0]));
+      if (overlap < 1) continue;
+      issues.push(traceQaIssue(
+        floor,
+        `${first.sourceLabel} and ${second.sourceLabel} have parallel trace segments only ${Number(lineGap.toFixed(2))} ft apart over ${Number(overlap.toFixed(1))} ft. Confirm this is a real chase/cavity, or snap the surfaces together.`,
+        {
+          category: "narrow-parallel-gap",
+          gap: Number(lineGap.toFixed(3)),
+          overlap: Number(overlap.toFixed(3)),
+          first: { sourceType: first.sourceType, sourceId: first.sourceId, sourceLabel: first.sourceLabel, segmentIndex: first.segmentIndex, a: first.a, b: first.b },
+          second: { sourceType: second.sourceType, sourceId: second.sourceId, sourceLabel: second.sourceLabel, segmentIndex: second.segmentIndex, a: second.a, b: second.b },
+        },
+      ));
+    }
+  }
+
+  return issues;
 }
 
 function cornerPoints(points: TakeoffPoint[], minTurnDegrees = 12.5) {
@@ -4427,6 +4623,8 @@ function buildValidation(
     issues.push({ severity: "error", message: "Trace an exterior perimeter or provide fallback footprint dimensions." });
   }
 
+  issues.push(...traceGeometryQaIssues(floor));
+
   for (const room of floor.rooms) {
     const roomTarget = { type: "room" as const, roomId: room.id };
     const openToAboveLink = openToAboveLinkForRoom(room);
@@ -4442,6 +4640,13 @@ function buildValidation(
         severity: "warning",
         message: `${room.name || "Room"} name suggests ${suggestedLabel}. Select that room type for internal gains or dismiss the suggestion.`,
         issueType: "room-type-suggestion",
+        checkType: "room-type-suggestion",
+        evidence: {
+          roomName: normalizedRoomNameForInference(room.name),
+          currentRoomType: room.roomType ?? "plain",
+          suggestedRoomType: roomTypeSuggestion.type,
+          suggestionKey: roomTypeSuggestion.key,
+        },
         target: roomTarget,
       });
     }
@@ -4451,6 +4656,13 @@ function buildValidation(
         severity: "warning",
         message: internalGainValidation.message,
         issueType: "internal-gain-suggestion",
+        checkType: "internal-gain-suggestion",
+        evidence: {
+          roomType: internalGainValidation.suggestion.roomType,
+          people: internalGainValidation.suggestion.people,
+          applianceWatts: internalGainValidation.suggestion.applianceWatts,
+          label: internalGainValidation.suggestion.label,
+        },
         internalGainSuggestion: internalGainValidation.suggestion,
         target: roomTarget,
       });
@@ -5170,6 +5382,7 @@ function normalizeTakeoffProject(rawProject: Partial<TakeoffProject>): TakeoffPr
     floors,
     rawProject.componentSchedule?.length ? rawProject.componentSchedule : defaultComponentSchedule,
     rawProject.connectedVolumes ?? [],
+    rawProject.validationDecisions ?? {},
   );
 }
 
@@ -8022,16 +8235,73 @@ function inferredRoomTypeFromName(name: string): { type: TakeoffRoomType; reason
   return null;
 }
 
+function stableValidationValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValidationValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([first], [second]) => first.localeCompare(second))
+      .map(([key, entry]) => [key, stableValidationValue(entry)]),
+  );
+}
+
+function hashValidationText(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function validationIssueCheckType(issue: TakeoffValidationIssue) {
+  return issue.checkType ?? issue.issueType ?? "general-validation";
+}
+
+function validationIssueEvidence(issue: TakeoffValidationIssue, index?: number) {
+  return issue.evidence ?? {
+    message: issue.message,
+    issueType: issue.issueType,
+    severity: issue.severity,
+    suggestion: issue.surfaceTreatmentSuggestion ??
+      issue.wallComponentGeometrySuggestion ??
+      issue.glassTreatmentSuggestion ??
+      issue.internalGainSuggestion ??
+      issue.openToAboveEnvelopeSuggestion ??
+      issue.verticalMergeSuggestion ??
+      issue.boundaryCandidateId ??
+      null,
+    index,
+  };
+}
+
+function validationIssueEvidenceHash(issue: TakeoffValidationIssue, index?: number) {
+  return hashValidationText(JSON.stringify(stableValidationValue(validationIssueEvidence(issue, index))));
+}
+
 function validationIssueKey(issue: TakeoffValidationIssue, index?: number) {
-  return `${issue.severity}:${issue.target?.type ?? "global"}:${issue.target?.roomId ?? issue.target?.regionId ?? ""}:${issue.message}:${index ?? ""}`;
+  const targetType = issue.target?.type ?? "project";
+  const targetId = issue.target?.roomId ?? issue.target?.regionId ?? issue.target?.floorId ?? "";
+  return `vqa1:${validationIssueCheckType(issue)}:${targetType}:${targetId}:${validationIssueEvidenceHash(issue, index)}`;
 }
 
 function projectValidationIssueKey(floorId: string, issue: TakeoffValidationIssue, index?: number) {
   return `${floorId}:${validationIssueKey(issue, index)}`;
 }
 
+function validationDecisionStatusHidesPrompt(status?: TakeoffValidationDecisionStatus) {
+  return status === "dismissed" || status === "confirmed";
+}
+
+function validationEvidenceHashFromKey(key: string) {
+  const parts = key.split(":");
+  return parts[parts.length - 1] || key;
+}
+
 function validationSectionForIssue(issue: TakeoffValidationIssue): ValidationSection {
   const message = issue.message.toLowerCase();
+  if (issue.issueType === "trace-geometry-qa" || issue.checkType === "trace-geometry-qa") return "trace-geometry";
   if (issue.issueType === "internal-gain-suggestion") return "room-profile";
   if (issue.issueType === "open-to-above-envelope-suggestion") return "wall-components";
   if (issue.issueType === "vertical-merge-suggestion") return "merge";
@@ -8105,6 +8375,7 @@ function isAutoOpeningLabel(label?: string) {
 function validationSectionLabel(section: ValidationSection) {
   const labels: Record<ValidationSection, string> = {
     merge: "Merge / attribution tools",
+    "trace-geometry": "Trace Geometry",
     "wall-suggestions": "Suggested Exterior Walls",
     "wall-components": "Wall Components",
     "glass-components": "Glass Components",
@@ -8151,7 +8422,7 @@ export function TakeoffApp() {
   const [draftRoom, setDraftRoom] = useState({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
   const [message, setMessage] = useState("");
   const [activeValidationTarget, setActiveValidationTarget] = useState<ActiveValidationTarget | null>(null);
-  const [dismissedValidationKeys, setDismissedValidationKeys] = useState<Set<string>>(() => new Set());
+  const [validationDecisions, setValidationDecisions] = useState<TakeoffValidationDecisionMap>(() => ({}));
   const [activeSketchTarget, setActiveSketchTarget] = useState<SketchTarget | null>(null);
   const [undoStack, setUndoStack] = useState<UndoSnapshot[]>([]);
   const undoRestoreInProgressRef = useRef(false);
@@ -8182,6 +8453,7 @@ export function TakeoffApp() {
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [leftSectionsOpen, setLeftSectionsOpen] = useState<Record<LeftSetupSection, boolean>>({
     project: true,
+    qa: false,
     mode: true,
     scale: true,
     grid: false,
@@ -8399,8 +8671,8 @@ export function TakeoffApp() {
   }, [planReviewMode]);
 
   const takeoffProject = useMemo<TakeoffProject>(
-    () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule, connectedVolumes),
-    [componentSchedule, connectedVolumes, dimensionInputMode, floors, frontDoorFaces, location, mechanicalVentilation, projectName, ventilationCfm],
+    () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule, connectedVolumes, validationDecisions),
+    [componentSchedule, connectedVolumes, dimensionInputMode, floors, frontDoorFaces, location, mechanicalVentilation, projectName, validationDecisions, ventilationCfm],
   );
   const envelopeCompilation = useMemo(() => compileEnvelope(takeoffProject), [takeoffProject]);
   const currentUndoSnapshot = useMemo(() => takeoffSnapshot(persistableTakeoffProject(takeoffProject)), [takeoffProject]);
@@ -8424,6 +8696,7 @@ export function TakeoffApp() {
     setComponentSchedule(restored.componentSchedule?.length ? restored.componentSchedule : defaultComponentSchedule);
     setFloors(restoredFloors);
     setConnectedVolumes(restored.connectedVolumes ?? []);
+    setValidationDecisions(restored.validationDecisions ?? {});
     setFloorViewOptions((current) => {
       return Object.fromEntries(restoredFloors.map((entry) => [entry.id, current[entry.id] ?? defaultFloorViewOptions()]));
     });
@@ -8431,7 +8704,6 @@ export function TakeoffApp() {
       ? snapshot.activeFloorId
       : restoredFloors[0]?.id ?? "floor-1");
     setActiveValidationTarget(null);
-    setDismissedValidationKeys(new Set());
     resetTransientFloorTools();
   }
   function undoLastTakeoffChange() {
@@ -8632,18 +8904,36 @@ export function TakeoffApp() {
           issue: {
             severity: envelopeIssue.severity,
             message: envelopeIssue.message,
+            checkType: "envelope-topology",
+            evidence: {
+              id: envelopeIssue.id,
+              roomId: envelopeIssue.roomId,
+              message: envelopeIssue.message,
+            },
             target: envelopeIssue.roomId ? { type: "room" as const, roomId: envelopeIssue.roomId } : undefined,
           },
           index: standardEntries.length + index,
-          key: `envelope:${envelopeIssue.id}`,
+          key: projectValidationIssueKey(entry.id, {
+            severity: envelopeIssue.severity,
+            message: envelopeIssue.message,
+            checkType: "envelope-topology",
+            evidence: {
+              id: envelopeIssue.id,
+              roomId: envelopeIssue.roomId,
+              message: envelopeIssue.message,
+            },
+            target: envelopeIssue.roomId ? { type: "room" as const, roomId: envelopeIssue.roomId } : undefined,
+          }, standardEntries.length + index),
         }))
     );
     return [...standardEntries, ...envelopeEntries];
   }, [activeFloorId, connectedVolumes, envelopeCompilation, floors, orderedFloors, unassignedRegions]);
   const visibleProjectValidation = useMemo(
-    () => projectValidation.filter((entry) => !dismissedValidationKeys.has(entry.key)),
-    [dismissedValidationKeys, projectValidation],
+    () => projectValidation.filter((entry) => !validationDecisionStatusHidesPrompt(validationDecisions[entry.key]?.status)),
+    [projectValidation, validationDecisions],
   );
+  const validationDecisionCount = Object.keys(validationDecisions).length;
+  const visibleTraceGeometryValidationCount = visibleProjectValidation.filter((entry) => entry.issue.checkType === "trace-geometry-qa").length;
   const roomValidationSummary = useMemo(() => {
     const summary = new Map<string, { errors: number; warnings: number }>();
     for (const entry of visibleProjectValidation) {
@@ -9093,33 +9383,57 @@ export function TakeoffApp() {
     }));
   }
 
+  function recordValidationDecision(target: ActiveValidationTarget, status: TakeoffValidationDecisionStatus, note?: string) {
+    const floorId = target.floorId;
+    const decision: TakeoffValidationDecision = {
+      key: target.key,
+      checkType: target.checkType ?? target.issueType ?? "general-validation",
+      status,
+      evidenceHash: validationEvidenceHashFromKey(target.key),
+      decidedAt: new Date().toISOString(),
+      floorId,
+      targetType: target.roomId ? "room" : floorId ? "floor" : "project",
+      targetId: target.roomId ?? floorId,
+      note,
+    };
+    setValidationDecisions((current) => ({ ...current, [target.key]: decision }));
+  }
+
+  function recordActiveValidationDecision(status: TakeoffValidationDecisionStatus, note?: string) {
+    if (!activeValidationTarget) return;
+    recordValidationDecision(activeValidationTarget, status, note);
+  }
+
   function acceptRoomTypeSuggestion(roomId: string, suggestion: NonNullable<ReturnType<typeof inferredRoomTypeFromName>>) {
     updateRoom(roomId, { roomType: suggestion.type, roomTypeSuggestionDismissedKey: suggestion.key });
+    recordActiveValidationDecision("accepted", `Room type set to ${suggestion.type}.`);
     setActiveValidationTarget(null);
   }
 
   function rejectRoomTypeSuggestion(roomId: string, suggestion: NonNullable<ReturnType<typeof inferredRoomTypeFromName>>) {
     updateRoom(roomId, { roomType: "plain", roomTypeSuggestionDismissedKey: suggestion.key });
+    recordActiveValidationDecision("dismissed", "User kept the room type plain.");
     setActiveValidationTarget(null);
   }
 
   function recheckValidation() {
+    setActiveValidationTarget(null);
+    setMessage("Validation rechecked. Dismissed or confirmed prompts stay hidden unless their evidence changes.");
+  }
+
+  function resetValidationDecisions() {
     setFloors((current) => current.map((entry) => ({
       ...entry,
       rooms: entry.rooms.map((room) => ({ ...room, roomTypeSuggestionDismissedKey: undefined })),
     })));
-    setDismissedValidationKeys(new Set());
+    setValidationDecisions({});
     setActiveValidationTarget(null);
-    setMessage("Validation rechecked. Previously dismissed flags can appear again.");
+    setMessage("Dismissed validation decisions reset. Previously hidden prompts can appear again.");
   }
 
   function dismissActiveValidation() {
     if (!activeValidationTarget) return;
-    setDismissedValidationKeys((current) => {
-      const next = new Set(current);
-      next.add(activeValidationTarget.key);
-      return next;
-    });
+    recordValidationDecision(activeValidationTarget, "dismissed");
     setActiveValidationTarget(null);
   }
 
@@ -10029,11 +10343,7 @@ export function TakeoffApp() {
         });
         const baseComponents = components.filter((component) =>
           !(component.surface === "wall" && (
-            component.source === "raised-ceiling" ||
-            component.source === "vault-gable" ||
-            component.source === "tray-knee-wall" ||
-            component.source === "wall-gap-fill" ||
-            component.source === "conditioned-wall-profile" ||
+            componentIsGeneratedCeilingProfileOutput(component) ||
             (component.label != null && suggestionLabels.has(component.label))
           )) &&
           !gapFillSuggestions.some((suggestion) => matchesGapFillSuggestion(component, suggestion)) &&
@@ -10289,6 +10599,7 @@ export function TakeoffApp() {
 
     if (suggestion.action === "none" || suggestion.exposedArea <= 0.5) {
       setRoomSurfaceNoLoad(roomId, suggestion.surface);
+      recordActiveValidationDecision("accepted", `${componentSurfaceLabel(suggestion.surface)} marked no-load from validation.`);
       return;
     }
 
@@ -10358,6 +10669,7 @@ export function TakeoffApp() {
         ? `${componentSurfaceLabel(surface)} split applied: ${Math.round(suggestion.conditionedArea)} sf conditioned, ${Math.round(componentArea)} sf exposed.`
         : `${componentSurfaceLabel(surface)} set to ${Math.round(componentArea)} sf.`,
     );
+    recordActiveValidationDecision("accepted", `${componentSurfaceLabel(surface)} treatment applied from validation.`);
   }
 
   function applyWallComponentGeometrySuggestion(issue: TakeoffValidationIssue) {
@@ -10368,6 +10680,7 @@ export function TakeoffApp() {
 
     if (suggestion.action === "remove") {
       removeRoomComponent(roomId, suggestion.componentId);
+      recordActiveValidationDecision("accepted", "Wall component geometry suggestion applied.");
       setMessage(`${suggestion.label || "Wall component"} removed from ${roomName}; that boundary is no longer exterior/load-bearing.`);
       return;
     }
@@ -10401,6 +10714,7 @@ export function TakeoffApp() {
         };
       }),
     }));
+    recordActiveValidationDecision("accepted", "Wall component geometry suggestion applied.");
     setMessage(`${suggestion.direction || "Wall"} wall slice updated for ${roomName}; profile slices already modeled were deducted from the base wall.`);
   }
 
@@ -10429,6 +10743,7 @@ export function TakeoffApp() {
         };
       }),
     }));
+    recordActiveValidationDecision("accepted", "Glass treatment suggestion applied.");
     setMessage(`${roomName} glass marked as shaded.`);
   }
 
@@ -10443,6 +10758,7 @@ export function TakeoffApp() {
       peopleOverride: suggestion.people,
       applianceWattsOverride: suggestion.applianceWatts,
     });
+    recordActiveValidationDecision("accepted", "Internal gain suggestion applied.");
     setActiveValidationTarget(null);
     setMessage(`${roomName} set to ${suggestion.label || `${suggestion.people} person + ${suggestion.applianceWatts} W`}.`);
   }
@@ -10467,6 +10783,7 @@ export function TakeoffApp() {
         };
       }),
     }));
+    recordActiveValidationDecision("accepted", "Open-to-above envelope suggestion applied.");
     setActiveValidationTarget(null);
     setMessage(`${roomName} will export open-to-above wall extensions as separate oriented line items.`);
   }
@@ -10550,6 +10867,7 @@ export function TakeoffApp() {
     }));
     setActiveFloorId(reportingFloor.id);
     setSelectedRoomId(assignedRoom.id);
+    recordActiveValidationDecision("accepted", "Connected vertical volume suggestion applied.");
     setActiveValidationTarget(null);
     setMessage(`${sourceRoom.name || "Lower room"} and ${targetRoom.name || "upper room"} connected; combined attributes assigned to ${reportingFloor.name || "the selected floor"}.`);
   }
@@ -10758,7 +11076,7 @@ export function TakeoffApp() {
           ...room,
           envelopeCompilerPreviewDisabled: true,
           components: [
-            ...roomComponents(room).filter((component) => !isEnvelopeCompilerGeneratedWall(component)),
+            ...roomComponents(room).filter((component) => !componentIsEnvelopeRebuildOutput(component)),
             ...drafts.map(envelopeDraftToRoomComponent),
           ],
         };
@@ -12368,6 +12686,7 @@ export function TakeoffApp() {
       section,
       message: issue.message,
       issueType: issue.issueType,
+      checkType: issue.checkType,
       surfaceTreatmentSuggestion: issue.surfaceTreatmentSuggestion,
       wallComponentGeometrySuggestion: issue.wallComponentGeometrySuggestion,
       glassTreatmentSuggestion: issue.glassTreatmentSuggestion,
@@ -12385,6 +12704,17 @@ export function TakeoffApp() {
       if (sketchSurface) setActiveSketchTarget({ roomId: issue.target.roomId, surface: sketchSurface });
     }
     if (!issue.target) return;
+    if (issue.target.type === "floor") {
+      setSelectedRoomId(null);
+      setSelectedUnassignedRegionId(null);
+      setPlanReviewMode("plan");
+      setWorkflowStep("trace");
+      setTraceTool("select");
+      setZoom(maxPlanZoom);
+      setRightPanelOpen(true);
+      setMessage(`${issueFloor.name || "Floor"} trace geometry selected. Review the close points or narrow segments at max zoom.`);
+      return;
+    }
     if (issue.target.type === "room" && issue.target.roomId) {
       setSelectedRoomId(issue.target.roomId);
       setRightPanelOpen(true);
@@ -12561,9 +12891,17 @@ export function TakeoffApp() {
       setMessage("Add at least 3 exterior points before locking the perimeter.");
       return;
     }
+    const locking = !floor.perimeterLocked;
+    const traceQaCount = locking ? traceGeometryQaIssues(floor).length : 0;
     setFloor((current) => ({ ...current, perimeterLocked: !current.perimeterLocked }));
     setTraceTool(floor.perimeterLocked ? "exterior" : "select");
-    setMessage(floor.perimeterLocked ? "Exterior perimeter unlocked." : "Exterior perimeter locked.");
+    setMessage(
+      floor.perimeterLocked
+        ? "Exterior perimeter unlocked."
+        : traceQaCount > 0
+          ? `Exterior perimeter locked. Trace QA found ${traceQaCount} close point or narrow segment review ${traceQaCount === 1 ? "item" : "items"}.`
+          : "Exterior perimeter locked. Trace QA found no close point or narrow segment review items.",
+    );
   }
 
   function clampPlanZoom(value: number) {
@@ -12867,7 +13205,7 @@ export function TakeoffApp() {
     setDraftRoom({ name: "", x: 0, y: 0, width: 0, depth: 0, ceilingHeight: 9 });
     setMessage("Started a new takeoff draft.");
     setActiveValidationTarget(null);
-    setDismissedValidationKeys(new Set());
+    setValidationDecisions({});
     setActiveSketchTarget(null);
     setUndoStack([]);
     setTakeoffId(null);
@@ -12939,6 +13277,7 @@ export function TakeoffApp() {
       setComponentSchedule(loadedProject.componentSchedule?.length ? loadedProject.componentSchedule : defaultComponentSchedule);
       setFloors(loadedProject.floors.length ? loadedProject.floors : [firstLoadedFloor]);
       setConnectedVolumes(loadedProject.connectedVolumes ?? []);
+      setValidationDecisions(loadedProject.validationDecisions ?? {});
       setUndoStack([]);
       setFloorViewOptions(Object.fromEntries((loadedProject.floors.length ? loadedProject.floors : [firstLoadedFloor]).map((entry) => [entry.id, defaultFloorViewOptions()])));
       setActiveFloorId(firstLoadedFloor.id);
@@ -13504,6 +13843,39 @@ export function TakeoffApp() {
                 </p>
               </>
             )}
+          </details>
+
+          <details
+            className="takeoff-panel takeoff-left-details"
+            open={leftSectionsOpen.qa}
+            onToggle={(event) => setLeftSectionOpen("qa", event.currentTarget.open)}
+          >
+            <summary>Geometry QA</summary>
+            <p className="takeoff-muted">
+              {visibleTraceGeometryValidationCount > 0
+                ? `${visibleTraceGeometryValidationCount} trace geometry review ${visibleTraceGeometryValidationCount === 1 ? "item" : "items"} visible.`
+                : "No visible trace geometry review items."}
+              {validationDecisionCount > 0 ? ` ${validationDecisionCount} remembered validation ${validationDecisionCount === 1 ? "decision" : "decisions"}.` : ""}
+            </p>
+            <div className="takeoff-form-actions">
+              <button type="button" onClick={recheckValidation}>Recheck</button>
+              <button type="button" onClick={resetValidationDecisions} disabled={validationDecisionCount === 0}>Reset Dismissed</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPlanReviewMode("plan");
+                  setWorkflowStep("trace");
+                  setTraceTool("select");
+                  setZoom(maxPlanZoom);
+                  setMessage("Trace QA review opened at max zoom. Hold Option/Alt for the loupe while checking close points.");
+                }}
+              >
+                Review Trace
+              </button>
+            </div>
+            <p className="takeoff-note">
+              Generated wall segments can be rebuilt after trace geometry is confirmed; ceiling settings remain unchanged.
+            </p>
           </details>
 
           <details className="takeoff-panel takeoff-left-details" open={leftSectionsOpen.mode} onToggle={(event) => setLeftSectionOpen("mode", event.currentTarget.open)}>
@@ -14815,6 +15187,7 @@ export function TakeoffApp() {
                             severity: activeRoomValidationTarget.severity,
                             message: activeRoomValidationTarget.message,
                             issueType: activeRoomValidationTarget.issueType,
+                            checkType: activeRoomValidationTarget.checkType,
                             surfaceTreatmentSuggestion,
                             wallComponentGeometrySuggestion,
                             glassTreatmentSuggestion,
@@ -15718,10 +16091,13 @@ export function TakeoffApp() {
           <section className="takeoff-panel takeoff-validation-panel">
             <div className="takeoff-panel-head">
               <h2>Validation</h2>
-              <button type="button" onClick={recheckValidation}>Recheck Validation</button>
+              <div className="takeoff-validation-actions">
+                <button type="button" onClick={recheckValidation}>Recheck Validation</button>
+                <button type="button" onClick={resetValidationDecisions} disabled={validationDecisionCount === 0}>Reset Dismissed</button>
+              </div>
             </div>
             {visibleProjectValidation.length === 0 ? (
-              <p className="takeoff-ok">{projectValidation.length > 0 ? "All visible validation flags are dismissed. Recheck Validation will show them again." : "Ready for payload preview."}</p>
+              <p className="takeoff-ok">{projectValidation.length > 0 ? "All current validation flags are resolved or hidden. Reset Dismissed to review remembered prompts again." : "Ready for payload preview."}</p>
             ) : (
               <div className="takeoff-issue-list">
                 {visibleProjectValidation.map((entry, listIndex) => (

@@ -182,6 +182,22 @@ export type TakeoffConnectedVolume = {
   components?: TakeoffConnectedVolumeComponent[];
 };
 
+export type TakeoffValidationDecisionStatus = "dismissed" | "accepted" | "confirmed";
+
+export type TakeoffValidationDecision = {
+  key: string;
+  checkType: string;
+  status: TakeoffValidationDecisionStatus;
+  evidenceHash: string;
+  decidedAt: string;
+  floorId?: string;
+  targetType?: "room" | "unassigned" | "floor" | "project";
+  targetId?: string;
+  note?: string;
+};
+
+export type TakeoffValidationDecisionMap = Record<string, TakeoffValidationDecision>;
+
 export type TakeoffScaleLine = {
   id: string;
   label: string;
@@ -294,6 +310,7 @@ export type TakeoffProject = {
   componentSchedule?: TakeoffComponentDefinition[];
   floors: TakeoffFloor[];
   connectedVolumes?: TakeoffConnectedVolume[];
+  validationDecisions?: TakeoffValidationDecisionMap;
 };
 
 export type TakeoffSurfaceTreatmentSuggestion = {
@@ -367,7 +384,9 @@ export type TakeoffVerticalMergeSuggestion = {
 export type TakeoffValidationIssue = {
   severity: "error" | "warning";
   message: string;
-  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion" | "internal-gain-suggestion" | "open-to-above-envelope-suggestion" | "vertical-merge-suggestion";
+  issueType?: "room-type-suggestion" | "boundary-candidate" | "surface-treatment-suggestion" | "wall-component-geometry-suggestion" | "glass-treatment-suggestion" | "internal-gain-suggestion" | "open-to-above-envelope-suggestion" | "vertical-merge-suggestion" | "trace-geometry-qa" | "topology-confirmation";
+  checkType?: string;
+  evidence?: Record<string, unknown>;
   boundaryCandidateId?: string;
   surfaceTreatmentSuggestion?: TakeoffSurfaceTreatmentSuggestion;
   wallComponentGeometrySuggestion?: TakeoffWallComponentGeometrySuggestion;
@@ -376,8 +395,9 @@ export type TakeoffValidationIssue = {
   openToAboveEnvelopeSuggestion?: TakeoffOpenToAboveEnvelopeSuggestion;
   verticalMergeSuggestion?: TakeoffVerticalMergeSuggestion;
   target?: {
-    type: "room" | "unassigned";
+    type: "room" | "unassigned" | "floor";
     roomId?: string;
     regionId?: string;
+    floorId?: string;
   };
 };

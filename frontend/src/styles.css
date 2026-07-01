@@ -2423,6 +2423,13 @@ button.toolbar-primary:hover {
   scrollbar-gutter: stable;
 }
 
+.takeoff-validation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .takeoff-issue-stack {
   display: flex;
   flex-direction: column;
