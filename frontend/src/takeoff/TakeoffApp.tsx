@@ -45,6 +45,7 @@ const defaultWindowSillHeight = 3;
 const defaultWindowHeight = 5;
 const defaultDoorSillHeight = 0;
 const defaultDoorHeight = 6.67;
+const wallPanelVisualOverlapFt = 0.04;
 const componentCategories: TakeoffComponentCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
 const allComponentSurfaces: TakeoffRoomComponent["surface"][] = ["floor", "ceiling", "wall", "glass", "door"];
 const defaultComponentSchedule: TakeoffComponentDefinition[] = [
@@ -188,6 +189,22 @@ type TakeoffBoundaryCandidate = {
   recommendedBoundary: TakeoffBoundaryType;
   reason: string;
 };
+type RoomIntersectionWallSliceCandidate = {
+  id: string;
+  roomId: string;
+  roomName: string;
+  adjacentRoomId: string;
+  adjacentRoomName: string;
+  direction: (typeof directionOptions)[number];
+  spanStart: number;
+  spanEnd: number;
+  zMin: number;
+  zMax: number;
+  area: number;
+  placement: TakeoffPoint;
+  wallProfilePolygons: TakeoffPoint[][];
+  geometryLabel: string;
+};
 type OrientationLoadResult = { facing: string; cooling: number; heating: number; tons: number };
 type TakeoffCalcResult = OrientationLoadResult & { orientations: OrientationLoadResult[]; baseFacing: string };
 type ValidationSection = "merge" | "wall-suggestions" | "wall-components" | "glass-components" | "door-components" | "floor-components" | "ceiling-components" | "ceiling-geometry" | "room-profile";
@@ -206,6 +223,7 @@ type ActiveValidationTarget = {
   internalGainSuggestion?: TakeoffValidationIssue["internalGainSuggestion"];
   openToAboveEnvelopeSuggestion?: TakeoffValidationIssue["openToAboveEnvelopeSuggestion"];
   verticalMergeSuggestion?: TakeoffValidationIssue["verticalMergeSuggestion"];
+  boundaryCandidateId?: TakeoffValidationIssue["boundaryCandidateId"];
 };
 type ProjectValidationEntry = {
   floor: TakeoffFloor;
@@ -2953,13 +2971,13 @@ function projectedSpanRangeOnSegment(points: TakeoffPoint[], segment: { a: Takeo
   return { start, end, length: end - start };
 }
 
-function adjacentSpaceContactSpan(
-  space: TakeoffAdjacentSpace,
+function polygonContactSpan(
+  polygonPoints: TakeoffPoint[],
   segment: { a: TakeoffPoint; b: TakeoffPoint },
   tolerance: number,
 ) {
   const ranges: Array<{ start: number; end: number; length: number }> = [];
-  for (const edge of pointsToEdges(adjacentSpaceCorners(space))) {
+  for (const edge of pointsToEdges(polygonPoints)) {
     const shared = sharedSegment(segment, edge, tolerance);
     if (!shared || shared.length <= 0.05) continue;
     const range = projectedSpanRangeOnSegment([shared.a, shared.b], segment);
@@ -2968,7 +2986,7 @@ function adjacentSpaceContactSpan(
 
   const corridor = segmentCorridorPolygon(segment, tolerance);
   if (corridor) {
-    const corridorOverlaps = intersection([corridor], [pointsToClipPolygon(adjacentSpaceCorners(space))]);
+    const corridorOverlaps = intersection([corridor], [pointsToClipPolygon(polygonPoints)]);
     for (const polygon of corridorOverlaps) {
       const range = projectedSpanRangeOnSegment(clipRingToPoints(polygon[0] ?? []), segment);
       if (range) ranges.push(range);
@@ -2976,6 +2994,22 @@ function adjacentSpaceContactSpan(
   }
 
   return ranges.sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
+function adjacentSpaceContactSpan(
+  space: TakeoffAdjacentSpace,
+  segment: { a: TakeoffPoint; b: TakeoffPoint },
+  tolerance: number,
+) {
+  return polygonContactSpan(adjacentSpaceCorners(space), segment, tolerance);
+}
+
+function roomContactSpan(
+  room: TakeoffRectRoom,
+  segment: { a: TakeoffPoint; b: TakeoffPoint },
+  tolerance: number,
+) {
+  return polygonContactSpan(roomCorners(room), segment, tolerance);
 }
 
 function adjacentSpaceTouchesSegment(
@@ -3391,6 +3425,71 @@ function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandida
     }
   }
   return candidates;
+}
+
+function roomIntersectionWallSliceCandidateApplied(room: TakeoffRectRoom, candidate: RoomIntersectionWallSliceCandidate) {
+  return roomSurfaceComponents(room, "wall").some((component) =>
+    component.direction === candidate.direction &&
+    componentHasWallProfileGeometry(component) &&
+    Math.abs((component.spanStart ?? candidate.spanStart) - candidate.spanStart) <= 0.1 &&
+    Math.abs((component.spanEnd ?? candidate.spanEnd) - candidate.spanEnd) <= 0.1 &&
+    Math.abs((component.zMin ?? candidate.zMin) - candidate.zMin) <= 0.1 &&
+    Math.abs((component.zMax ?? candidate.zMax) - candidate.zMax) <= 0.1
+  );
+}
+
+function roomIntersectionWallSliceCandidatesForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): RoomIntersectionWallSliceCandidate[] {
+  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
+  const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
+  if (baseHeight <= 0.05) return [];
+
+  const candidates: RoomIntersectionWallSliceCandidate[] = [];
+  for (const segment of roomExteriorSegments(floor, room, { includeConditionedAdjacency: true })) {
+    for (const adjacentRoom of floor.rooms) {
+      if (adjacentRoom.id === room.id) continue;
+      const span = roomContactSpan(adjacentRoom, segment, tolerance);
+      if (!span || span.length < meaningfulAdjacentContactLength(segment, tolerance)) continue;
+      const adjacentHeight = baseEnvelopeHeightForWallSuggestion(floor, adjacentRoom);
+      const zMax = Number(Math.max(0.1, Math.min(baseHeight, adjacentHeight || baseHeight)).toFixed(3));
+      const spanStart = Number(span.start.toFixed(3));
+      const spanEnd = Number(span.end.toFixed(3));
+      const area = Number((span.length * zMax).toFixed(3));
+      if (area <= 0.5) continue;
+      const wallProfilePolygons = [[
+        { x: spanStart, y: 0 },
+        { x: spanEnd, y: 0 },
+        { x: spanEnd, y: zMax },
+        { x: spanStart, y: zMax },
+      ]];
+      candidates.push({
+        id: [
+          "room-intersection",
+          room.id,
+          adjacentRoom.id,
+          segment.direction,
+          Math.round(spanStart * 10),
+          Math.round(spanEnd * 10),
+          Math.round(zMax * 10),
+        ].join(":"),
+        roomId: room.id,
+        roomName: room.name || "Room",
+        adjacentRoomId: adjacentRoom.id,
+        adjacentRoomName: adjacentRoom.name || "Room",
+        direction: segment.direction,
+        spanStart,
+        spanEnd,
+        zMin: 0,
+        zMax,
+        area,
+        placement: pointAtSegmentDistance(segment, (spanStart + spanEnd) / 2),
+        wallProfilePolygons,
+        geometryLabel: `${segment.direction} wall intersects ${adjacentRoom.name || "room"} from ${Number(spanStart.toFixed(1))}-${Number(spanEnd.toFixed(1))} lf up to ${Number(zMax.toFixed(1))} ft`,
+      });
+    }
+  }
+
+  const uniqueById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  return Array.from(uniqueById.values()).filter((candidate) => !roomIntersectionWallSliceCandidateApplied(room, candidate));
 }
 
 type WallGapFillSuggestion = {
@@ -5109,15 +5208,26 @@ function modelPoint(point: TakeoffPoint, center: TakeoffPoint, height: number) {
   return new THREE.Vector3(point.x - center.x, height, point.y - center.y);
 }
 
-function createPanelMesh(vertices: THREE.Vector3[], material: THREE.Material) {
-  const geometry = new THREE.BufferGeometry().setFromPoints(vertices);
-  if (vertices.length === 3) {
+function visuallyExpandedPanelVertices(vertices: THREE.Vector3[], overlap: number) {
+  if (overlap <= 0 || vertices.length < 3) return vertices;
+  const centroid = vertices.reduce((sum, vertex) => sum.add(vertex), new THREE.Vector3()).multiplyScalar(1 / vertices.length);
+  return vertices.map((vertex) => {
+    const direction = vertex.clone().sub(centroid);
+    if (direction.lengthSq() <= 0.000001) return vertex;
+    return vertex.clone().add(direction.normalize().multiplyScalar(overlap));
+  });
+}
+
+function createPanelMesh(vertices: THREE.Vector3[], material: THREE.Material, visualOverlap = 0) {
+  const renderVertices = visuallyExpandedPanelVertices(vertices, visualOverlap);
+  const geometry = new THREE.BufferGeometry().setFromPoints(renderVertices);
+  if (renderVertices.length === 3) {
     geometry.setIndex([0, 1, 2]);
-  } else if (vertices.length === 4) {
+  } else if (renderVertices.length === 4) {
     geometry.setIndex([0, 1, 2, 0, 2, 3]);
-  } else if (vertices.length > 4) {
+  } else if (renderVertices.length > 4) {
     const indices: number[] = [];
-    for (let index = 1; index < vertices.length - 1; index += 1) {
+    for (let index = 1; index < renderVertices.length - 1; index += 1) {
       indices.push(0, index, index + 1);
     }
     geometry.setIndex(indices);
@@ -5153,7 +5263,7 @@ function raisedWallMeshPartsForRoom(
         modelPoint(edge.b, center, baseHeight),
         modelPoint(edge.b, center, topHeight),
         modelPoint(edge.a, center, topHeight),
-      ], material),
+      ], material, wallPanelVisualOverlapFt),
       kind: exterior ? "load-wall" : "knee-wall",
       label: exterior ? `${direction}-side exterior raised wall band` : `${direction}-side raised wall band`,
       surface: "wall",
@@ -5270,11 +5380,11 @@ function splitEdgeAtVaultRidge(edge: { a: TakeoffPoint; b: TakeoffPoint }, bound
   ));
 }
 
-function wallMeshForEdge(a: TakeoffPoint, b: TakeoffPoint, center: TakeoffPoint, height: number, material: THREE.Material) {
+function wallMeshForEdge(a: TakeoffPoint, b: TakeoffPoint, center: TakeoffPoint, height: number, material: THREE.Material, visualOverlap = wallPanelVisualOverlapFt) {
   const dx = b.x - a.x;
   const dz = b.y - a.y;
   const length = Math.hypot(dx, dz);
-  const geometry = new THREE.BoxGeometry(length, Math.max(height, 0.1), 0.18);
+  const geometry = new THREE.BoxGeometry(length + visualOverlap * 2, Math.max(height, 0.1), 0.18);
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(((a.x + b.x) / 2) - center.x, height / 2, ((a.y + b.y) / 2) - center.y);
   mesh.rotation.y = -Math.atan2(dz, dx);
@@ -5394,7 +5504,7 @@ function bandJoistMeshesForFloor(floor: TakeoffFloor, center: TakeoffPoint, topO
       modelPoint(edge.b, center, topOffset - height),
       modelPoint(edge.b, center, topOffset),
       modelPoint(edge.a, center, topOffset),
-    ], material));
+    ], material, wallPanelVisualOverlapFt));
   }
   return bandJoistPanels;
 }
@@ -5508,7 +5618,7 @@ function vaultedWallMeshPartsForRoom(
           modelPoint(b, center, ceilingInfo.lowHeight),
           modelPoint(b, center, bHeight),
           modelPoint(a, center, aHeight),
-        ], material),
+        ], material, wallPanelVisualOverlapFt),
         kind: exterior ? "load-wall" : "knee-wall",
         label: exterior ? `${direction}-side exterior vault gable panel` : `${direction}-side vault gable / knee-wall panel`,
         surface: "wall",
@@ -5540,7 +5650,7 @@ function trayWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, d
           modelPoint(edge.b, center, bottom),
           modelPoint(edge.b, center, top),
           modelPoint(edge.a, center, top),
-        ], kneeWallMaterial),
+        ], kneeWallMaterial, wallPanelVisualOverlapFt),
         kind: "knee-wall",
         label: `Tray step ${stepIndex + 1} knee-wall panel`,
         surface: "wall",
@@ -5617,6 +5727,7 @@ function wallGapFillMeshPartsForRoom(
         mesh: createPanelMesh(
           cleanProfile.map((point) => modelPoint(pointAtSegmentDistance(segment, point.x), center, point.y)),
           material,
+          wallPanelVisualOverlapFt,
         ),
         kind,
         label: component.label || (treatment === "attic" ? `${component.direction} attic knee-wall profile` : `${component.direction} exterior wall gap fill`),
@@ -5655,7 +5766,7 @@ function openToAboveWallExtensionMeshPartsForRoom(
       modelPoint(segment.b, center, segment.baseHeight),
       modelPoint(segment.b, center, segment.effectiveHeight),
       modelPoint(segment.a, center, segment.effectiveHeight),
-    ], segment.adjacency === "attic" ? kneeWallMaterial : exteriorWallMaterial),
+    ], segment.adjacency === "attic" ? kneeWallMaterial : exteriorWallMaterial, wallPanelVisualOverlapFt),
     kind: segment.adjacency === "attic" ? "knee-wall" : "load-wall",
     label: `${segment.direction} open-to-above wall extension`,
     surface: "wall",
@@ -7850,6 +7961,8 @@ export function TakeoffApp() {
   const [editingComponentId, setEditingComponentId] = useState<string | null>(null);
   const [suggestedWallRowAssemblies, setSuggestedWallRowAssemblies] = useState<Record<string, string>>({});
   const [suggestedWallRowAdjacencies, setSuggestedWallRowAdjacencies] = useState<Record<string, TakeoffWallAdjacency>>({});
+  const [manualWallSliceAssemblies, setManualWallSliceAssemblies] = useState<Record<string, string>>({});
+  const [manualWallSliceAdjacencies, setManualWallSliceAdjacencies] = useState<Record<string, TakeoffWallAdjacency>>({});
   const [selectedUnassignedRegionId, setSelectedUnassignedRegionId] = useState<string | null>(null);
   const [suggestedWallAssembly, setSuggestedWallAssembly] = useState("W1");
   const [openingPlacement, setOpeningPlacement] = useState<OpeningPlacement>(null);
@@ -8086,6 +8199,12 @@ export function TakeoffApp() {
     glass: componentSchedule.filter((component) => component.category === "Glass"),
     door: componentSchedule.filter((component) => component.category === "Door"),
   } satisfies Record<TakeoffRoomComponent["surface"], TakeoffComponentDefinition[]>;
+  const selectedRoomBoundaryCandidates = selectedRoom
+    ? boundaryCandidatesForFloor(floor).filter((candidate) => candidate.roomId === selectedRoom.id && !floor.boundaryCandidateResolutions?.[candidate.id])
+    : [];
+  const selectedRoomManualSliceCandidates = selectedRoom
+    ? roomIntersectionWallSliceCandidatesForRoom(floor, selectedRoom)
+    : [];
   const filteredLibraryComponents = libraryComponents.filter((component) => {
     const needle = componentSearch.trim().toLowerCase();
     const matchesSearch = !needle || `${component.code} ${component.description} ${component.category}`.toLowerCase().includes(needle);
@@ -10217,6 +10336,42 @@ export function TakeoffApp() {
     });
   }
 
+  function applyRoomIntersectionWallSlice(candidate: RoomIntersectionWallSliceCandidate, assembly: string, adjacency: TakeoffWallAdjacency) {
+    const loadExempt = adjacency === "conditioned";
+    const resolvedAssembly = loadExempt ? "NO_LOAD" : assembly || defaultWallAssemblyForAdjacency(adjacency);
+    pushUndoSnapshot("room intersection wall slice");
+    setFloor((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== candidate.roomId) return room;
+        const component: TakeoffRoomComponent = {
+          id: nextId("component-room-wall-slice"),
+          surface: "wall",
+          assembly: resolvedAssembly,
+          direction: candidate.direction,
+          area: Math.round(candidate.area),
+          label: `${candidate.direction} ${wallAdjacencyLabel(adjacency).toLowerCase()} manual slice`,
+          source: "manual",
+          adjacency,
+          boundary: boundaryForAdjacency(adjacency),
+          geometryLabel: candidate.geometryLabel,
+          spanStart: candidate.spanStart,
+          spanEnd: candidate.spanEnd,
+          zMin: candidate.zMin,
+          zMax: candidate.zMax,
+          placement: candidate.placement,
+          wallProfilePolygons: candidate.wallProfilePolygons,
+          loadExempt,
+        };
+        return reconcileBaseWallAreasForProfileCoverage(current, {
+          ...room,
+          components: [...roomComponents(room), component],
+        });
+      }),
+    }));
+    setMessage(`${Math.round(candidate.area)} sf wall slice added where ${candidate.roomName} meets ${candidate.adjacentRoomName}.`);
+  }
+
   function resolveBoundaryCandidate(candidateId: string, resolution: "slice" | "whole-section" | "ignore", floorId = activeFloorId) {
     const targetFloor = floors.find((entry) => entry.id === floorId) ?? floor;
     const candidate = boundaryCandidatesForFloor(targetFloor).find((entry) => entry.id === candidateId);
@@ -11765,6 +11920,7 @@ export function TakeoffApp() {
       internalGainSuggestion: issue.internalGainSuggestion,
       openToAboveEnvelopeSuggestion: issue.openToAboveEnvelopeSuggestion,
       verticalMergeSuggestion: issue.verticalMergeSuggestion,
+      boundaryCandidateId: issue.boundaryCandidateId,
     });
     if (issueFloor.id !== activeFloorId) {
       setActiveFloorId(issueFloor.id);
@@ -13957,6 +14113,9 @@ export function TakeoffApp() {
                           const verticalMergeSuggestion = activeRoomValidationTarget.verticalMergeSuggestion;
                           const verticalMergeSourceFloor = verticalMergeSuggestion ? floors.find((entry) => entry.id === verticalMergeSuggestion.sourceFloorId) : null;
                           const verticalMergeTargetFloor = verticalMergeSuggestion ? floors.find((entry) => entry.id === verticalMergeSuggestion.targetFloorId) : null;
+                          const boundaryCandidate = activeRoomValidationTarget.boundaryCandidateId
+                            ? selectedRoomBoundaryCandidates.find((candidate) => candidate.id === activeRoomValidationTarget.boundaryCandidateId)
+                            : null;
                           const suggestedLabel = roomTypeSuggestion
                             ? roomTypeOptions.find((option) => option.id === roomTypeSuggestion.type)?.shortLabel ?? roomTypeLabel(roomTypeSuggestion.type)
                             : "";
@@ -13970,6 +14129,7 @@ export function TakeoffApp() {
                             internalGainSuggestion,
                             openToAboveEnvelopeSuggestion,
                             verticalMergeSuggestion,
+                            boundaryCandidateId: activeRoomValidationTarget.boundaryCandidateId,
                             target: { type: "room", roomId: selectedRoom.id },
                           };
                           return (
@@ -14006,6 +14166,12 @@ export function TakeoffApp() {
                                   </>
                                 ) : activeRoomValidationTarget.section === "ceiling-geometry" ? (
                                   <button className="toolbar-primary" onClick={() => approveRoomCeilingGeometry(selectedRoom.id, ceilingWallAssemblies, ceilingWallAdjacencies)}>Apply Fix</button>
+                                ) : boundaryCandidate ? (
+                                  <>
+                                    <button className="toolbar-primary" onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "slice", floor.id)}>Slice wall</button>
+                                    <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "whole-section", floor.id)}>Whole section</button>
+                                    <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "ignore", floor.id)}>Keep exterior</button>
+                                  </>
                                 ) : (
                                   <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
                                 )}
@@ -14081,6 +14247,69 @@ export function TakeoffApp() {
                                   ))}
                                 </select>
                                 <button onClick={() => applySuggestedWallArea(selectedRoom.id, suggestion, selectedAssembly, selectedAdjacency)}>Apply</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {(selectedRoomBoundaryCandidates.length > 0 || selectedRoomManualSliceCandidates.length > 0) && (
+                        <div className="takeoff-wall-suggestions takeoff-wall-suggestions--workbench takeoff-wall-slices--workbench">
+                          <div className="takeoff-component-head">
+                            <div>
+                              <h3>Wall slices</h3>
+                              <p className="takeoff-muted">Review wall intersections and create profile slices.</p>
+                            </div>
+                          </div>
+                          {selectedRoomBoundaryCandidates.map((candidate) => (
+                            <div key={candidate.id} className="takeoff-wall-suggestion-row takeoff-wall-suggestion-row--workbench">
+                              <span>
+                                <strong>{Math.round(candidate.area)} sf</strong>
+                                <small>
+                                  {candidate.direction} attic/knee-wall candidate · {candidate.adjacentSpaceName} · {Number(candidate.spanStart.toFixed(1))}-{Number(candidate.spanEnd.toFixed(1))} lf
+                                </small>
+                              </span>
+                              <button className="toolbar-primary" onClick={() => resolveBoundaryCandidate(candidate.id, "slice", floor.id)}>Slice wall</button>
+                              <button onClick={() => resolveBoundaryCandidate(candidate.id, "whole-section", floor.id)}>Whole section</button>
+                              <button onClick={() => resolveBoundaryCandidate(candidate.id, "ignore", floor.id)}>Keep exterior</button>
+                            </div>
+                          ))}
+                          {selectedRoomManualSliceCandidates.map((candidate) => {
+                            const selectedAdjacency = manualWallSliceAdjacencies[candidate.id] ?? "outside";
+                            const selectedAssembly = manualWallSliceAssemblies[candidate.id] ?? defaultWallAssemblyForAdjacency(selectedAdjacency);
+                            return (
+                              <div key={candidate.id} className="takeoff-wall-suggestion-row takeoff-wall-suggestion-row--workbench">
+                                <span>
+                                  <strong>{Math.round(candidate.area)} sf</strong>
+                                  <small>
+                                    {candidate.direction} room-intersection slice · {candidate.adjacentRoomName} · {candidate.geometryLabel}
+                                  </small>
+                                </span>
+                                <select
+                                  value={selectedAdjacency}
+                                  onChange={(event) => {
+                                    const adjacency = event.target.value as TakeoffWallAdjacency;
+                                    setManualWallSliceAdjacencies((current) => ({ ...current, [candidate.id]: adjacency }));
+                                    setManualWallSliceAssemblies((current) => ({ ...current, [candidate.id]: defaultWallAssemblyForAdjacency(adjacency) }));
+                                  }}
+                                >
+                                  <option value="outside">Exterior wall</option>
+                                  <option value="attic">Attic wall</option>
+                                  <option value="garage">Garage wall</option>
+                                  <option value="crawlspace">Crawlspace wall</option>
+                                  <option value="conditioned">Conditioned wall</option>
+                                  <option value="unknown">Unknown wall</option>
+                                </select>
+                                <select
+                                  value={selectedAssembly}
+                                  onChange={(event) => setManualWallSliceAssemblies((current) => ({ ...current, [candidate.id]: event.target.value }))}
+                                  disabled={selectedAdjacency === "conditioned"}
+                                >
+                                  {scheduleOptionsBySurface.wall.map((option) => (
+                                    <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
+                                  ))}
+                                </select>
+                                <button className="toolbar-primary" onClick={() => applyRoomIntersectionWallSlice(candidate, selectedAssembly, selectedAdjacency)}>Create slice</button>
                               </div>
                             );
                           })}
@@ -14785,9 +15014,6 @@ export function TakeoffApp() {
                     const { issue, floor: issueFloor, key: issueKey } = entry;
                     const previousEntry = visibleProjectValidation[listIndex - 1];
                     const showFloorDivider = !previousEntry || previousEntry.floor.id !== issueFloor.id;
-                    const boundaryCandidate = issue.boundaryCandidateId
-                      ? boundaryCandidatesForFloor(issueFloor).find((candidate) => candidate.id === issue.boundaryCandidateId)
-                      : null;
                     return (
                       <div key={issueKey} className="takeoff-issue-stack">
                         {showFloorDivider && (
@@ -14803,13 +15029,6 @@ export function TakeoffApp() {
                         >
                           {issue.message}
                         </button>
-                        {boundaryCandidate && (
-                          <div className="takeoff-boundary-actions">
-                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "slice", issueFloor.id)}>Slice wall</button>
-                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "whole-section", issueFloor.id)}>Whole section</button>
-                            <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "ignore", issueFloor.id)}>Keep exterior</button>
-                          </div>
-                        )}
                       </div>
                     );
                   })()
