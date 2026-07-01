@@ -3695,6 +3695,53 @@ function wallGapFillSuggestionsOverlap(first: WallGapFillSuggestion, second: Wal
   return Math.abs(first.area - second.area) <= Math.max(1, smallerArea * 0.08);
 }
 
+function wallGapSuggestionPolygons(suggestion: WallGapFillSuggestion) {
+  const fallbackPolygon = [
+    { x: suggestion.spanStart, y: suggestion.zMin },
+    { x: suggestion.spanEnd, y: suggestion.zMin },
+    { x: suggestion.spanEnd, y: suggestion.zMax },
+    { x: suggestion.spanStart, y: suggestion.zMax },
+  ];
+  return (suggestion.wallProfilePolygons?.length ? suggestion.wallProfilePolygons : [fallbackPolygon])
+    .map(dedupeProfilePoints)
+    .filter((polygon) => polygon.length >= 3 && polygonArea(polygon) > 0.05);
+}
+
+function componentWallProfilePolygonsForGapSuggestion(component: TakeoffRoomComponent, suggestion: WallGapFillSuggestion) {
+  const fallbackPolygon = [
+    { x: component.spanStart ?? suggestion.spanStart, y: component.zMin ?? suggestion.zMin },
+    { x: component.spanEnd ?? suggestion.spanEnd, y: component.zMin ?? suggestion.zMin },
+    { x: component.spanEnd ?? suggestion.spanEnd, y: component.zMax ?? suggestion.zMax },
+    { x: component.spanStart ?? suggestion.spanStart, y: component.zMax ?? suggestion.zMax },
+  ];
+  return (component.wallProfilePolygons?.length ? component.wallProfilePolygons : [fallbackPolygon])
+    .map(dedupeProfilePoints)
+    .filter((polygon) => polygon.length >= 3 && polygonArea(polygon) > 0.05);
+}
+
+function wallGapSuggestionCoveredByComponent(component: TakeoffRoomComponent, suggestion: WallGapFillSuggestion) {
+  if (component.surface !== "wall") return false;
+  if (!component.direction || component.direction !== suggestion.direction) return false;
+  const adjacency = component.adjacency ?? "outside";
+  if (adjacency !== suggestion.adjacency) return false;
+  if ((component.boundary ?? boundaryForAdjacency(adjacency)) !== suggestion.boundary) return false;
+  if (!componentHasWallProfileGeometry(component)) return false;
+
+  const suggestionPolygons = wallGapSuggestionPolygons(suggestion);
+  const componentPolygons = componentWallProfilePolygonsForGapSuggestion(component, suggestion);
+  if (suggestionPolygons.length === 0 || componentPolygons.length === 0) return false;
+
+  let coveredArea = 0;
+  for (const suggestionPolygon of suggestionPolygons) {
+    const suggestionClip = pointsToClipPolygon(suggestionPolygon);
+    for (const componentPolygon of componentPolygons) {
+      coveredArea += intersection([suggestionClip], [pointsToClipPolygon(componentPolygon)])
+        .reduce((sum, polygon) => sum + clipPolygonArea(polygon), 0);
+    }
+  }
+  return coveredArea >= Math.max(0.5, suggestion.area - Math.max(1, suggestion.area * 0.08));
+}
+
 type ConditionedWallProfileSuggestion = {
   key: string;
   direction: NonNullable<TakeoffRoomComponent["direction"]>;
@@ -3764,15 +3811,18 @@ function wallGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoo
 }
 
 function wallGapFillSuggestionApplied(room: TakeoffRectRoom, suggestion: WallGapFillSuggestion) {
-  return roomSurfaceComponents(room, "wall").some((component) =>
-    component.source === "wall-gap-fill" &&
-    component.direction === suggestion.direction &&
-    Math.abs((component.area || 0) - Math.round(suggestion.area)) <= 0.5 &&
-    Math.abs((component.spanStart ?? suggestion.spanStart) - suggestion.spanStart) <= 0.1 &&
-    Math.abs((component.spanEnd ?? suggestion.spanEnd) - suggestion.spanEnd) <= 0.1 &&
-    Math.abs((component.zMin ?? suggestion.zMin) - suggestion.zMin) <= 0.1 &&
-    Math.abs((component.zMax ?? suggestion.zMax) - suggestion.zMax) <= 0.1
-  );
+  return roomSurfaceComponents(room, "wall").some((component) => {
+    if (wallGapSuggestionCoveredByComponent(component, suggestion)) return true;
+    return (
+      component.source === "wall-gap-fill" &&
+      component.direction === suggestion.direction &&
+      Math.abs((component.area || 0) - Math.round(suggestion.area)) <= 0.5 &&
+      Math.abs((component.spanStart ?? suggestion.spanStart) - suggestion.spanStart) <= 0.1 &&
+      Math.abs((component.spanEnd ?? suggestion.spanEnd) - suggestion.spanEnd) <= 0.1 &&
+      Math.abs((component.zMin ?? suggestion.zMin) - suggestion.zMin) <= 0.1 &&
+      Math.abs((component.zMax ?? suggestion.zMax) - suggestion.zMax) <= 0.1
+    );
+  });
 }
 
 function conditionedWallProfileSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): ConditionedWallProfileSuggestion[] {

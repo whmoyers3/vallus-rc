@@ -621,8 +621,8 @@ function ceilingGeometryInfo(room: TakeoffRectRoom, defaultCeilingHeight: number
   const ridgeDirection = room.ceilingRidgeDirection ?? "E-W";
   const bounds = polygonBounds(roomCorners(room));
   const crossSpan = ridgeDirection === "E-W" ? bounds.depth : bounds.width;
-  const ridgeOffset = room.ceilingRidgeOffset ?? 0;
-  const ridgeRatio = clamp(0.5 + (crossSpan > 0 ? ridgeOffset / crossSpan : 0), 0.05, 0.95);
+  const ridgeOffset = clamp(room.ceilingRidgeOffset ?? 0, -1, 1);
+  const ridgeRatio = (ridgeOffset + 1) / 2;
   const requestedFlatPeakWidth = ceilingType === "vault_flat_peak" ? Math.max(0, room.ceilingFlatPeakWidth ?? 4) : 0;
   const ridgePosition = crossSpan * ridgeRatio;
   const flatStart = clamp(ridgePosition - requestedFlatPeakWidth / 2, 0, crossSpan);

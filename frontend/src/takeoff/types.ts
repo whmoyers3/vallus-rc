@@ -84,6 +84,7 @@ export type TakeoffAdjacentSpace = {
   ceilingLowHeight?: number;
   ceilingPeakHeight?: number;
   ceilingRidgeDirection?: "E-W" | "N-S";
+  /** Normalized ridge shift across the room span: -1 is one edge, 0 centered, 1 the opposite edge. */
   ceilingRidgeOffset?: number;
   ceilingFlatPeakWidth?: number;
   verticalProfile?: TakeoffVerticalProfile;
@@ -115,6 +116,7 @@ export type TakeoffRectRoom = {
   ceilingLowHeight?: number;
   ceilingPeakHeight?: number;
   ceilingRidgeDirection?: "E-W" | "N-S";
+  /** Normalized ridge shift across the room span: -1 is one edge, 0 centered, 1 the opposite edge. */
   ceilingRidgeOffset?: number;
   ceilingFlatPeakWidth?: number;
   ceilingTrayOffset?: number;
