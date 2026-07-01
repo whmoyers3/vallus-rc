@@ -11,7 +11,9 @@ import {
   envelopeDraftsForRoom,
   envelopePanelsForRoom,
   isEnvelopeCompilerGeneratedWall,
+  type EnvelopeCompilation,
   type EnvelopeComponentDraft,
+  type EnvelopePanel,
 } from "./envelope/compiler";
 import type {
   TakeoffAdjacentSpace,
@@ -52,7 +54,7 @@ const defaultWindowSillHeight = 3;
 const defaultWindowHeight = 5;
 const defaultDoorSillHeight = 0;
 const defaultDoorHeight = 6.67;
-const wallPanelVisualOverlapFt = 0.04;
+const wallPanelVisualOverlapFt = 0.08;
 const componentCategories: TakeoffComponentCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
 const allComponentSurfaces: TakeoffRoomComponent["surface"][] = ["floor", "ceiling", "wall", "glass", "door"];
 const defaultComponentSchedule: TakeoffComponentDefinition[] = [
@@ -5796,6 +5798,35 @@ function wallGapFillMeshPartsForRoom(
   });
 }
 
+function envelopePanelMeshPart(panel: EnvelopePanel, center: TakeoffPoint, material: THREE.Material): ModelMeshPart | null {
+  if (panel.vertices3d.length < 3) return null;
+  const kind: ModelSurfaceKind = panel.adjacency === "attic"
+    ? "knee-wall"
+    : panel.adjacency === "conditioned"
+      ? "interior-wall"
+      : "load-wall";
+  return {
+    mesh: createPanelMesh(
+      panel.vertices3d.map((vertex) => new THREE.Vector3(vertex.x - center.x, vertex.y, vertex.z - center.y)),
+      material,
+      wallPanelVisualOverlapFt,
+    ),
+    kind,
+    label: panel.loadState === "no-load"
+      ? `${panel.direction ?? "Wall"} conditioned wall panel`
+      : `${panel.direction ?? "Wall"} ${panel.adjacency === "attic" ? "attic knee-wall" : "exterior/load"} panel`,
+    surface: "wall",
+    direction: panel.direction,
+    area: panel.area,
+    assembly: panel.assembly,
+    source: panel.source === "outside-remainder" ? "exterior-perimeter" : panel.source === "adjacent-space" ? "wall-gap-fill" : undefined,
+    geometryLabel: panel.reason,
+    adjacency: panel.adjacency,
+    boundary: panel.boundary,
+    loadExempt: panel.loadState === "no-load",
+  };
+}
+
 function roomFor3DCeilingWallParts(sourceRoom: TakeoffRectRoom, renderedRoom: TakeoffRectRoom, baseWallHeight: number) {
   if (openToAboveLinkForRoom(sourceRoom) && (sourceRoom.ceilingType ?? "flat") === "tray") {
     return renderedRoom;
@@ -5902,6 +5933,7 @@ function TakeoffModelPreview({
   dimensionInputMode,
   selectedRoomId,
   connectedVolumes,
+  envelopeCompilation,
   onSelectRoom,
   onActivateFloor,
   onUpdateFloorViewOptions,
@@ -5918,6 +5950,7 @@ function TakeoffModelPreview({
   dimensionInputMode: DimensionInputMode;
   selectedRoomId: string | null;
   connectedVolumes: TakeoffConnectedVolume[];
+  envelopeCompilation: EnvelopeCompilation;
   onSelectRoom: (roomId: string) => void;
   onActivateFloor: (floorId: string) => void;
   onUpdateFloorViewOptions: (floorId: string, patch: Partial<FloorViewOptions>) => void;
@@ -6210,6 +6243,53 @@ function TakeoffModelPreview({
         scene.add(outline);
       }
     };
+    const envelopeMaterialForPanel = (panel: EnvelopePanel, selected: boolean, passive = false): THREE.Material => {
+      if (panel.adjacency === "attic") {
+        if (passive) return passiveKneeWallMaterial;
+        return selected ? selectedKneeWallMaterial : kneeWallMaterial;
+      }
+      if (panel.adjacency === "conditioned") return passive ? passiveInteriorWallMaterial : interiorWallMaterial;
+      if (passive) return passiveWallMaterial;
+      return selected ? selectedWallMaterial : wallMaterial;
+    };
+    const addEnvelopeWallPanels = (
+      targetFloor: TakeoffFloor,
+      sourceRoom: TakeoffRectRoom,
+      yOffset: number,
+      selectable: boolean,
+      passive = false,
+    ) => {
+      const panels = envelopePanelsForRoom(envelopeCompilation, targetFloor.id, sourceRoom.id)
+        .filter((panel) => panel.surface === "wall" && panel.loadState !== "gap")
+        .filter((panel) => panel.loadState !== "no-load" || visibleLayers.interiorWalls);
+      let rendered = 0;
+      for (const panel of panels) {
+        const part = envelopePanelMeshPart(panel, center, envelopeMaterialForPanel(panel, sourceRoom.id === selectedRoomId, passive));
+        if (!part) continue;
+        part.mesh.position.y += yOffset;
+        part.mesh.userData.roomId = sourceRoom.id;
+        if (selectable) {
+          part.mesh.userData.modelSurface = {
+            roomId: sourceRoom.id,
+            roomName: sourceRoom.name,
+            kind: part.kind,
+            label: part.label,
+            surface: "wall",
+            direction: part.direction,
+            area: part.area,
+            assembly: part.assembly,
+            source: part.source,
+            geometryLabel: part.geometryLabel,
+            adjacency: part.adjacency,
+            boundary: part.boundary,
+            loadExempt: part.loadExempt,
+          } satisfies ModelSurfaceSelection;
+        }
+        scene.add(part.mesh);
+        rendered += 1;
+      }
+      return rendered > 0;
+    };
     if (visibleLayers.bandJoists) {
       for (const sourceFloor of floors) {
         const options = floorViewOptions[sourceFloor.id] ?? defaultFloorViewOptions();
@@ -6255,37 +6335,40 @@ function TakeoffModelPreview({
         if (points.length < 3) continue;
         if (visibleLayers.floors) scene.add(createHorizontalShapeMesh(points, center, yOffset + 0.025, ghostRoomMaterial));
         if (visibleLayers.walls) {
-          for (const segment of roomExteriorSegments(otherFloor, room)) {
-            const baseWallComponent = roomSurfaceComponents(room, "wall").find((component) =>
-              component.direction === segment.direction && componentIsBaseWallArea(component)
-            );
-            const wallMesh = wallMeshForEdge(
-              segment.a,
-              segment.b,
-              center,
-              Math.max(baseWallHeight, 0.1),
-              componentIsAtticKneeWallTreatment(baseWallComponent) ? passiveKneeWallMaterial : passiveWallMaterial,
-            );
-            wallMesh.position.y += yOffset;
-            scene.add(wallMesh);
-          }
-          const generatedWallParts = ceilingWallMeshPartsForRoom(otherFloor, wallRoom, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial, passiveWallMaterial);
-          const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
-          for (const part of generatedWallParts) {
-            const component = generatedWallComponents.find((candidate) =>
-              (!part.source || candidate.source === part.source) &&
-              (!part.direction || candidate.direction === part.direction)
-            );
-            if (component?.loadExempt || component?.adjacency === "conditioned") continue;
-            const treatment = componentWallTreatmentKind(component);
-            if (treatment === "exterior") part.mesh.material = passiveWallMaterial;
-            if (treatment === "attic") part.mesh.material = passiveKneeWallMaterial;
-            part.mesh.position.y += yOffset;
-            scene.add(part.mesh);
-          }
-          for (const part of wallGapFillMeshPartsForRoom(otherFloor, room, center, passiveKneeWallMaterial, passiveWallMaterial)) {
-            part.mesh.position.y += yOffset;
-            scene.add(part.mesh);
+          const renderedEnvelopeWalls = addEnvelopeWallPanels(otherFloor, sourceRoom, yOffset, false, true);
+          if (!renderedEnvelopeWalls) {
+            for (const segment of roomExteriorSegments(otherFloor, room)) {
+              const baseWallComponent = roomSurfaceComponents(room, "wall").find((component) =>
+                component.direction === segment.direction && componentIsBaseWallArea(component)
+              );
+              const wallMesh = wallMeshForEdge(
+                segment.a,
+                segment.b,
+                center,
+                Math.max(baseWallHeight, 0.1),
+                componentIsAtticKneeWallTreatment(baseWallComponent) ? passiveKneeWallMaterial : passiveWallMaterial,
+              );
+              wallMesh.position.y += yOffset;
+              scene.add(wallMesh);
+            }
+            const generatedWallParts = ceilingWallMeshPartsForRoom(otherFloor, wallRoom, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial, passiveWallMaterial);
+            const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
+            for (const part of generatedWallParts) {
+              const component = generatedWallComponents.find((candidate) =>
+                (!part.source || candidate.source === part.source) &&
+                (!part.direction || candidate.direction === part.direction)
+              );
+              if (component?.loadExempt || component?.adjacency === "conditioned") continue;
+              const treatment = componentWallTreatmentKind(component);
+              if (treatment === "exterior") part.mesh.material = passiveWallMaterial;
+              if (treatment === "attic") part.mesh.material = passiveKneeWallMaterial;
+              part.mesh.position.y += yOffset;
+              scene.add(part.mesh);
+            }
+            for (const part of wallGapFillMeshPartsForRoom(otherFloor, room, center, passiveKneeWallMaterial, passiveWallMaterial)) {
+              part.mesh.position.y += yOffset;
+              scene.add(part.mesh);
+            }
           }
           for (const part of openToAboveWallExtensionMeshPartsForRoom(otherFloor, sourceRoom, floors, center, passiveWallMaterial, passiveKneeWallMaterial)) {
             part.mesh.position.y += yOffset;
@@ -6415,99 +6498,102 @@ function TakeoffModelPreview({
       }
 
       if (visibleLayers.walls) {
-        const wallProfileComponents = roomSurfaceComponents(room, "wall").filter(componentRendersWallProfile);
-        for (const segment of roomExteriorSegments(floor, room)) {
+        const renderedEnvelopeWalls = addEnvelopeWallPanels(floor, sourceRoom, activeFloorYOffset, true);
+        if (!renderedEnvelopeWalls) {
+          const wallProfileComponents = roomSurfaceComponents(room, "wall").filter(componentRendersWallProfile);
+          for (const segment of roomExteriorSegments(floor, room)) {
+            const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
+            const baseWallComponent = roomSurfaceComponents(room, "wall").find((component) =>
+              component.direction === segment.direction && componentIsBaseWallArea(component)
+            );
+            const baseWallMaterial = componentIsAtticKneeWallTreatment(baseWallComponent)
+              ? room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial
+              : room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
+            const profileRanges = wallProfileCoverageRangesForSegment(floor, room, segment, wallProfileComponents);
+            const baseRanges = profileRanges.length > 0
+              ? uncoveredSegmentRanges(profileRanges, segment.length)
+              : [{ start: 0, end: segment.length }];
+            for (const range of baseRanges) {
+              if (range.end - range.start <= 0.25) continue;
+              const rangeStart = pointAtSegmentDistance(segment, range.start);
+              const rangeEnd = pointAtSegmentDistance(segment, range.end);
+              const wallMesh = wallMeshForEdge(rangeStart, rangeEnd, center, Math.max(baseWallHeight, 0.1), baseWallMaterial);
+              wallMesh.position.y += activeFloorYOffset;
+              wallMesh.userData.roomId = room.id;
+              wallMesh.userData.modelSurface = {
+                roomId: room.id,
+                roomName: room.name,
+                kind: "load-wall",
+                label: `${segment.direction ?? "Exterior"} load wall`,
+                surface: "wall",
+                direction: segment.direction,
+                area: Number(((range.end - range.start) * Math.max(baseWallHeight, 0)).toFixed(3)),
+                assembly: baseWallComponent?.assembly,
+                adjacency: baseWallComponent?.adjacency,
+                boundary: baseWallComponent?.boundary,
+              } satisfies ModelSurfaceSelection;
+              scene.add(wallMesh);
+            }
+          }
           const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
-          const baseWallComponent = roomSurfaceComponents(room, "wall").find((component) =>
-            component.direction === segment.direction && componentIsBaseWallArea(component)
-          );
-          const baseWallMaterial = componentIsAtticKneeWallTreatment(baseWallComponent)
-            ? room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial
-            : room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
-          const profileRanges = wallProfileCoverageRangesForSegment(floor, room, segment, wallProfileComponents);
-          const baseRanges = profileRanges.length > 0
-            ? uncoveredSegmentRanges(profileRanges, segment.length)
-            : [{ start: 0, end: segment.length }];
-          for (const range of baseRanges) {
-            if (range.end - range.start <= 0.25) continue;
-            const rangeStart = pointAtSegmentDistance(segment, range.start);
-            const rangeEnd = pointAtSegmentDistance(segment, range.end);
-            const wallMesh = wallMeshForEdge(rangeStart, rangeEnd, center, Math.max(baseWallHeight, 0.1), baseWallMaterial);
-            wallMesh.position.y += activeFloorYOffset;
-            wallMesh.userData.roomId = room.id;
-            wallMesh.userData.modelSurface = {
+          const wallRoom = roomFor3DCeilingWallParts(sourceRoom, room, baseWallHeight);
+          const generatedExteriorWallMaterial = room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
+          const generatedKneeWallMaterial = room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial;
+          const generatedWallParts = ceilingWallMeshPartsForRoom(floor, wallRoom, center, floor.defaultCeilingHeight ?? 9, generatedKneeWallMaterial, generatedExteriorWallMaterial);
+          const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
+          for (const part of generatedWallParts) {
+            const component = generatedWallComponents.find((candidate) =>
+              (!part.source || candidate.source === part.source) &&
+              (!part.direction || candidate.direction === part.direction)
+            );
+            if (component?.loadExempt || component?.adjacency === "conditioned") continue;
+            const treatment = componentWallTreatmentKind(component);
+            const modelKind = treatment === "attic"
+                ? "knee-wall"
+                : treatment === "exterior"
+                  ? "load-wall"
+                  : part.kind;
+            if (treatment === "exterior") part.mesh.material = generatedExteriorWallMaterial;
+            if (treatment === "attic") part.mesh.material = generatedKneeWallMaterial;
+            part.mesh.position.y += activeFloorYOffset;
+            part.mesh.userData.roomId = room.id;
+            part.mesh.userData.modelSurface = {
               roomId: room.id,
               roomName: room.name,
-              kind: "load-wall",
-              label: `${segment.direction ?? "Exterior"} load wall`,
+              kind: modelKind,
+              label: component?.label ?? part.label,
               surface: "wall",
-              direction: segment.direction,
-              area: Number(((range.end - range.start) * Math.max(baseWallHeight, 0)).toFixed(3)),
-              assembly: baseWallComponent?.assembly,
-              adjacency: baseWallComponent?.adjacency,
-              boundary: baseWallComponent?.boundary,
+              direction: part.direction,
+              area: part.area,
+              assembly: component?.assembly ?? part.assembly,
+              componentId: component?.id,
+              source: component?.source ?? part.source,
+              geometryLabel: component?.geometryLabel ?? part.geometryLabel,
+              adjacency: component?.adjacency ?? part.adjacency,
+              boundary: component?.boundary ?? part.boundary,
             } satisfies ModelSurfaceSelection;
-            scene.add(wallMesh);
+            scene.add(part.mesh);
           }
-        }
-        const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
-        const wallRoom = roomFor3DCeilingWallParts(sourceRoom, room, baseWallHeight);
-        const generatedExteriorWallMaterial = room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
-        const generatedKneeWallMaterial = room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial;
-        const generatedWallParts = ceilingWallMeshPartsForRoom(floor, wallRoom, center, floor.defaultCeilingHeight ?? 9, generatedKneeWallMaterial, generatedExteriorWallMaterial);
-        const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
-        for (const part of generatedWallParts) {
-          const component = generatedWallComponents.find((candidate) =>
-            (!part.source || candidate.source === part.source) &&
-            (!part.direction || candidate.direction === part.direction)
-          );
-          if (component?.loadExempt || component?.adjacency === "conditioned") continue;
-          const treatment = componentWallTreatmentKind(component);
-          const modelKind = treatment === "attic"
-              ? "knee-wall"
-              : treatment === "exterior"
-                ? "load-wall"
-                : part.kind;
-          if (treatment === "exterior") part.mesh.material = generatedExteriorWallMaterial;
-          if (treatment === "attic") part.mesh.material = generatedKneeWallMaterial;
-          part.mesh.position.y += activeFloorYOffset;
-          part.mesh.userData.roomId = room.id;
-          part.mesh.userData.modelSurface = {
-            roomId: room.id,
-            roomName: room.name,
-            kind: modelKind,
-            label: component?.label ?? part.label,
-            surface: "wall",
-            direction: part.direction,
-            area: part.area,
-            assembly: component?.assembly ?? part.assembly,
-            componentId: component?.id,
-            source: component?.source ?? part.source,
-            geometryLabel: component?.geometryLabel ?? part.geometryLabel,
-            adjacency: component?.adjacency ?? part.adjacency,
-            boundary: component?.boundary ?? part.boundary,
-          } satisfies ModelSurfaceSelection;
-          scene.add(part.mesh);
-        }
-        for (const part of wallGapFillMeshPartsForRoom(floor, room, center, generatedKneeWallMaterial, generatedExteriorWallMaterial)) {
-          part.mesh.position.y += activeFloorYOffset;
-          part.mesh.userData.roomId = room.id;
-          part.mesh.userData.modelSurface = {
-            roomId: room.id,
-            roomName: room.name,
-            kind: part.kind,
-            label: part.label,
-            surface: "wall",
-            direction: part.direction,
-            area: part.area,
-            assembly: part.assembly,
-            componentId: part.componentId,
-            source: part.source,
-            geometryLabel: part.geometryLabel,
-            adjacency: part.adjacency,
-            boundary: part.boundary,
-          } satisfies ModelSurfaceSelection;
-          scene.add(part.mesh);
+          for (const part of wallGapFillMeshPartsForRoom(floor, room, center, generatedKneeWallMaterial, generatedExteriorWallMaterial)) {
+            part.mesh.position.y += activeFloorYOffset;
+            part.mesh.userData.roomId = room.id;
+            part.mesh.userData.modelSurface = {
+              roomId: room.id,
+              roomName: room.name,
+              kind: part.kind,
+              label: part.label,
+              surface: "wall",
+              direction: part.direction,
+              area: part.area,
+              assembly: part.assembly,
+              componentId: part.componentId,
+              source: part.source,
+              geometryLabel: part.geometryLabel,
+              adjacency: part.adjacency,
+              boundary: part.boundary,
+            } satisfies ModelSurfaceSelection;
+            scene.add(part.mesh);
+          }
         }
         for (const part of openToAboveWallExtensionMeshPartsForRoom(
           floor,
@@ -7225,7 +7311,7 @@ function TakeoffModelPreview({
       hoverFillMaterial.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [activeFloorId, cameraMode, connectedVolumes, floor, floorViewOptions, floors, onSelectRoom, onUpdateOpeningComponent, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers, walkthroughComponentTransparency]);
+  }, [activeFloorId, cameraMode, connectedVolumes, envelopeCompilation, floor, floorViewOptions, floors, onSelectRoom, onUpdateOpeningComponent, referenceUrl, referenceUrls, selectedRoomId, sortedFloorsForNavigation, visibleLayers, walkthroughComponentTransparency]);
 
   const selectedOpeningTarget = modelSurfaceIsOpening(selectedSurface)
     ? { roomId: selectedSurface.roomId, componentId: selectedSurface.componentId }
@@ -7916,6 +8002,10 @@ function validationSectionLabel(section: ValidationSection) {
 function validationSectionElementId(roomId: string, section: ValidationSection) {
   if (section === "wall-components") return `room-wall-components-${roomId}`;
   return `validation-target-${roomId}-${section}`;
+}
+
+function wallSlicesElementId(roomId: string) {
+  return `room-wall-slices-${roomId}`;
 }
 
 function activeValidationElementId(roomId: string) {
@@ -8880,6 +8970,14 @@ export function TakeoffApp() {
   function scrollToWallComponents(roomId: string) {
     window.requestAnimationFrame(() => {
       document.getElementById(`room-wall-components-${roomId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  function scrollToWallSlices(roomId: string) {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(wallSlicesElementId(roomId))?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
     });
   }
 
@@ -13439,6 +13537,7 @@ export function TakeoffApp() {
                 dimensionInputMode={dimensionInputMode}
                 selectedRoomId={selectedRoomId}
                 connectedVolumes={connectedVolumes}
+                envelopeCompilation={envelopeCompilation}
                 onSelectRoom={setSelectedRoomId}
                 onActivateFloor={switchActiveFloor}
                 onUpdateFloorViewOptions={updateFloorViewOptions}
@@ -14322,11 +14421,7 @@ export function TakeoffApp() {
                                 ) : activeRoomValidationTarget.section === "ceiling-geometry" ? (
                                   <button className="toolbar-primary" onClick={() => approveRoomCeilingGeometry(selectedRoom.id, ceilingWallAssemblies, ceilingWallAdjacencies)}>Apply Fix</button>
                                 ) : boundaryCandidate ? (
-                                  <>
-                                    <button className="toolbar-primary" onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "slice", floor.id)}>Slice wall</button>
-                                    <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "whole-section", floor.id)}>Whole section</button>
-                                    <button onClick={() => resolveBoundaryCandidate(boundaryCandidate.id, "ignore", floor.id)}>Keep exterior</button>
-                                  </>
+                                  <button className="toolbar-primary" onClick={() => scrollToWallSlices(selectedRoom.id)}>Review wall slices</button>
                                 ) : (
                                   <button onClick={() => scrollToValidationSection(selectedRoom.id, activeRoomValidationTarget.section)}>Jump to section</button>
                                 )}
@@ -14436,7 +14531,7 @@ export function TakeoffApp() {
                       )}
 
                       {(selectedRoomBoundaryCandidates.length > 0 || selectedRoomManualSliceCandidates.length > 0) && (
-                        <div className="takeoff-wall-suggestions takeoff-wall-suggestions--workbench takeoff-wall-slices--workbench">
+                        <div id={wallSlicesElementId(selectedRoom.id)} className="takeoff-wall-suggestions takeoff-wall-suggestions--workbench takeoff-wall-slices--workbench">
                           <div className="takeoff-component-head">
                             <div>
                               <h3>Wall slices</h3>
