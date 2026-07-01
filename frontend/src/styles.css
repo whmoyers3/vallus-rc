@@ -1893,6 +1893,50 @@ button.toolbar-primary:hover {
   inset: 0;
 }
 
+.takeoff-precision-loupe {
+  color: #1f6fb2;
+  filter: drop-shadow(0 10px 22px rgba(18, 31, 43, 0.26));
+}
+
+.takeoff-precision-loupe-shadow {
+  fill: rgba(248, 250, 251, 0.97);
+  stroke: rgba(26, 45, 61, 0.18);
+  stroke-width: 1;
+}
+
+.takeoff-precision-loupe-ring {
+  fill: none;
+  stroke: #1f6fb2;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-precision-loupe-crosshair {
+  stroke: rgba(31, 111, 178, 0.78);
+  stroke-linecap: round;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-precision-loupe-snap-line {
+  stroke: rgba(179, 67, 47, 0.78);
+  stroke-dasharray: 4 4;
+  stroke-linecap: round;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-precision-loupe-snap-target {
+  fill: rgba(255, 255, 255, 0.72);
+  stroke: #b3432f;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-precision-loupe-snap-dot {
+  fill: #b3432f;
+}
+
 .takeoff-lower-grid {
   border-top: 1px solid #e8edf1;
   display: grid;

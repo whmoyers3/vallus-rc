@@ -50,6 +50,8 @@ const pdfPreviewMaxDimension = 2800;
 const minPlanZoom = 0.5;
 const maxPlanZoom = 8;
 const planZoomStep = 0.25;
+const precisionLoupeZoom = 10;
+const precisionLoupeRadius = 180;
 const defaultWindowSillHeight = 3;
 const defaultWindowHeight = 5;
 const defaultDoorSillHeight = 0;
@@ -91,6 +93,14 @@ type DragState = {
   target?: MovablePointTarget;
   openingTarget?: OpeningMoveTarget;
 } | null;
+type CanvasPointerPosition = {
+  svgX: number;
+  svgY: number;
+  point: TakeoffPoint;
+};
+type PrecisionLoupeState = CanvasPointerPosition & {
+  shiftKey: boolean;
+};
 type AlignmentDragState = {
   pointerId: number;
   start: TakeoffPoint;
@@ -8171,10 +8181,12 @@ export function TakeoffApp() {
   const [pendingOpeningTarget, setPendingOpeningTarget] = useState<PendingOpeningTarget>(null);
   const [editingOpeningTarget, setEditingOpeningTarget] = useState<EditingOpeningTarget>(null);
   const [selectedOpening, setSelectedOpening] = useState<OpeningMoveTarget | null>(null);
+  const [precisionLoupe, setPrecisionLoupe] = useState<PrecisionLoupeState | null>(null);
   const inlineRoomNameInputRef = useRef<HTMLInputElement | null>(null);
   const roomMergeMenuRef = useRef<HTMLDivElement | null>(null);
   const roomTypeMenuRef = useRef<HTMLDivElement | null>(null);
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
+  const lastCanvasPointerRef = useRef<CanvasPointerPosition | null>(null);
   const suppressNextCanvasClickRef = useRef(false);
   const modalPointerStartedOnBackdropRef = useRef(false);
   const openingDragMovedRef = useRef(false);
@@ -8297,6 +8309,45 @@ export function TakeoffApp() {
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [roomMergeMenuOpen, roomTypeMenuOpen]);
+
+  useEffect(() => {
+    function syncPrecisionLoupeFromKeyboard(event: KeyboardEvent) {
+      if (planReviewMode !== "plan") return;
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement instanceof HTMLSelectElement ||
+        (activeElement instanceof HTMLElement && activeElement.isContentEditable)
+      ) return;
+      const pointer = lastCanvasPointerRef.current;
+      if (!pointer) return;
+      if (event.altKey) {
+        event.preventDefault();
+        setPrecisionLoupe({ ...pointer, shiftKey: event.shiftKey });
+      } else {
+        setPrecisionLoupe(null);
+      }
+    }
+    function clearPrecisionLoupe() {
+      setPrecisionLoupe(null);
+    }
+    window.addEventListener("keydown", syncPrecisionLoupeFromKeyboard);
+    window.addEventListener("keyup", syncPrecisionLoupeFromKeyboard);
+    window.addEventListener("blur", clearPrecisionLoupe);
+    return () => {
+      window.removeEventListener("keydown", syncPrecisionLoupeFromKeyboard);
+      window.removeEventListener("keyup", syncPrecisionLoupeFromKeyboard);
+      window.removeEventListener("blur", clearPrecisionLoupe);
+    };
+  }, [planReviewMode]);
+
+  useEffect(() => {
+    if (planReviewMode !== "plan") {
+      lastCanvasPointerRef.current = null;
+      setPrecisionLoupe(null);
+    }
+  }, [planReviewMode]);
 
   const takeoffProject = useMemo<TakeoffProject>(
     () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule, connectedVolumes),
@@ -11289,7 +11340,7 @@ export function TakeoffApp() {
     };
   }
 
-  function pointFromCanvasEvent(event: React.MouseEvent<SVGSVGElement>) {
+  function canvasPointerPositionFromEvent(event: React.MouseEvent<SVGSVGElement>): CanvasPointerPosition | null {
     const svg = event.currentTarget;
     const rect = svg.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return null;
@@ -11299,7 +11350,79 @@ export function TakeoffApp() {
     const rawY = (svgY - offsetY) / scale;
     const x = Math.min(floor.designGrid.width, Math.max(0, rawX));
     const y = Math.min(floor.designGrid.depth, Math.max(0, rawY));
-    return { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) };
+    return {
+      svgX,
+      svgY,
+      point: { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) },
+    };
+  }
+
+  function pointFromCanvasEvent(event: React.MouseEvent<SVGSVGElement>) {
+    return canvasPointerPositionFromEvent(event)?.point ?? null;
+  }
+
+  function syncPrecisionLoupeFromCanvasEvent(event: React.PointerEvent<SVGSVGElement>) {
+    const pointer = canvasPointerPositionFromEvent(event);
+    if (!pointer) return null;
+    lastCanvasPointerRef.current = pointer;
+    if (planReviewMode === "plan" && event.altKey) {
+      setPrecisionLoupe({ ...pointer, shiftKey: event.shiftKey });
+    } else {
+      setPrecisionLoupe(null);
+    }
+    return pointer;
+  }
+
+  function clearCanvasPrecisionLoupe() {
+    lastCanvasPointerRef.current = null;
+    setPrecisionLoupe(null);
+  }
+
+  function screenPointForPlanPoint(point: TakeoffPoint) {
+    return {
+      x: offsetX + point.x * scale,
+      y: offsetY + point.y * scale,
+    };
+  }
+
+  function projectedOpeningPointForTarget(target: OpeningMoveTarget | undefined, point: TakeoffPoint) {
+    if (!target) return null;
+    const room = floor.rooms.find((candidate) => candidate.id === target.roomId);
+    const component = room
+      ? roomComponents(room).find((candidate) => roomComponentMatchesId(room.id, candidate, target.componentId))
+      : null;
+    return room && component ? projectedOpeningPlacement(floor, point, room, component) : null;
+  }
+
+  function precisionTargetPointForCursor(point: TakeoffPoint, shiftKey: boolean) {
+    if (dragState?.kind === "adjacent" || (workflowStep === "trace" && adjacentDrawMode)) {
+      return adjacentSpacePointForEvent(point, shiftKey);
+    }
+    if (dragState?.kind === "move-point") {
+      return snapToExistingGeometry(point, { includeFloorAlignment: dragState.target?.type === "exterior" });
+    }
+    if (dragState?.kind === "move-opening") {
+      return projectedOpeningPointForTarget(dragState.openingTarget, point) ?? point;
+    }
+    if (workflowStep === "trace" && openingModeActive) {
+      const target = nearestExteriorSegment(point);
+      return target
+        ? { x: Number(target.closest.x.toFixed(3)), y: Number(target.closest.y.toFixed(3)) }
+        : point;
+    }
+    if (workflowStep === "trace" && roomPolygonMode) {
+      return prepareCornerPoint(point, roomPolygonDraft[roomPolygonDraft.length - 1], shiftKey);
+    }
+    if (traceTool === "exterior" && !floor.perimeterLocked) {
+      return prepareCornerPoint(point, floor.exteriorPolygon[floor.exteriorPolygon.length - 1], shiftKey, true, true);
+    }
+    if (workflowStep === "calibrate" && calibrationStart) {
+      const constrained = { ...point };
+      if (calibrationOrientation === "horizontal") constrained.y = calibrationStart.y;
+      if (calibrationOrientation === "vertical") constrained.x = calibrationStart.x;
+      return constrained;
+    }
+    return point;
   }
 
   function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean } = {}) {
@@ -12234,7 +12357,8 @@ export function TakeoffApp() {
   }
 
   function handleCanvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
-    const point = pointFromCanvasEvent(event);
+    const pointer = syncPrecisionLoupeFromCanvasEvent(event);
+    const point = pointer?.point ?? null;
     if (!point) return;
     if (event.shiftKey && !adjacentDrawMode) {
       const target = findMovablePoint(point);
@@ -12292,8 +12416,9 @@ export function TakeoffApp() {
   }
 
   function handleCanvasPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    const pointer = syncPrecisionLoupeFromCanvasEvent(event);
+    const point = pointer?.point ?? null;
     if (!dragState) return;
-    const point = pointFromCanvasEvent(event);
     if (!point) return;
     if (dragState.kind === "move-point") {
       movePoint(dragState.target, point);
@@ -12305,6 +12430,7 @@ export function TakeoffApp() {
   }
 
   function handleCanvasPointerUp(event: React.PointerEvent<SVGSVGElement>) {
+    syncPrecisionLoupeFromCanvasEvent(event);
     if (!dragState) return;
     const releasePoint = pointFromCanvasEvent(event);
     const dragCurrent = dragState.kind === "adjacent" && releasePoint
@@ -12340,6 +12466,16 @@ export function TakeoffApp() {
       return;
     }
     addDraggedRoom(rect);
+  }
+
+  function handleCanvasPointerCancel() {
+    setDragState(null);
+    clearCanvasPrecisionLoupe();
+  }
+
+  function handleCanvasPointerLeave() {
+    if (dragState) return;
+    clearCanvasPrecisionLoupe();
   }
 
   function addExteriorPoint(point: TakeoffPoint) {
@@ -13010,6 +13146,24 @@ export function TakeoffApp() {
     }
     return null;
   })();
+  const planContentId = "takeoff-plan-content";
+  const precisionLoupeClipId = "takeoff-precision-loupe-clip";
+  const precisionLoupeScaleFactor = precisionLoupe ? precisionLoupeZoom / Math.max(zoom, 0.01) : 1;
+  const precisionLoupeTargetPoint = precisionLoupe ? precisionTargetPointForCursor(precisionLoupe.point, precisionLoupe.shiftKey) : null;
+  const precisionLoupeTargetScreenPoint = precisionLoupe && precisionLoupeTargetPoint
+    ? (() => {
+        const targetScreen = screenPointForPlanPoint(precisionLoupeTargetPoint);
+        return {
+          x: precisionLoupe.svgX + (targetScreen.x - precisionLoupe.svgX) * precisionLoupeScaleFactor,
+          y: precisionLoupe.svgY + (targetScreen.y - precisionLoupe.svgY) * precisionLoupeScaleFactor,
+        };
+      })()
+    : null;
+  const precisionLoupeHasSnapOffset = Boolean(
+    precisionLoupe &&
+    precisionLoupeTargetPoint &&
+    distance(precisionLoupe.point, precisionLoupeTargetPoint) > 0.02,
+  );
 
   return (
     <main className="takeoff-root">
@@ -13734,7 +13888,8 @@ export function TakeoffApp() {
               onPointerDown={handleCanvasPointerDown}
               onPointerMove={handleCanvasPointerMove}
               onPointerUp={handleCanvasPointerUp}
-              onPointerCancel={() => setDragState(null)}
+              onPointerCancel={handleCanvasPointerCancel}
+              onPointerLeave={handleCanvasPointerLeave}
               onClick={handleCanvasClick}
               style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || adjacentDrawMode || openingModeActive || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
             >
@@ -13742,7 +13897,13 @@ export function TakeoffApp() {
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
                   <path d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`} fill="none" stroke="#dce4ea" strokeWidth="1" />
                 </pattern>
+                {precisionLoupe && (
+                  <clipPath id={precisionLoupeClipId}>
+                    <circle cx={precisionLoupe.svgX} cy={precisionLoupe.svgY} r={precisionLoupeRadius} />
+                  </clipPath>
+                )}
               </defs>
+              <g id={planContentId}>
               <rect x="0" y="0" width={drawingWidth} height={drawingHeight} fill={referenceUrl && activeFloorViewOptions.visible && activeFloorViewOptions.reference ? "transparent" : "#f8fafb"} />
               <rect x={offsetX} y={offsetY} width={floor.designGrid.width * scale} height={floor.designGrid.depth * scale} fill="url(#takeoff-grid-small)" stroke="#b7c4cf" strokeWidth="1.5" />
               {orderedFloors.filter((entry) => entry.id !== floor.id).flatMap((entry) => {
@@ -14213,6 +14374,75 @@ export function TakeoffApp() {
                       </g>
                     );
                   })}
+                </g>
+              )}
+              </g>
+              {precisionLoupe && (
+                <g className="takeoff-precision-loupe" pointerEvents="none" aria-hidden="true">
+                  <circle
+                    cx={precisionLoupe.svgX}
+                    cy={precisionLoupe.svgY}
+                    r={precisionLoupeRadius}
+                    className="takeoff-precision-loupe-shadow"
+                  />
+                  <g clipPath={`url(#${precisionLoupeClipId})`}>
+                    <rect
+                      x={precisionLoupe.svgX - precisionLoupeRadius}
+                      y={precisionLoupe.svgY - precisionLoupeRadius}
+                      width={precisionLoupeRadius * 2}
+                      height={precisionLoupeRadius * 2}
+                      fill="#f8fafb"
+                    />
+                    <use
+                      href={`#${planContentId}`}
+                      transform={`translate(${precisionLoupe.svgX} ${precisionLoupe.svgY}) scale(${precisionLoupeScaleFactor}) translate(${-precisionLoupe.svgX} ${-precisionLoupe.svgY})`}
+                    />
+                    {precisionLoupeTargetScreenPoint && precisionLoupeHasSnapOffset && (
+                      <line
+                        x1={precisionLoupe.svgX}
+                        y1={precisionLoupe.svgY}
+                        x2={precisionLoupeTargetScreenPoint.x}
+                        y2={precisionLoupeTargetScreenPoint.y}
+                        className="takeoff-precision-loupe-snap-line"
+                      />
+                    )}
+                    <line
+                      x1={precisionLoupe.svgX - 14}
+                      y1={precisionLoupe.svgY}
+                      x2={precisionLoupe.svgX + 14}
+                      y2={precisionLoupe.svgY}
+                      className="takeoff-precision-loupe-crosshair"
+                    />
+                    <line
+                      x1={precisionLoupe.svgX}
+                      y1={precisionLoupe.svgY - 14}
+                      x2={precisionLoupe.svgX}
+                      y2={precisionLoupe.svgY + 14}
+                      className="takeoff-precision-loupe-crosshair"
+                    />
+                    {precisionLoupeTargetScreenPoint && (
+                      <g>
+                        <circle
+                          cx={precisionLoupeTargetScreenPoint.x}
+                          cy={precisionLoupeTargetScreenPoint.y}
+                          r={precisionLoupeHasSnapOffset ? 7 : 5}
+                          className="takeoff-precision-loupe-snap-target"
+                        />
+                        <circle
+                          cx={precisionLoupeTargetScreenPoint.x}
+                          cy={precisionLoupeTargetScreenPoint.y}
+                          r="2"
+                          className="takeoff-precision-loupe-snap-dot"
+                        />
+                      </g>
+                    )}
+                  </g>
+                  <circle
+                    cx={precisionLoupe.svgX}
+                    cy={precisionLoupe.svgY}
+                    r={precisionLoupeRadius}
+                    className="takeoff-precision-loupe-ring"
+                  />
                 </g>
               )}
             </svg>
