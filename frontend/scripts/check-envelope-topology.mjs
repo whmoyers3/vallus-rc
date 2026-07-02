@@ -115,3 +115,60 @@ if (transitionIssues.length !== transitionPanels.length) {
   console.error("Expected each transition panel to create a matching topology issue.");
   process.exit(1);
 }
+
+const reversedGableProject = {
+  schemaVersion: "takeoff.v1",
+  name: "Reversed flat-top gable fixture",
+  frontDoorFaces: "S",
+  floors: [{
+    id: "floor-reversed",
+    name: "Reversed Gable Floor",
+    authoringMode: "grid_manual",
+    coordinateSpace: "world_feet",
+    designGrid: { width: 8, depth: 10 },
+    scale: { feetPerGrid: 1, gridSnapInches: 3 },
+    defaultCeilingHeight: 8,
+    calibration: { lines: [], confirmed: true, appliedFactor: 1, areaConfirmed: true },
+    conditionedPerimeter: { width: 8, depth: 10 },
+    exteriorPolygon: [{ x: 8, y: 10 }, { x: 0, y: 10 }, { x: 0, y: 0 }, { x: 8, y: 0 }],
+    perimeterLocked: true,
+    rooms: [{
+      id: "reversed-wic",
+      name: "Reversed WIC",
+      x: 0,
+      y: 0,
+      width: 8,
+      depth: 10,
+      polygon: [{ x: 0, y: 0 }, { x: 8, y: 0 }, { x: 8, y: 10 }, { x: 0, y: 10 }],
+      ceilingHeight: 8,
+      ceilingType: "vault_flat_peak",
+      ceilingLowHeight: 5,
+      ceilingPeakHeight: 8,
+      ceilingRidgeDirection: "N-S",
+      ceilingRidgeOffset: 0,
+      ceilingFlatPeakWidth: 4,
+      components: [],
+    }],
+    adjacentSpaces: [],
+  }],
+};
+
+const reversedResult = compileEnvelope(reversedGableProject);
+const reversedEndPanel = reversedResult.panels.find((panel) =>
+  panel.roomId === "reversed-wic" &&
+  panel.source === "outside-remainder" &&
+  Math.abs(panel.area - 58) <= 0.01 &&
+  panel.polygon2d.some((point) => point.x === 2 && point.y === 8) &&
+  panel.polygon2d.some((point) => point.x === 6 && point.y === 8)
+);
+
+if (!reversedEndPanel) {
+  console.error("Expected reversed flat-top gable end to preserve 5 ft sidewalls, 8 ft peak, and 4 ft flat top.");
+  console.error(JSON.stringify(reversedResult.panels.map((panel) => ({
+    direction: panel.direction,
+    source: panel.source,
+    area: panel.area,
+    polygon2d: panel.polygon2d,
+  })), null, 2));
+  process.exit(1);
+}

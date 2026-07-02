@@ -1049,10 +1049,13 @@ function splitEdgeAtVaultRidge(
       .map((coord) => {
         const ratio = (coord - aCoord) / (bCoord - aCoord);
         return {
+          ratio,
           x: edge.a.x + (edge.b.x - edge.a.x) * ratio,
           y: edge.a.y + (edge.b.y - edge.a.y) * ratio,
         };
-      }),
+      })
+      .sort((first, second) => first.ratio - second.ratio)
+      .map(({ x, y }) => ({ x, y })),
     edge.b,
   ];
 }
