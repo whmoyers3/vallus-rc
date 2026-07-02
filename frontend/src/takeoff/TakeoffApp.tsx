@@ -6470,11 +6470,25 @@ function wallGapFillMeshPartsForRoom(
 
 function envelopePanelMeshPart(panel: EnvelopePanel, center: TakeoffPoint, material: THREE.Material): ModelMeshPart | null {
   if (panel.vertices3d.length < 3) return null;
-  const kind: ModelSurfaceKind = panel.adjacency === "attic"
+  const kind: ModelSurfaceKind = panel.source === "transition-profile-difference"
+    ? "load-wall"
+    : panel.adjacency === "attic"
     ? "knee-wall"
     : panel.adjacency === "conditioned"
       ? "interior-wall"
       : "load-wall";
+  const label = panel.source === "transition-profile-difference"
+    ? `${panel.direction ?? "Wall"} transition profile panel`
+    : panel.loadState === "no-load"
+      ? `${panel.direction ?? "Wall"} conditioned wall panel`
+      : `${panel.direction ?? "Wall"} ${panel.adjacency === "attic" ? "attic knee-wall" : "exterior/load"} panel`;
+  const source = panel.source === "outside-remainder"
+    ? "exterior-perimeter"
+    : panel.source === "adjacent-space"
+      ? "wall-gap-fill"
+      : panel.source === "transition-profile-difference"
+        ? "transition-profile-difference"
+        : undefined;
   return {
     mesh: createPanelMesh(
       panel.vertices3d.map((vertex) => new THREE.Vector3(vertex.x - center.x, vertex.y, vertex.z - center.y)),
@@ -6482,14 +6496,12 @@ function envelopePanelMeshPart(panel: EnvelopePanel, center: TakeoffPoint, mater
       wallPanelVisualOverlapFt,
     ),
     kind,
-    label: panel.loadState === "no-load"
-      ? `${panel.direction ?? "Wall"} conditioned wall panel`
-      : `${panel.direction ?? "Wall"} ${panel.adjacency === "attic" ? "attic knee-wall" : "exterior/load"} panel`,
+    label,
     surface: "wall",
     direction: panel.direction,
     area: panel.area,
     assembly: panel.assembly,
-    source: panel.source === "outside-remainder" ? "exterior-perimeter" : panel.source === "adjacent-space" ? "wall-gap-fill" : undefined,
+    source,
     geometryLabel: panel.reason,
     adjacency: panel.adjacency,
     boundary: panel.boundary,
@@ -6883,6 +6895,8 @@ function TakeoffModelPreview({
     const selectedKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xc9332c, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.52, 0.96), side: THREE.DoubleSide });
     const previewWallMaterial = new THREE.MeshPhongMaterial({ color: 0xb38a35, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.26, 0.74), side: THREE.DoubleSide });
     const selectedPreviewWallMaterial = new THREE.MeshPhongMaterial({ color: 0xd4a53b, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.36, 0.84), side: THREE.DoubleSide });
+    const previewTransitionMaterial = new THREE.MeshPhongMaterial({ color: 0xf2c84b, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.38, 0.82), side: THREE.DoubleSide });
+    const selectedPreviewTransitionMaterial = new THREE.MeshPhongMaterial({ color: 0xffd84f, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.48, 0.9), side: THREE.DoubleSide });
     const previewKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0x8a6fad, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.26, 0.74), side: THREE.DoubleSide });
     const selectedPreviewKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xa982d4, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.36, 0.84), side: THREE.DoubleSide });
     const previewInteriorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9f9a8a, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.18, 0.58), side: THREE.DoubleSide });
@@ -6906,6 +6920,7 @@ function TakeoffModelPreview({
     const passiveCeilingMaterial = new THREE.MeshPhongMaterial({ color: 0xaebfc8, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.14, 0.5), side: THREE.DoubleSide });
     const passiveKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xa84642, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.22, 0.6), side: THREE.DoubleSide });
     const passivePreviewWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9a7f45, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.18, 0.48), side: THREE.DoubleSide });
+    const passivePreviewTransitionMaterial = new THREE.MeshPhongMaterial({ color: 0xc9a83f, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.22, 0.56), side: THREE.DoubleSide });
     const passivePreviewKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0x796a96, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.18, 0.48), side: THREE.DoubleSide });
     const passivePreviewInteriorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x8b887e, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.1, 0.38), side: THREE.DoubleSide });
     const passiveGlassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: modelComponentOpacity(0.38, 0.28), side: THREE.DoubleSide });
@@ -6927,6 +6942,10 @@ function TakeoffModelPreview({
       }
     };
     const envelopeMaterialForPanel = (panel: EnvelopePanel, selected: boolean, passive = false): THREE.Material => {
+      if (panel.source === "transition-profile-difference") {
+        if (passive) return passivePreviewTransitionMaterial;
+        return selected ? selectedPreviewTransitionMaterial : previewTransitionMaterial;
+      }
       if (panel.adjacency === "attic") {
         if (passive) return passivePreviewKneeWallMaterial;
         return selected ? selectedPreviewKneeWallMaterial : previewKneeWallMaterial;
@@ -8753,6 +8772,7 @@ function componentSourceLabel(source?: TakeoffRoomComponent["source"]) {
   if (source === "tray-knee-wall") return "Generated from tray ceiling";
   if (source === "wall-gap-fill") return "Generated wall gap fill";
   if (source === "conditioned-wall-profile") return "Generated conditioned profile";
+  if (source === "transition-profile-difference") return "Generated transition panel";
   if (source === "open-to-above-envelope") return "Generated from open-to-above envelope";
   if (source === "connected-volume") return "Generated from connected volume";
   if (source === "opening-placement") return "Placed opening";

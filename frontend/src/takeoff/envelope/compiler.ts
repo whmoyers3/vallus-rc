@@ -44,7 +44,7 @@ export type EnvelopePanel = {
   boundary: TakeoffBoundaryType;
   assembly?: string;
   loadState: EnvelopePanelLoadState;
-  source: "host-wall" | "adjacent-space" | "outside-remainder" | "unknown-gap";
+  source: "host-wall" | "adjacent-space" | "outside-remainder" | "transition-profile-difference" | "unknown-gap";
   reason: string;
 };
 
@@ -77,7 +77,7 @@ export type EnvelopeIssue = {
   severity: "error" | "warning";
   message: string;
   panelIds: string[];
-  kind: "missing-component" | "gap" | "overlap";
+  kind: "missing-component" | "gap" | "overlap" | "missing-transition-panel";
 };
 
 export type EnvelopePanelEdgeStatus = "matched" | "legal-boundary" | "open";
@@ -138,6 +138,7 @@ export function compileEnvelope(project: TakeoffProject): EnvelopeCompilation {
     for (const room of floor.rooms) {
       panels.push(...compileRoomWallPanels(floor, room));
     }
+    panels.push(...compileSharedProfileTransitionPanels(floor));
   }
   const edges = buildPanelEdges(panels);
   const componentDrafts = groupPanelsIntoDraftComponents(panels);
@@ -206,6 +207,208 @@ function compileRoomWallPanels(floor: TakeoffFloor, room: TakeoffRectRoom): Enve
     }
   }
   return panels;
+}
+
+type SharedRoomWallSegment = Segment & {
+  firstRoom: TakeoffRectRoom;
+  secondRoom: TakeoffRectRoom;
+};
+
+function compileSharedProfileTransitionPanels(floor: TakeoffFloor): EnvelopePanel[] {
+  const panels: EnvelopePanel[] = [];
+  for (const shared of sharedRoomWallSegments(floor)) {
+    panels.push(...transitionPanelsForSharedRoomWall(floor, shared));
+  }
+  return panels;
+}
+
+function sharedRoomWallSegments(floor: TakeoffFloor): SharedRoomWallSegment[] {
+  const tolerance = toleranceForFloor(floor);
+  const segments: SharedRoomWallSegment[] = [];
+  for (let firstIndex = 0; firstIndex < floor.rooms.length; firstIndex += 1) {
+    const firstRoom = floor.rooms[firstIndex];
+    for (let secondIndex = firstIndex + 1; secondIndex < floor.rooms.length; secondIndex += 1) {
+      const secondRoom = floor.rooms[secondIndex];
+      for (const firstEdge of pointsToEdges(roomCorners(firstRoom))) {
+        for (const secondEdge of pointsToEdges(roomCorners(secondRoom))) {
+          const shared = sharedSegment(firstEdge, secondEdge, tolerance);
+          if (!shared || shared.length <= meaningfulContactLength(shared, tolerance)) continue;
+          const a = roundPoint(shared.a);
+          const b = roundPoint(shared.b);
+          segments.push({
+            a,
+            b,
+            direction: compassFromRoomToRoom(firstRoom, secondRoom),
+            length: round(distance(a, b)),
+            firstRoom,
+            secondRoom,
+          });
+        }
+      }
+    }
+  }
+  return dedupeSharedRoomWallSegments(segments);
+}
+
+function dedupeSharedRoomWallSegments(segments: SharedRoomWallSegment[]) {
+  const byKey = new Map<string, SharedRoomWallSegment>();
+  for (const segment of segments) {
+    const key = [
+      segment.firstRoom.id,
+      segment.secondRoom.id,
+      undirectedPlanEdgeKey(segment.a, segment.b),
+    ].join(":");
+    const current = byKey.get(key);
+    if (!current || segment.length > current.length) byKey.set(key, segment);
+  }
+  return Array.from(byKey.values());
+}
+
+function transitionPanelsForSharedRoomWall(floor: TakeoffFloor, shared: SharedRoomWallSegment): EnvelopePanel[] {
+  const defaultCeilingHeight = floor.defaultCeilingHeight ?? 9;
+  const firstTop = normalizedTopLine(roomWallTopPointsForSegment(shared.firstRoom, shared, defaultCeilingHeight), shared.length);
+  const secondTop = normalizedTopLine(roomWallTopPointsForSegment(shared.secondRoom, shared, defaultCeilingHeight), shared.length);
+  const intervals = profileDifferenceIntervals(firstTop, secondTop);
+  const panels: EnvelopePanel[] = [];
+
+  for (const interval of intervals) {
+    const polygon2d = cleanPolygon([
+      { x: interval.start, y: interval.firstStart },
+      { x: interval.end, y: interval.firstEnd },
+      { x: interval.end, y: interval.secondEnd },
+      { x: interval.start, y: interval.secondStart },
+    ]);
+    const area = Number(polygonArea(polygon2d).toFixed(3));
+    if (area <= 0.5) continue;
+
+    const firstMid = heightOnTopLine(firstTop, (interval.start + interval.end) / 2);
+    const secondMid = heightOnTopLine(secondTop, (interval.start + interval.end) / 2);
+    const lowerRoom = firstMid <= secondMid ? shared.firstRoom : shared.secondRoom;
+    const upperRoom = lowerRoom.id === shared.firstRoom.id ? shared.secondRoom : shared.firstRoom;
+    const { minX, maxX, minY, maxY } = polygonBounds2d(polygon2d);
+    const id = stableEnvelopeId([
+      "transition",
+      floor.id,
+      shared.firstRoom.id,
+      shared.secondRoom.id,
+      round(shared.a.x),
+      round(shared.a.y),
+      round(shared.b.x),
+      round(shared.b.y),
+      round(minX),
+      round(maxX),
+      round(minY),
+      round(maxY),
+    ]);
+
+    panels.push({
+      id,
+      floorId: floor.id,
+      floorName: floor.name,
+      roomId: lowerRoom.id,
+      roomName: lowerRoom.name || "Room",
+      surface: "wall",
+      direction: compassFromRoomToRoom(lowerRoom, upperRoom),
+      polygon2d,
+      vertices3d: polygon2d.map((point) => wallPlanePointToWorld(shared, point)),
+      area,
+      spanStart: round(minX),
+      spanEnd: round(maxX),
+      zMin: round(minY),
+      zMax: round(maxY),
+      placement: pointAtSegmentDistance(shared, (minX + maxX) / 2),
+      adjacency: "unknown",
+      boundary: "unknown",
+      loadState: "review",
+      source: "transition-profile-difference",
+      reason: `Transition panel between ${shared.firstRoom.name || "Room"} and ${shared.secondRoom.name || "Room"} where ceiling profiles do not meet.`,
+    });
+  }
+
+  return panels;
+}
+
+type TopLinePoint = TakeoffPoint;
+
+function normalizedTopLine(points: TakeoffPoint[], segmentLength: number): TopLinePoint[] {
+  const byX = new Map<number, TopLinePoint>();
+  for (const point of points) {
+    const x = round(clamp(point.x, 0, segmentLength));
+    const y = round(Math.max(0, point.y));
+    const current = byX.get(x);
+    if (!current || y > current.y) byX.set(x, { x, y });
+  }
+  byX.set(0, byX.get(0) ?? { x: 0, y: byX.values().next().value?.y ?? 0 });
+  const values = Array.from(byX.values());
+  byX.set(round(segmentLength), byX.get(round(segmentLength)) ?? { x: round(segmentLength), y: values[values.length - 1]?.y ?? 0 });
+  return Array.from(byX.values()).sort((a, b) => a.x - b.x);
+}
+
+function profileDifferenceIntervals(firstTop: TopLinePoint[], secondTop: TopLinePoint[]) {
+  const minimumHeightDifference = 0.15;
+  const cuts = profileDifferenceCuts(firstTop, secondTop);
+  const intervals: Array<{
+    start: number;
+    end: number;
+    firstStart: number;
+    firstEnd: number;
+    secondStart: number;
+    secondEnd: number;
+  }> = [];
+
+  for (let index = 0; index < cuts.length - 1; index += 1) {
+    const start = cuts[index];
+    const end = cuts[index + 1];
+    if (end - start <= 0.05) continue;
+    const mid = (start + end) / 2;
+    const firstMid = heightOnTopLine(firstTop, mid);
+    const secondMid = heightOnTopLine(secondTop, mid);
+    if (Math.abs(firstMid - secondMid) <= minimumHeightDifference) continue;
+    intervals.push({
+      start: round(start),
+      end: round(end),
+      firstStart: round(heightOnTopLine(firstTop, start)),
+      firstEnd: round(heightOnTopLine(firstTop, end)),
+      secondStart: round(heightOnTopLine(secondTop, start)),
+      secondEnd: round(heightOnTopLine(secondTop, end)),
+    });
+  }
+
+  return intervals;
+}
+
+function profileDifferenceCuts(firstTop: TopLinePoint[], secondTop: TopLinePoint[]) {
+  const cuts = new Set<number>([0]);
+  for (const point of [...firstTop, ...secondTop]) cuts.add(round(point.x));
+  const sorted = Array.from(cuts).sort((a, b) => a - b);
+  const withIntersections = new Set(sorted);
+
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const start = sorted[index];
+    const end = sorted[index + 1];
+    const startDelta = heightOnTopLine(firstTop, start) - heightOnTopLine(secondTop, start);
+    const endDelta = heightOnTopLine(firstTop, end) - heightOnTopLine(secondTop, end);
+    if (Math.abs(startDelta) <= 0.001 || Math.abs(endDelta) <= 0.001 || startDelta * endDelta >= 0) continue;
+    const ratio = Math.abs(startDelta) / (Math.abs(startDelta) + Math.abs(endDelta));
+    withIntersections.add(round(start + (end - start) * ratio));
+  }
+
+  return Array.from(withIntersections).sort((a, b) => a - b);
+}
+
+function heightOnTopLine(points: TopLinePoint[], x: number) {
+  if (points.length === 0) return 0;
+  const clampedX = clamp(x, points[0].x, points[points.length - 1].x);
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    if (clampedX < start.x - 0.001 || clampedX > end.x + 0.001) continue;
+    const run = end.x - start.x;
+    if (Math.abs(run) <= 0.001) return Math.max(start.y, end.y);
+    const ratio = (clampedX - start.x) / run;
+    return start.y + (end.y - start.y) * ratio;
+  }
+  return points[points.length - 1].y;
 }
 
 function adjacentSpacePanelSeeds(
@@ -434,6 +637,12 @@ function undirectedEdgeKey(start: EnvelopeVec3, end: EnvelopeVec3) {
   return first < second ? `${first}|${second}` : `${second}|${first}`;
 }
 
+function undirectedPlanEdgeKey(start: TakeoffPoint, end: TakeoffPoint) {
+  const first = `${round(start.x)}:${round(start.y)}`;
+  const second = `${round(end.x)}:${round(end.y)}`;
+  return first < second ? `${first}|${second}` : `${second}|${first}`;
+}
+
 function vecKey(point: EnvelopeVec3) {
   return `${round(point.x)}:${round(point.y)}:${round(point.z)}`;
 }
@@ -524,6 +733,17 @@ function buildEnvelopeIssues(project: TakeoffProject, panels: EnvelopePanel[], d
       kind: "gap",
       panelIds: [panel.id],
       message: `${panel.roomName} has an unclassified ${Math.round(panel.area)} sf envelope gap on the ${panel.direction ?? "unknown"} wall.`,
+    });
+  }
+  for (const panel of panels.filter((entry) => entry.source === "transition-profile-difference")) {
+    issues.push({
+      id: stableEnvelopeId(["issue", panel.id]),
+      floorId: panel.floorId,
+      roomId: panel.roomId,
+      severity: "warning",
+      kind: "missing-transition-panel",
+      panelIds: [panel.id],
+      message: `${panel.reason} Review the ${Math.round(panel.area)} sf transition surface before assigning load treatment.`,
     });
   }
   issues.push(...buildPersistedWallProfileOverlapIssues(project));
@@ -1151,6 +1371,12 @@ function centroid(points: TakeoffPoint[]) {
     x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
     y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
   };
+}
+
+function compassFromRoomToRoom(fromRoom: TakeoffRectRoom, toRoom: TakeoffRectRoom): EnvelopeDirection {
+  const fromCenter = centroid(roomCorners(fromRoom));
+  const toCenter = centroid(roomCorners(toRoom));
+  return compassFromVector(toCenter.x - fromCenter.x, toCenter.y - fromCenter.y);
 }
 
 function compassFromVector(dx: number, dy: number): EnvelopeDirection {

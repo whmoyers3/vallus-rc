@@ -16,6 +16,7 @@ export type TakeoffRoomComponentSource =
   | "tray-knee-wall"
   | "wall-gap-fill"
   | "conditioned-wall-profile"
+  | "transition-profile-difference"
   | "band-joist"
   | "open-to-above-envelope"
   | "connected-volume";
