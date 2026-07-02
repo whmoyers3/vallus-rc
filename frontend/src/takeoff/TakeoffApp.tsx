@@ -58,6 +58,9 @@ const minPrecisionLoupeZoom = 10;
 const maxPrecisionLoupeZoom = 30;
 const precisionLoupeZoomStep = 2;
 const precisionLoupeRadius = 180;
+const planPointStoragePrecisionFt = 1 / 12;
+const traceAutoSnapFt = 3 / 12;
+const traceClosePointReviewFt = 6 / 12;
 const defaultWindowSillHeight = 3;
 const defaultWindowHeight = 5;
 const defaultDoorSillHeight = 0;
@@ -87,6 +90,18 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
   { id: "image_trace", label: "Image Trace" },
   { id: "grid_manual", label: "Grid Manual" },
 ];
+
+function roundToPlanPrecision(value: number) {
+  return Number((Math.round(value / planPointStoragePrecisionFt) * planPointStoragePrecisionFt).toFixed(3));
+}
+
+function normalizePlanPoint(point: TakeoffPoint) {
+  return {
+    x: roundToPlanPrecision(point.x),
+    y: roundToPlanPrecision(point.y),
+  };
+}
+
 type WorkflowStep = "crop" | "calibrate" | "trace";
 type RoomTileMetric = "floor" | "ceiling" | "wall" | "glass";
 type PlanReviewMode = "plan" | "alignment" | "floor" | "ceiling" | "walls" | "elevation";
@@ -1714,6 +1729,11 @@ function roomUsesPersistedEnvelopeWallGeometry(room: TakeoffRectRoom) {
   );
 }
 
+function roomUsesGeneratedEnvelopeWallGeometry(room: TakeoffRectRoom) {
+  if (room.envelopeCompilerPreviewDisabled) return true;
+  return roomSurfaceComponents(room, "wall").some(isEnvelopeCompilerGeneratedWall);
+}
+
 function componentIsBaseWallArea(component: TakeoffRoomComponent) {
   if (component.surface !== "wall") return false;
   if (component.loadExempt) return false;
@@ -2704,7 +2724,7 @@ function traceQaMergeActionLabel(issue: TakeoffValidationIssue) {
 }
 
 function normalizedTraceQaPoint(point: TakeoffPoint) {
-  return { x: Number(point.x.toFixed(3)), y: Number(point.y.toFixed(3)) };
+  return normalizePlanPoint(point);
 }
 
 function updateTraceSourcePoints(
@@ -2863,9 +2883,9 @@ function traceGeometryQaIssues(floor: TakeoffFloor): TakeoffValidationIssue[] {
   const pointSources = traceQaPointSources(floor);
   const segmentSources = traceQaSegmentSources(floor);
   const maxFindings = 10;
-  const minimumSnapMissFt = 0.05;
-  const closePointReviewFt = 1.5;
-  const nearAxisToleranceFt = 0.25;
+  const minimumSnapMissFt = 0.01;
+  const closePointReviewFt = traceClosePointReviewFt;
+  const nearAxisToleranceFt = traceClosePointReviewFt;
   const tinySegmentFt = 0.5;
   const narrowParallelGapFt = 3;
 
@@ -4311,6 +4331,7 @@ function conditionedWallProfileCandidatesForRoom(floor: TakeoffFloor, room: Take
 }
 
 function wallGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): WallGapFillSuggestion[] {
+  if (roomUsesGeneratedEnvelopeWallGeometry(room)) return [];
   const boundaryGapFills = boundaryCandidatesForFloor(floor)
     .filter((candidate) => candidate.roomId === room.id)
     .filter((candidate) => {
@@ -11581,31 +11602,47 @@ export function TakeoffApp() {
     };
   }
 
-  function rebuildSelectedRoomEnvelopeGeometry() {
-    if (!selectedRoom) return;
-    const drafts = envelopeDraftsForRoom(envelopeCompilation, floor.id, selectedRoom.id);
-    if (drafts.length === 0) {
-      setMessage(`${selectedRoom.name || "Room"} has no compiler-generated envelope wall panels to rebuild.`);
+  function rebuildRoomEnvelopeGeometry(roomId: string, targetFloorId = floor.id) {
+    const targetFloor = floors.find((entry) => entry.id === targetFloorId);
+    const targetRoom = targetFloor?.rooms.find((room) => room.id === roomId);
+    if (!targetFloor || !targetRoom) {
+      setMessage("That room is no longer available for envelope rebuild.");
       return;
     }
-    const preservedOpeningCount = roomComponents(selectedRoom).filter(isOpeningComponent).length;
+    const drafts = envelopeDraftsForRoom(envelopeCompilation, targetFloorId, roomId);
+    if (drafts.length === 0) {
+      setMessage(`${targetRoom.name || "Room"} has no compiler-generated envelope wall panels to rebuild.`);
+      return;
+    }
+    const preservedOpeningCount = roomComponents(targetRoom).filter(isOpeningComponent).length;
     pushUndoSnapshot("rebuild room walls");
-    setFloor((current) => ({
-      ...current,
-      rooms: current.rooms.map((room) => {
-        if (room.id !== selectedRoom.id) return room;
-        return {
-          ...room,
-          envelopeCompilerPreviewDisabled: true,
-          components: [
-            ...roomComponents(room).filter((component) => !componentIsEnvelopeRebuildOutput(component)),
-            ...drafts.map(envelopeDraftToRoomComponent),
-          ],
-        };
-      }),
+    const rebuiltComponents = drafts.map(envelopeDraftToRoomComponent);
+    setFloors((current) => current.map((entry) => {
+      if (entry.id !== targetFloorId) return entry;
+      return {
+        ...entry,
+        rooms: entry.rooms.map((room) => {
+          if (room.id !== roomId) return room;
+          return {
+            ...room,
+            envelopeCompilerPreviewDisabled: true,
+            components: [
+              ...roomComponents(room).filter((component) => !componentIsEnvelopeRebuildOutput(component)),
+              ...rebuiltComponents,
+            ],
+          };
+        }),
+      };
     }));
+    setActiveFloorId(targetFloorId);
+    setSelectedRoomId(roomId);
     setActiveValidationTarget(null);
-    setMessage(`${selectedRoom.name || "Room"} walls rebuilt from ${drafts.length} compiler panel group${drafts.length === 1 ? "" : "s"}; ${preservedOpeningCount} opening${preservedOpeningCount === 1 ? "" : "s"} preserved.`);
+    setMessage(`${targetRoom.name || "Room"} walls rebuilt from ${drafts.length} compiler panel group${drafts.length === 1 ? "" : "s"}; ${preservedOpeningCount} opening${preservedOpeningCount === 1 ? "" : "s"} preserved.`);
+  }
+
+  function rebuildSelectedRoomEnvelopeGeometry() {
+    if (!selectedRoom) return;
+    rebuildRoomEnvelopeGeometry(selectedRoom.id, floor.id);
   }
 
   function resolveBoundaryCandidate(candidateId: string, resolution: "slice" | "whole-section" | "ignore", floorId = activeFloorId) {
@@ -12242,7 +12279,7 @@ export function TakeoffApp() {
     return {
       svgX,
       svgY,
-      point: { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) },
+      point: normalizePlanPoint({ x, y }),
     };
   }
 
@@ -12283,11 +12320,15 @@ export function TakeoffApp() {
     return room && component ? projectedOpeningPlacement(floor, point, room, component) : null;
   }
 
-  function tracePointSnapThresholdFt() {
-    return Math.max(1, floor.scale.gridSnapInches / 12);
+  function traceVertexSnapThresholdFt() {
+    return Math.max(traceAutoSnapFt, Math.min(traceClosePointReviewFt, floor.scale.gridSnapInches / 24));
   }
 
   function traceSegmentSnapThresholdFt() {
+    return traceVertexSnapThresholdFt();
+  }
+
+  function pointEditHitThresholdFt() {
     return Math.max(0.75, floor.scale.gridSnapInches / 12);
   }
 
@@ -12304,7 +12345,7 @@ export function TakeoffApp() {
     if (workflowStep === "trace" && openingModeActive) {
       const target = nearestExteriorSegment(point);
       return target
-        ? { x: Number(target.closest.x.toFixed(3)), y: Number(target.closest.y.toFixed(3)) }
+        ? normalizePlanPoint(target.closest)
         : point;
     }
     if (workflowStep === "trace" && roomPolygonMode) {
@@ -12323,7 +12364,7 @@ export function TakeoffApp() {
   }
 
   function snapToExistingGeometryResult(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean; excludeMovableTarget?: MovablePointTarget } = {}) {
-    const pointThreshold = tracePointSnapThresholdFt();
+    const pointThreshold = traceVertexSnapThresholdFt();
     const segmentThreshold = traceSegmentSnapThresholdFt();
     const floorAlignmentThreshold = Math.max(3, floor.scale.gridSnapInches / 12);
     let bestVertex = { point, distance: Number.POSITIVE_INFINITY };
@@ -12384,7 +12425,7 @@ export function TakeoffApp() {
         ? { point: bestSegment.point, kind: "segment" as const, distance: bestSegment.distance }
         : { point, kind: null, distance: Number.POSITIVE_INFINITY };
     return {
-      point: { x: Number(snapped.point.x.toFixed(3)), y: Number(snapped.point.y.toFixed(3)) },
+      point: normalizePlanPoint(snapped.point),
       kind: snapped.kind,
       distance: snapped.distance,
     };
@@ -12401,10 +12442,10 @@ export function TakeoffApp() {
     const length = Math.hypot(dx, dy);
     if (length <= 0.001) return point;
     const snappedAngle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
-    return {
-      x: Number(clamp(previous.x + Math.cos(snappedAngle) * length, 0, floor.designGrid.width).toFixed(3)),
-      y: Number(clamp(previous.y + Math.sin(snappedAngle) * length, 0, floor.designGrid.depth).toFixed(3)),
-    };
+    return normalizePlanPoint({
+      x: clamp(previous.x + Math.cos(snappedAngle) * length, 0, floor.designGrid.width),
+      y: clamp(previous.y + Math.sin(snappedAngle) * length, 0, floor.designGrid.depth),
+    });
   }
 
   function prepareCornerPoint(point: TakeoffPoint, previous: TakeoffPoint | undefined, constrainAngle: boolean, includeFloorAlignment = false, excludeActiveExterior = false) {
@@ -12416,21 +12457,18 @@ export function TakeoffApp() {
   }
 
   function snapAdjacentSpacePoint(point: TakeoffPoint) {
-    const threshold = tracePointSnapThresholdFt();
+    const threshold = traceVertexSnapThresholdFt();
     const exteriorCorners = cornerPoints(exteriorRingPoints(floor));
     let best = { point, distance: threshold };
     for (const corner of exteriorCorners) {
       const cornerDistance = distance(point, corner);
       if (cornerDistance <= best.distance) best = { point: corner, distance: cornerDistance };
     }
-    return {
-      x: Number(best.point.x.toFixed(3)),
-      y: Number(best.point.y.toFixed(3)),
-    };
+    return normalizePlanPoint(best.point);
   }
 
   function adjacentSpacePointForEvent(point: TakeoffPoint, precise: boolean) {
-    return precise ? point : snapAdjacentSpacePoint(point);
+    return precise ? normalizePlanPoint(point) : snapAdjacentSpacePoint(point);
   }
 
   function pointEditTargetPriority(target: MovablePointTarget | null | undefined) {
@@ -12446,7 +12484,7 @@ export function TakeoffApp() {
   }
 
   function findMovablePoint(point: TakeoffPoint) {
-    const threshold = tracePointSnapThresholdFt();
+    const threshold = pointEditHitThresholdFt();
     let bestTarget: MovablePointTarget | null = null;
     let bestDistance = threshold;
     const considerTarget = (target: MovablePointTarget, candidate: TakeoffPoint) => {
@@ -12495,7 +12533,7 @@ export function TakeoffApp() {
         const projected = closestPointOnSegment(point, points[index], points[(index + 1) % points.length]);
         const projectedDistance = distance(point, projected);
         if (projectedDistance <= bestDistance) {
-          bestTarget = makeTarget(index, { x: Number(projected.x.toFixed(3)), y: Number(projected.y.toFixed(3)) });
+          bestTarget = makeTarget(index, normalizePlanPoint(projected));
           bestDistance = projectedDistance;
         }
       }
@@ -12519,7 +12557,7 @@ export function TakeoffApp() {
 
   function insertPointOnSegment(target: MovableSegmentTarget, options: { recordUndo?: boolean } = {}) {
     const insertIndex = target.segmentIndex + 1;
-    const point = { x: Number(target.point.x.toFixed(3)), y: Number(target.point.y.toFixed(3)) };
+    const point = normalizePlanPoint(target.point);
     const applyFloorUpdate = options.recordUndo === false ? setFloorWithoutUndo : setFloor;
     applyFloorUpdate((current) => {
       if (target.type === "exterior") {
@@ -16165,6 +16203,7 @@ export function TakeoffApp() {
                           const internalGainSuggestion = activeRoomValidationTarget.internalGainSuggestion;
                           const openToAboveEnvelopeSuggestion = activeRoomValidationTarget.openToAboveEnvelopeSuggestion;
                           const verticalMergeSuggestion = activeRoomValidationTarget.verticalMergeSuggestion;
+                          const envelopeTopologyIssue = activeRoomValidationTarget.checkType === "envelope-topology";
                           const verticalMergeSourceFloor = verticalMergeSuggestion ? floors.find((entry) => entry.id === verticalMergeSuggestion.sourceFloorId) : null;
                           const verticalMergeTargetFloor = verticalMergeSuggestion ? floors.find((entry) => entry.id === verticalMergeSuggestion.targetFloorId) : null;
                           const boundaryCandidate = activeRoomValidationTarget.boundaryCandidateId
@@ -16219,6 +16258,8 @@ export function TakeoffApp() {
                                       Assign to {verticalMergeSuggestion.defaultReportingFloorId === verticalMergeTargetFloor?.id ? verticalMergeSourceFloor?.name || "lower floor" : verticalMergeTargetFloor?.name || "upper floor"}
                                     </button>
                                   </>
+                                ) : envelopeTopologyIssue ? (
+                                  <button className="toolbar-primary" onClick={() => rebuildRoomEnvelopeGeometry(selectedRoom.id, activeRoomValidationTarget.floorId ?? floor.id)}>Rebuild Walls</button>
                                 ) : activeRoomValidationTarget.section === "ceiling-geometry" ? (
                                   <button className="toolbar-primary" onClick={() => approveRoomCeilingGeometry(selectedRoom.id, ceilingWallAssemblies, ceilingWallAdjacencies)}>Apply Fix</button>
                                 ) : boundaryCandidate ? (
@@ -17096,6 +17137,7 @@ export function TakeoffApp() {
                     const previousEntry = visibleProjectValidation[listIndex - 1];
                     const showFloorDivider = !previousEntry || previousEntry.floor.id !== issueFloor.id;
                     const traceMergeLabel = traceQaMergeActionLabel(issue);
+                    const canRebuildEnvelope = issue.checkType === "envelope-topology" && Boolean(issue.target?.roomId);
                     return (
                       <div key={issueKey} className="takeoff-issue-stack">
                         {showFloorDivider && (
@@ -17115,6 +17157,11 @@ export function TakeoffApp() {
                           {traceMergeLabel && (
                             <button type="button" onClick={() => applyTraceGeometryMergeSuggestion(issue, issueFloor)}>
                               {traceMergeLabel}
+                            </button>
+                          )}
+                          {canRebuildEnvelope && issue.target?.roomId && (
+                            <button type="button" onClick={() => rebuildRoomEnvelopeGeometry(issue.target!.roomId!, issueFloor.id)}>
+                              Rebuild Walls
                             </button>
                           )}
                           <button type="button" onClick={() => dismissValidationIssue(issue, issueKey, issueFloor)}>
