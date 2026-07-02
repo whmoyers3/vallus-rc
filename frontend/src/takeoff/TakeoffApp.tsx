@@ -2866,7 +2866,7 @@ function traceGeometryQaIssues(floor: TakeoffFloor): TakeoffValidationIssue[] {
   const segmentSources = traceQaSegmentSources(floor);
   const maxFindings = 10;
   const minimumSnapMissFt = 0.05;
-  const closePointReviewFt = 5;
+  const closePointReviewFt = 1.5;
   const nearAxisToleranceFt = 0.25;
   const tinySegmentFt = 0.5;
   const narrowParallelGapFt = 3;
@@ -9853,6 +9853,28 @@ export function TakeoffApp() {
     if (!activeValidationTarget) return;
     recordValidationDecision(activeValidationTarget, "dismissed");
     setActiveValidationTarget(null);
+  }
+
+  function dismissValidationIssue(issue: TakeoffValidationIssue, key: string, issueFloor: TakeoffFloor) {
+    recordValidationDecision({
+      key,
+      floorId: issueFloor.id,
+      roomId: issue.target?.roomId,
+      severity: issue.severity,
+      section: validationSectionForIssue(issue),
+      message: issue.message,
+      issueType: issue.issueType,
+      checkType: issue.checkType,
+      surfaceTreatmentSuggestion: issue.surfaceTreatmentSuggestion,
+      wallComponentGeometrySuggestion: issue.wallComponentGeometrySuggestion,
+      glassTreatmentSuggestion: issue.glassTreatmentSuggestion,
+      internalGainSuggestion: issue.internalGainSuggestion,
+      openToAboveEnvelopeSuggestion: issue.openToAboveEnvelopeSuggestion,
+      verticalMergeSuggestion: issue.verticalMergeSuggestion,
+      boundaryCandidateId: issue.boundaryCandidateId,
+    }, "dismissed", "User dismissed validation from the right rail.");
+    if (activeValidationTarget?.key === key) setActiveValidationTarget(null);
+    setMessage("Validation dismissed. It will stay hidden unless its geometry or evidence changes.");
   }
 
   function applyTraceGeometryMergeSuggestion(issue: TakeoffValidationIssue, issueFloor: TakeoffFloor) {
@@ -17043,13 +17065,16 @@ export function TakeoffApp() {
                         >
                           {issue.message}
                         </button>
-                        {traceMergeLabel && (
-                          <div className="takeoff-issue-actions">
+                        <div className="takeoff-issue-actions">
+                          {traceMergeLabel && (
                             <button type="button" onClick={() => applyTraceGeometryMergeSuggestion(issue, issueFloor)}>
                               {traceMergeLabel}
                             </button>
-                          </div>
-                        )}
+                          )}
+                          <button type="button" onClick={() => dismissValidationIssue(issue, issueKey, issueFloor)}>
+                            Dismiss
+                          </button>
+                        </div>
                       </div>
                     );
                   })()
