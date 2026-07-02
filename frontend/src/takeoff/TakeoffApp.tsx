@@ -1930,8 +1930,6 @@ function componentRequiresDirection(component: TakeoffRoomComponent) {
 
 function wallCanHostOpenings(component: TakeoffRoomComponent) {
   if (component.surface !== "wall") return false;
-  if (componentIsGeneratedEnvelopeWall(component)) return false;
-  if (componentHasWallProfileGeometry(component)) return false;
   return component.adjacency == null || component.adjacency === "outside" || component.adjacency === "garage" || component.adjacency === "unknown";
 }
 
@@ -11555,6 +11553,8 @@ export function TakeoffApp() {
       setMessage(`${selectedRoom.name || "Room"} has no compiler-generated envelope wall panels to rebuild.`);
       return;
     }
+    const preservedOpeningCount = roomComponents(selectedRoom).filter(isOpeningComponent).length;
+    pushUndoSnapshot("rebuild room walls");
     setFloor((current) => ({
       ...current,
       rooms: current.rooms.map((room) => {
@@ -11570,7 +11570,7 @@ export function TakeoffApp() {
       }),
     }));
     setActiveValidationTarget(null);
-    setMessage(`${selectedRoom.name || "Room"} envelope geometry rebuilt from ${drafts.length} compiler panel group${drafts.length === 1 ? "" : "s"}.`);
+    setMessage(`${selectedRoom.name || "Room"} walls rebuilt from ${drafts.length} compiler panel group${drafts.length === 1 ? "" : "s"}; ${preservedOpeningCount} opening${preservedOpeningCount === 1 ? "" : "s"} preserved.`);
   }
 
   function resolveBoundaryCandidate(candidateId: string, resolution: "slice" | "whole-section" | "ignore", floorId = activeFloorId) {
@@ -16198,7 +16198,7 @@ export function TakeoffApp() {
                                 {selectedRoomEnvelopeIssues.length > 0 ? ` · ${selectedRoomEnvelopeIssues.length} review flag${selectedRoomEnvelopeIssues.length === 1 ? "" : "s"}` : ""}
                               </p>
                             </div>
-                            <button className="toolbar-primary" onClick={rebuildSelectedRoomEnvelopeGeometry}>Rebuild Envelope Geometry</button>
+                            <button className="toolbar-primary" onClick={rebuildSelectedRoomEnvelopeGeometry} title="Rebuild generated wall panels while preserving windows and doors.">Rebuild Walls</button>
                           </div>
                           {selectedRoomEnvelopeDrafts.map((draft) => (
                             <div key={draft.id} className="takeoff-wall-suggestion-row takeoff-wall-suggestion-row--workbench">
