@@ -191,6 +191,7 @@ type ModelMeshPart = {
   loadExempt?: boolean;
 };
 type ModelSurfaceSelection = {
+  floorId?: string;
   roomId: string;
   roomName: string;
   kind: ModelSurfaceKind;
@@ -1702,13 +1703,28 @@ function componentIsEnvelopeRebuildOutput(component: TakeoffRoomComponent) {
   if (isEnvelopeCompilerGeneratedWall(component)) return true;
   if (componentIsGeneratedCeilingProfileOutput(component)) return true;
   const label = `${component.label ?? ""} ${component.geometryLabel ?? ""}`.toLowerCase();
-  return component.source !== "manual" && componentHasWallProfileGeometry(component) && (
+  if (!componentHasWallProfileGeometry(component)) return false;
+  const looksLikeGeneratedWallProfile = (
     label.includes("envelope") ||
     label.includes("gap") ||
     label.includes("profile") ||
     label.includes("slice") ||
-    label.includes("remainder")
+    label.includes("remainder") ||
+    label.includes("knee-wall section") ||
+    label.includes("knee wall section")
   );
+  if (!looksLikeGeneratedWallProfile) return false;
+  if (component.source === "manual") {
+    return (
+      label.includes("gap") ||
+      label.includes("slice") ||
+      label.includes("profile") ||
+      label.includes("remainder") ||
+      label.includes("knee-wall section") ||
+      label.includes("knee wall section")
+    );
+  }
+  return true;
 }
 
 function componentHasWallProfileGeometry(component: TakeoffRoomComponent) {
@@ -6426,7 +6442,7 @@ function wallGapFillMeshPartsForRoom(
         direction: component.direction,
         area: profileArea,
         assembly: component.assembly,
-        componentId: component.id,
+        componentId: roomComponentStableId(room.id, component),
         source: component.source,
         geometryLabel: component.geometryLabel || `Wall gap fill ${index + 1}`,
         adjacency: component.adjacency,
@@ -6519,6 +6535,7 @@ function meshFromObject(object: THREE.Object3D) {
 function modelSurfaceKey(surface: ModelSurfaceSelection | null) {
   if (!surface) return "";
   return [
+    surface.floorId ?? "",
     surface.roomId,
     surface.kind,
     surface.surface ?? "",
@@ -6576,6 +6593,7 @@ function TakeoffModelPreview({
   onActivateFloor,
   onUpdateFloorViewOptions,
   onAssignSurfaceComponent,
+  onRemoveSurfaceComponent,
   onUpdateOpeningComponent,
 }: {
   floor: TakeoffFloor;
@@ -6593,6 +6611,7 @@ function TakeoffModelPreview({
   onActivateFloor: (floorId: string) => void;
   onUpdateFloorViewOptions: (floorId: string, patch: Partial<FloorViewOptions>) => void;
   onAssignSurfaceComponent: (selection: ModelSurfaceSelection, assembly: string) => void;
+  onRemoveSurfaceComponent: (selection: ModelSurfaceSelection) => void;
   onUpdateOpeningComponent: (target: OpeningMoveTarget, patch: Partial<TakeoffRoomComponent>) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -6638,6 +6657,7 @@ function TakeoffModelPreview({
   const selectedSurfaceOptions = selectedSurfaceForSchedule
     ? componentSchedule.filter((component) => component.category === modelScheduleCategory(selectedSurfaceForSchedule))
     : [];
+  const selectedSurfaceCanRemoveWall = selectedSurface?.surface === "wall" && Boolean(selectedSurface.componentId);
   const sortedFloorsForNavigation = useMemo(
     () => [...floors].sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0)),
     [floors]
@@ -6919,6 +6939,7 @@ function TakeoffModelPreview({
         part.mesh.userData.roomId = sourceRoom.id;
         if (selectable) {
           part.mesh.userData.modelSurface = {
+            floorId: targetFloor.id,
             roomId: sourceRoom.id,
             roomName: sourceRoom.name,
             kind: part.kind,
@@ -7186,6 +7207,7 @@ function TakeoffModelPreview({
               wallMesh.position.y += activeFloorYOffset;
               wallMesh.userData.roomId = room.id;
               wallMesh.userData.modelSurface = {
+                floorId: floor.id,
                 roomId: room.id,
                 roomName: room.name,
                 kind: "load-wall",
@@ -7194,6 +7216,8 @@ function TakeoffModelPreview({
                 direction: segment.direction,
                 area: Number(((range.end - range.start) * Math.max(baseWallHeight, 0)).toFixed(3)),
                 assembly: baseWallComponent?.assembly,
+                componentId: baseWallComponent ? roomComponentStableId(room.id, baseWallComponent) : undefined,
+                source: baseWallComponent?.source,
                 adjacency: baseWallComponent?.adjacency,
                 boundary: baseWallComponent?.boundary,
               } satisfies ModelSurfaceSelection;
@@ -7226,6 +7250,7 @@ function TakeoffModelPreview({
             part.mesh.position.y += activeFloorYOffset;
             part.mesh.userData.roomId = room.id;
             part.mesh.userData.modelSurface = {
+              floorId: floor.id,
               roomId: room.id,
               roomName: room.name,
               kind: modelKind,
@@ -7234,7 +7259,7 @@ function TakeoffModelPreview({
               direction: part.direction,
               area: part.area,
               assembly: component?.assembly ?? part.assembly,
-              componentId: component?.id,
+              componentId: component ? roomComponentStableId(room.id, component) : undefined,
               source: component?.source ?? part.source,
               geometryLabel: component?.geometryLabel ?? part.geometryLabel,
               adjacency: component?.adjacency ?? part.adjacency,
@@ -7246,6 +7271,7 @@ function TakeoffModelPreview({
             part.mesh.position.y += activeFloorYOffset;
             part.mesh.userData.roomId = room.id;
             part.mesh.userData.modelSurface = {
+              floorId: floor.id,
               roomId: room.id,
               roomName: room.name,
               kind: part.kind,
@@ -7283,6 +7309,7 @@ function TakeoffModelPreview({
           part.mesh.position.y += activeFloorYOffset;
           part.mesh.userData.roomId = room.id;
           part.mesh.userData.modelSurface = {
+            floorId: floor.id,
             roomId: room.id,
             roomName: room.name,
             kind: part.kind,
@@ -7291,7 +7318,7 @@ function TakeoffModelPreview({
             direction: part.direction,
             area: part.area,
             assembly: component?.assembly ?? part.assembly,
-            componentId: component?.id,
+            componentId: component ? roomComponentStableId(room.id, component) : undefined,
             source: component?.source ?? part.source,
             geometryLabel: component?.geometryLabel ?? part.geometryLabel,
             adjacency: component?.adjacency,
@@ -8020,6 +8047,12 @@ function TakeoffModelPreview({
     });
   }
 
+  function removeSelectedWallSurface() {
+    if (!selectedSurfaceCanRemoveWall || !selectedSurface) return;
+    onRemoveSurfaceComponent(selectedSurface);
+    setSelectedSurface(null);
+  }
+
   return (
     <div className="takeoff-model-preview" ref={containerRef}>
       <div className="takeoff-model-caption">{cameraCaption}</div>
@@ -8241,6 +8274,11 @@ function TakeoffModelPreview({
             </>
           ) : (
             <span>Selectable for review.</span>
+          )}
+          {selectedSurfaceCanRemoveWall && (
+            <button type="button" className="danger-button" onClick={removeSelectedWallSurface}>
+              Remove Wall
+            </button>
           )}
         </div>
       )}
@@ -11480,6 +11518,41 @@ export function TakeoffApp() {
       }),
     }));
     setSelectedOpening((current) => (current?.roomId === roomId && current.componentId === componentId ? null : current));
+  }
+
+  function removeModelSurfaceComponent(selection: ModelSurfaceSelection) {
+    if (selection.surface !== "wall" || !selection.componentId) {
+      setMessage("That 3D surface is selectable, but it is not a saved wall component yet.");
+      return;
+    }
+    const targetFloorId = selection.floorId ?? activeFloorId;
+    let removedLabel = selection.label || "Wall segment";
+    pushUndoSnapshot("remove 3D wall");
+    setFloors((current) => current.map((entry) => {
+      if (entry.id !== targetFloorId) return entry;
+      return {
+        ...entry,
+        rooms: entry.rooms.map((room) => {
+          if (room.id !== selection.roomId || !selection.componentId) return room;
+          const components = roomComponents(room);
+          const removedComponent = components.find((component) => roomComponentMatchesId(room.id, component, selection.componentId!));
+          if (!removedComponent) return room;
+          removedLabel = removedComponent.label || removedLabel;
+          const disablesCompilerPreview = removedComponent.surface === "wall" && (
+            isEnvelopeCompilerGeneratedWall(removedComponent) ||
+            componentHasWallProfileGeometry(removedComponent)
+          );
+          return {
+            ...room,
+            components: components.filter((component) => !roomComponentMatchesId(room.id, component, selection.componentId!)),
+            envelopeCompilerPreviewDisabled: room.envelopeCompilerPreviewDisabled || disablesCompilerPreview || undefined,
+          };
+        }),
+      };
+    }));
+    setSelectedRoomId(selection.roomId);
+    setActiveFloorId(targetFloorId);
+    setMessage(`${removedLabel} removed from 3D QA.`);
   }
 
   function applySuggestedWallArea(
@@ -15133,6 +15206,7 @@ export function TakeoffApp() {
                 onActivateFloor={switchActiveFloor}
                 onUpdateFloorViewOptions={updateFloorViewOptions}
                 onAssignSurfaceComponent={assignModelSurfaceComponent}
+                onRemoveSurfaceComponent={removeModelSurfaceComponent}
                 onUpdateOpeningComponent={updateOpeningComponentFromModel}
               />
             ) : planReviewMode === "alignment" ? (

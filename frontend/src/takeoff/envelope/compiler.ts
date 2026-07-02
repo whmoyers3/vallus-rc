@@ -77,7 +77,7 @@ export type EnvelopeIssue = {
   severity: "error" | "warning";
   message: string;
   panelIds: string[];
-  kind: "missing-component" | "gap";
+  kind: "missing-component" | "gap" | "overlap";
 };
 
 export type EnvelopeCompilation = {
@@ -436,7 +436,62 @@ function buildEnvelopeIssues(project: TakeoffProject, panels: EnvelopePanel[], d
       message: `${panel.roomName} has an unclassified ${Math.round(panel.area)} sf envelope gap on the ${panel.direction ?? "unknown"} wall.`,
     });
   }
+  issues.push(...buildPersistedWallProfileOverlapIssues(project));
   return issues;
+}
+
+function buildPersistedWallProfileOverlapIssues(project: TakeoffProject): EnvelopeIssue[] {
+  const issues: EnvelopeIssue[] = [];
+  const overlapTolerance = 0.1;
+  for (const floor of project.floors) {
+    for (const room of floor.rooms) {
+      const groups = new Map<string, TakeoffRoomComponent[]>();
+      for (const component of roomComponents(room)) {
+        if (component.surface !== "wall" || !component.direction) continue;
+        if (!component.wallProfilePolygons?.some((polygon) => polygon.length >= 3 && polygonArea(polygon) > overlapTolerance)) continue;
+        const adjacency = component.adjacency ?? "outside";
+        const boundary = component.boundary ?? boundaryForAdjacency(adjacency);
+        const key = [component.direction, adjacency, boundary].join(":");
+        groups.set(key, [...(groups.get(key) ?? []), component]);
+      }
+      for (const [key, components] of groups) {
+        if (components.length < 2) continue;
+        let overlapArea = 0;
+        for (let firstIndex = 0; firstIndex < components.length; firstIndex += 1) {
+          for (let secondIndex = firstIndex + 1; secondIndex < components.length; secondIndex += 1) {
+            overlapArea += wallProfileOverlapArea(components[firstIndex], components[secondIndex]);
+          }
+        }
+        if (overlapArea <= overlapTolerance) continue;
+        const [direction, adjacency] = key.split(":");
+        issues.push({
+          id: stableEnvelopeId(["issue", "persisted-overlap", floor.id, room.id, key, round(overlapArea)]),
+          floorId: floor.id,
+          roomId: room.id,
+          severity: "warning",
+          kind: "overlap",
+          panelIds: [],
+          message: `${room.name || "Room"} has about ${Math.round(overlapArea)} sf of overlapping ${direction} ${wallAdjacencyLabel(adjacency as TakeoffWallAdjacency).toLowerCase()} wall-profile panels. Rebuild generated walls before assigning components.`,
+        });
+      }
+    }
+  }
+  return issues;
+}
+
+function wallProfileOverlapArea(first: TakeoffRoomComponent, second: TakeoffRoomComponent) {
+  let overlapArea = 0;
+  for (const firstPolygon of first.wallProfilePolygons ?? []) {
+    if (firstPolygon.length < 3) continue;
+    for (const secondPolygon of second.wallProfilePolygons ?? []) {
+      if (secondPolygon.length < 3) continue;
+      const clipped = intersection([pointsToClipPolygon(firstPolygon)], [pointsToClipPolygon(secondPolygon)]);
+      for (const { area } of simplePolygonsFromMultiPolygon(clipped)) {
+        overlapArea += area;
+      }
+    }
+  }
+  return overlapArea;
 }
 
 function draftComponentCoveredByRoomComponents(room: TakeoffRectRoom, draft: EnvelopeComponentDraft) {
@@ -446,7 +501,7 @@ function draftComponentCoveredByRoomComponents(room: TakeoffRectRoom, draft: Env
     .filter((component) => (component.adjacency ?? "outside") === draft.adjacency)
     .filter((component) => (component.boundary ?? boundaryForAdjacency(component.adjacency ?? "outside")) === draft.boundary)
     .reduce((sum, component) => sum + Math.max(0, component.area || 0), 0);
-  return Math.abs(matchingArea - draft.area) <= Math.max(1, draft.area * 0.08);
+  return matchingArea >= draft.area - Math.max(1, draft.area * 0.08);
 }
 
 function roomExteriorSegments(floor: TakeoffFloor, room: TakeoffRectRoom) {
