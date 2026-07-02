@@ -1749,13 +1749,6 @@ function componentHasWallProfileGeometry(component: TakeoffRoomComponent) {
   );
 }
 
-function roomUsesPersistedEnvelopeWallGeometry(room: TakeoffRectRoom) {
-  if (room.envelopeCompilerPreviewDisabled) return true;
-  return roomSurfaceComponents(room, "wall").some((component) =>
-    componentIsAcceptedEnvelopeCompilerWall(component)
-  );
-}
-
 function roomUsesGeneratedEnvelopeWallGeometry(room: TakeoffRectRoom) {
   if (room.envelopeCompilerPreviewDisabled) return true;
   return roomSurfaceComponents(room, "wall").some(isEnvelopeCompilerGeneratedWall);
@@ -6962,7 +6955,6 @@ function TakeoffModelPreview({
       passive = false,
     ) => {
       if (!visibleLayers.generatedPreview) return false;
-      if (roomUsesPersistedEnvelopeWallGeometry(sourceRoom)) return false;
       const panels = envelopePanelsForRoom(envelopeCompilation, targetFloor.id, sourceRoom.id)
         .filter((panel) => panel.surface === "wall" && panel.loadState !== "gap")
         .filter((panel) => panel.loadState !== "no-load" || visibleLayers.interiorWalls);
