@@ -80,8 +80,25 @@ export type EnvelopeIssue = {
   kind: "missing-component" | "gap" | "overlap";
 };
 
+export type EnvelopePanelEdgeStatus = "matched" | "legal-boundary" | "open";
+
+export type EnvelopePanelEdge = {
+  id: string;
+  panelId: string;
+  floorId: string;
+  roomId: string;
+  edgeIndex: number;
+  start: EnvelopeVec3;
+  end: EnvelopeVec3;
+  length: number;
+  status: EnvelopePanelEdgeStatus;
+  reason: string;
+  matePanelIds: string[];
+};
+
 export type EnvelopeCompilation = {
   panels: EnvelopePanel[];
+  edges: EnvelopePanelEdge[];
   issues: EnvelopeIssue[];
   componentDrafts: EnvelopeComponentDraft[];
 };
@@ -122,9 +139,10 @@ export function compileEnvelope(project: TakeoffProject): EnvelopeCompilation {
       panels.push(...compileRoomWallPanels(floor, room));
     }
   }
+  const edges = buildPanelEdges(panels);
   const componentDrafts = groupPanelsIntoDraftComponents(panels);
   const issues = buildEnvelopeIssues(project, panels, componentDrafts);
-  return { panels, issues, componentDrafts };
+  return { panels, edges, issues, componentDrafts };
 }
 
 export function envelopePanelsForRoom(compilation: EnvelopeCompilation, floorId: string, roomId: string) {
@@ -350,6 +368,78 @@ function roomWallTopPointsForSegment(room: TakeoffRectRoom, segment: Segment, de
     x: round(distanceAlongSegment(segment, point)),
     y: round(vaultedRoofHeightAtPoint(point, bounds, ceilingInfo)),
   }));
+}
+
+function buildPanelEdges(panels: EnvelopePanel[]): EnvelopePanelEdge[] {
+  const edgeEntries = panels.flatMap((panel) =>
+    panel.vertices3d.map((start, edgeIndex) => {
+      const end = panel.vertices3d[(edgeIndex + 1) % panel.vertices3d.length];
+      return {
+        panel,
+        edgeIndex,
+        start,
+        end,
+        profileStart: panel.polygon2d[edgeIndex],
+        profileEnd: panel.polygon2d[(edgeIndex + 1) % panel.polygon2d.length],
+        key: undirectedEdgeKey(start, end),
+      };
+    })
+  );
+  const byKey = new Map<string, typeof edgeEntries>();
+  for (const entry of edgeEntries) {
+    byKey.set(entry.key, [...(byKey.get(entry.key) ?? []), entry]);
+  }
+
+  return edgeEntries.map((entry) => {
+    const mates = (byKey.get(entry.key) ?? [])
+      .filter((candidate) => candidate.panel.id !== entry.panel.id)
+      .map((candidate) => candidate.panel.id);
+    const legalBoundary = legalPanelEdgeBoundary(entry.profileStart, entry.profileEnd);
+    const status: EnvelopePanelEdgeStatus = mates.length > 0
+      ? "matched"
+      : legalBoundary
+        ? "legal-boundary"
+        : "open";
+    const reason = mates.length > 0
+      ? "Mates to another generated panel edge."
+      : legalBoundary || "Open edge awaiting edge-continuity classification.";
+    return {
+      id: stableEnvelopeId(["edge", entry.panel.id, entry.edgeIndex]),
+      panelId: entry.panel.id,
+      floorId: entry.panel.floorId,
+      roomId: entry.panel.roomId,
+      edgeIndex: entry.edgeIndex,
+      start: entry.start,
+      end: entry.end,
+      length: round(distance3d(entry.start, entry.end)),
+      status,
+      reason,
+      matePanelIds: Array.from(new Set(mates)),
+    };
+  });
+}
+
+function legalPanelEdgeBoundary(start: TakeoffPoint | undefined, end: TakeoffPoint | undefined) {
+  if (!start || !end) return null;
+  const nearBottom = Math.abs(start.y) <= 0.05 && Math.abs(end.y) <= 0.05;
+  if (nearBottom) return "Terminates at the floor plate.";
+  const profileTopEdge = Math.abs(start.y - end.y) > 0.05 || (start.y > 0.05 && end.y > 0.05);
+  if (profileTopEdge) return "Terminates at the room ceiling or roof profile.";
+  return null;
+}
+
+function undirectedEdgeKey(start: EnvelopeVec3, end: EnvelopeVec3) {
+  const first = vecKey(start);
+  const second = vecKey(end);
+  return first < second ? `${first}|${second}` : `${second}|${first}`;
+}
+
+function vecKey(point: EnvelopeVec3) {
+  return `${round(point.x)}:${round(point.y)}:${round(point.z)}`;
+}
+
+function distance3d(a: EnvelopeVec3, b: EnvelopeVec3) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
 function groupPanelsIntoDraftComponents(panels: EnvelopePanel[]) {

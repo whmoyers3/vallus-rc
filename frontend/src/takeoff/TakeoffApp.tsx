@@ -68,6 +68,10 @@ const defaultDoorHeight = 6.67;
 const wallPanelVisualOverlapFt = 0.08;
 const appCommitSha = __APP_COMMIT_SHA__ || "local";
 const appCommitLabel = appCommitSha.length > 12 ? appCommitSha.slice(0, 12) : appCommitSha;
+const legacyWallSliceValidationEnabled = false;
+const legacyWallGapFillValidationEnabled = false;
+const legacyCeilingWallSuggestionEnabled = false;
+const legacyCeilingWallMeshRenderingEnabled = false;
 const componentCategories: TakeoffComponentCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
 const allComponentSurfaces: TakeoffRoomComponent["surface"][] = ["floor", "ceiling", "wall", "glass", "door"];
 const defaultComponentSchedule: TakeoffComponentDefinition[] = [
@@ -1347,6 +1351,7 @@ function recommendedWallTreatment(kinds: TakeoffAdjacentSpaceKind[], fallbackAss
 }
 
 function ceilingWallSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom, defaultCeilingHeight = 9): CeilingWallSuggestion[] {
+  if (!legacyCeilingWallSuggestionEnabled) return [];
   if (openToAboveLinkForRoom(room)) return [];
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
   const suggestions: CeilingWallSuggestion[] = [];
@@ -1683,6 +1688,12 @@ function componentIsGeneratedEnvelopeWall(component: TakeoffRoomComponent) {
   return componentIsGeneratedCeilingWall(component) || componentIsWallGapFill(component) || componentIsConditionedWallProfile(component) || component.source === "open-to-above-envelope" || component.source === "connected-volume";
 }
 
+function componentIsAcceptedEnvelopeCompilerWall(component: TakeoffRoomComponent) {
+  if (!isEnvelopeCompilerGeneratedWall(component)) return false;
+  const label = `${component.label ?? ""} ${component.geometryLabel ?? ""}`.toLowerCase();
+  return label.includes("envelope compiler");
+}
+
 function componentIsGeneratedCeilingProfileOutput(component: TakeoffRoomComponent) {
   if (component.surface !== "wall") return false;
   if (componentIsGeneratedCeilingWall(component) || componentIsWallGapFill(component) || componentIsConditionedWallProfile(component)) return true;
@@ -1741,7 +1752,7 @@ function componentHasWallProfileGeometry(component: TakeoffRoomComponent) {
 function roomUsesPersistedEnvelopeWallGeometry(room: TakeoffRectRoom) {
   if (room.envelopeCompilerPreviewDisabled) return true;
   return roomSurfaceComponents(room, "wall").some((component) =>
-    isEnvelopeCompilerGeneratedWall(component) || componentHasWallProfileGeometry(component)
+    componentIsAcceptedEnvelopeCompilerWall(component)
   );
 }
 
@@ -3961,6 +3972,7 @@ function wallProfileCandidatesForRoom(
 }
 
 function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandidate[] {
+  if (!legacyWallSliceValidationEnabled) return [];
   const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
   const candidates: TakeoffBoundaryCandidate[] = [];
   for (const room of floor.rooms) {
@@ -4227,6 +4239,7 @@ function wallProfileRemainderGapFillSuggestionsForRoom(floor: TakeoffFloor, room
 }
 
 function wallSegmentContinuityGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): WallGapFillSuggestion[] {
+  if (!legacyWallGapFillValidationEnabled) return [];
   const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
   const profileComponents = roomSurfaceComponents(room, "wall").filter(componentDefinesWallProfileCoverage);
   if (profileComponents.length === 0 || baseHeight <= 0.05) return [];
@@ -4347,6 +4360,7 @@ function conditionedWallProfileCandidatesForRoom(floor: TakeoffFloor, room: Take
 }
 
 function wallGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): WallGapFillSuggestion[] {
+  if (!legacyWallGapFillValidationEnabled) return [];
   if (roomUsesGeneratedEnvelopeWallGeometry(room)) return [];
   const boundaryGapFills = boundaryCandidatesForFloor(floor)
     .filter((candidate) => candidate.roomId === room.id)
@@ -6378,6 +6392,7 @@ function ceilingWallMeshPartsForRoom(
   kneeWallMaterial: THREE.Material,
   exteriorWallMaterial = kneeWallMaterial,
 ): ModelMeshPart[] {
+  if (!legacyCeilingWallMeshRenderingEnabled) return [];
   const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
   if (isVaultCeilingType(ceilingInfo.ceilingType)) return vaultedWallMeshPartsForRoom(floor, room, center, defaultCeilingHeight, kneeWallMaterial, exteriorWallMaterial);
   if (ceilingInfo.ceilingType === "tray") return trayWallMeshPartsForRoom(room, center, defaultCeilingHeight, kneeWallMaterial);
@@ -6400,6 +6415,7 @@ function wallSegmentForProfileComponent(floor: TakeoffFloor, room: TakeoffRectRo
 function componentRendersWallProfile(component: TakeoffRoomComponent) {
   if (component.surface !== "wall" || component.loadExempt || component.adjacency === "conditioned") return false;
   if (componentIsConditionedWallProfile(component)) return false;
+  if (!legacyWallGapFillValidationEnabled && !componentIsAcceptedEnvelopeCompilerWall(component) && componentIsGeneratedCeilingProfileOutput(component)) return false;
   return componentIsWallGapFill(component) || componentHasWallProfileGeometry(component);
 }
 
@@ -10954,7 +10970,7 @@ export function TakeoffApp() {
         return reconcileBaseWallAreasForProfileCoverage(current, approvedRoom);
       }),
     }));
-    setMessage("Ceiling geometry reviewed and approved. Suggested raised wall and gable components were added where applicable.");
+    setMessage("Ceiling geometry reviewed and approved. Generated envelope walls now come from the edge-continuity compiler.");
   }
 
   function addRoomComponent(roomId: string, surface: TakeoffRoomComponent["surface"]) {
