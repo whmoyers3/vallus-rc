@@ -1941,6 +1941,110 @@ button.toolbar-primary:hover {
   fill: #b3432f;
 }
 
+.takeoff-point-edit-status {
+  align-items: center;
+  background: #f0fff0;
+  border: 1px solid #39d34a;
+  border-radius: 999px;
+  color: #176c24;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 10px;
+}
+
+.takeoff-point-edit-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.takeoff-point-edit-dot {
+  fill: #d52626;
+  stroke: #ffffff;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-point-edit-handle--active .takeoff-point-edit-dot {
+  fill: #ff2b2b;
+  stroke: #39ff14;
+  stroke-width: 2.5;
+}
+
+.takeoff-point-edit-label {
+  fill: #15320f;
+  font-size: 11px;
+  font-weight: 800;
+  paint-order: stroke;
+  pointer-events: none;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 4px;
+}
+
+.takeoff-point-edit-active-ring {
+  fill: rgba(57, 255, 20, 0.16);
+  stroke: #39ff14;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-point-edit-snap-line {
+  stroke: rgba(57, 255, 20, 0.8);
+  stroke-dasharray: 4 4;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-point-edit-raw-dot {
+  fill: #d52626;
+  stroke: #ffffff;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-point-edit-snap-dot {
+  fill: rgba(57, 255, 20, 0.18);
+  stroke: #39ff14;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-point-edit-insert-dot {
+  fill: rgba(57, 255, 20, 0.24);
+  stroke: #39ff14;
+  stroke-width: 2.25;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-point-edit-insert-cross {
+  stroke: #15320f;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.takeoff-point-edit-drop-flash {
+  animation: takeoff-point-edit-drop-flash 0.85s ease-out forwards;
+  fill: rgba(57, 255, 20, 0.28);
+  stroke: #39ff14;
+  stroke-width: 2.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  vector-effect: non-scaling-stroke;
+}
+
+@keyframes takeoff-point-edit-drop-flash {
+  from {
+    opacity: 1;
+    transform: scale(0.65);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
 .takeoff-lower-grid {
   border-top: 1px solid #e8edf1;
   display: grid;

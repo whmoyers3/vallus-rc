@@ -90,7 +90,14 @@ const authoringModes: Array<{ id: TakeoffAuthoringMode; label: string }> = [
 type WorkflowStep = "crop" | "calibrate" | "trace";
 type RoomTileMetric = "floor" | "ceiling" | "wall" | "glass";
 type PlanReviewMode = "plan" | "alignment" | "floor" | "ceiling" | "walls" | "elevation";
-type MovablePointTarget = { type: "exterior"; index: number } | { type: "room"; roomId: string; index: number };
+type MovablePointTarget =
+  | { type: "exterior"; index: number }
+  | { type: "room"; roomId: string; index: number }
+  | { type: "adjacent"; spaceId: string; index: number };
+type MovableSegmentTarget =
+  | { type: "exterior"; segmentIndex: number; point: TakeoffPoint }
+  | { type: "room"; roomId: string; segmentIndex: number; point: TakeoffPoint }
+  | { type: "adjacent"; spaceId: string; segmentIndex: number; point: TakeoffPoint };
 type OpeningMoveTarget = { roomId: string; componentId: string };
 type DragState = {
   kind: "crop" | "room" | "subtract" | "adjacent" | "move-point" | "move-opening";
@@ -98,6 +105,7 @@ type DragState = {
   current: TakeoffPoint;
   target?: MovablePointTarget;
   openingTarget?: OpeningMoveTarget;
+  insertedPoint?: boolean;
 } | null;
 type CanvasPointerPosition = {
   svgX: number;
@@ -108,6 +116,10 @@ type PendingPlanFocus = {
   floorId: string;
   point: TakeoffPoint;
   zoom: number;
+};
+type PointEditDropIndicator = {
+  id: number;
+  point: TakeoffPoint;
 };
 type PrecisionLoupeState = CanvasPointerPosition & {
   shiftKey: boolean;
@@ -956,6 +968,20 @@ function roomComponentStableId(roomId: string, component: Pick<TakeoffRoomCompon
 
 function roomComponentMatchesId(roomId: string, component: TakeoffRoomComponent, componentId: string) {
   return component.id === componentId || roomComponentStableId(roomId, component) === componentId;
+}
+
+function movablePointTargetKey(target: MovablePointTarget | null | undefined) {
+  if (!target) return "";
+  if (target.type === "exterior") return `exterior:${target.index}`;
+  if (target.type === "room") return `room:${target.roomId}:${target.index}`;
+  return `adjacent:${target.spaceId}:${target.index}`;
+}
+
+function movablePointOwnerKey(target: MovablePointTarget | null | undefined) {
+  if (!target) return "";
+  if (target.type === "exterior") return "exterior";
+  if (target.type === "room") return `room:${target.roomId}`;
+  return `adjacent:${target.spaceId}`;
 }
 
 function componentWithStableId(roomId: string, component: TakeoffRoomComponent) {
@@ -8554,6 +8580,11 @@ export function TakeoffApp() {
   const [editingOpeningTarget, setEditingOpeningTarget] = useState<EditingOpeningTarget>(null);
   const [selectedOpening, setSelectedOpening] = useState<OpeningMoveTarget | null>(null);
   const [pendingPlanFocus, setPendingPlanFocus] = useState<PendingPlanFocus | null>(null);
+  const [pointEditMode, setPointEditMode] = useState(false);
+  const [hoveredPointTarget, setHoveredPointTarget] = useState<MovablePointTarget | null>(null);
+  const [selectedPointTarget, setSelectedPointTarget] = useState<MovablePointTarget | null>(null);
+  const [hoveredInsertTarget, setHoveredInsertTarget] = useState<MovableSegmentTarget | null>(null);
+  const [pointEditDropIndicator, setPointEditDropIndicator] = useState<PointEditDropIndicator | null>(null);
   const [precisionLoupe, setPrecisionLoupe] = useState<PrecisionLoupeState | null>(null);
   const [precisionLoupeZoom, setPrecisionLoupeZoom] = useState(defaultPrecisionLoupeZoom);
   const inlineRoomNameInputRef = useRef<HTMLInputElement | null>(null);
@@ -8598,8 +8629,50 @@ export function TakeoffApp() {
     setMessage("3D QA is available after an exterior footprint, floor area, room, or adjacent space exists.");
   }, [canOpen3DView, planReviewMode]);
 
+  function enablePointEditMode() {
+    if (roomPolygonDraft.length > 0) {
+      setMessage("Finish or clear the polygon draft before editing points.");
+      return;
+    }
+    setPlanReviewMode("plan");
+    setWorkflowStep("trace");
+    setTraceTool("select");
+    setRoomDrawMode(false);
+    setRoomPolygonMode(false);
+    setAdjacentDrawMode(false);
+    setSubtractMode(false);
+    setOpeningModeActive(false);
+    setOpeningPlacement(null);
+    setPendingOpeningTarget(null);
+    setEditingOpeningTarget(null);
+    setSelectedOpening(null);
+    setPointEditMode(true);
+    setHoveredPointTarget(null);
+    setSelectedPointTarget(null);
+    setHoveredInsertTarget(null);
+    setMessage("Point Edit on. Drag a red point to move it, or click a highlighted edge to add a point.");
+  }
+
+  function disablePointEditMode(showMessage = true) {
+    setPointEditMode(false);
+    setHoveredPointTarget(null);
+    setSelectedPointTarget(null);
+    setHoveredInsertTarget(null);
+    setPointEditDropIndicator(null);
+    if (showMessage) setMessage("Point Edit off.");
+  }
+
+  function togglePointEditMode() {
+    if (pointEditMode) disablePointEditMode();
+    else enablePointEditMode();
+  }
+
   function setFloor(update: React.SetStateAction<TakeoffFloor>) {
     pushUndoSnapshot("floor edit");
+    setFloorWithoutUndo(update);
+  }
+
+  function setFloorWithoutUndo(update: React.SetStateAction<TakeoffFloor>) {
     setFloors((currentFloors) => {
       const targetId = currentFloors.some((candidate) => candidate.id === activeFloorId)
         ? activeFloorId
@@ -8722,6 +8795,56 @@ export function TakeoffApp() {
       setPrecisionLoupe(null);
     }
   }, [planReviewMode]);
+
+  useEffect(() => {
+    function isEditableKeyboardTarget(target: EventTarget | null) {
+      return target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+    }
+    function handlePointEditKeys(event: KeyboardEvent) {
+      if (isEditableKeyboardTarget(event.target)) return;
+      if (event.code === "KeyQ" && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey && planReviewMode !== "elevation" && planReviewMode !== "alignment") {
+        event.preventDefault();
+        togglePointEditMode();
+        return;
+      }
+      if (event.key === "Escape" && pointEditMode) {
+        event.preventDefault();
+        disablePointEditMode();
+        return;
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && pointEditMode && selectedPointTarget) {
+        event.preventDefault();
+        removePointTarget(selectedPointTarget);
+      }
+    }
+    window.addEventListener("keydown", handlePointEditKeys);
+    return () => window.removeEventListener("keydown", handlePointEditKeys);
+  }, [planReviewMode, pointEditMode, selectedPointTarget]);
+
+  useEffect(() => {
+    if (!pointEditMode) return;
+    if (
+      planReviewMode !== "plan" ||
+      workflowStep !== "trace" ||
+      traceTool !== "select" ||
+      roomDrawMode ||
+      roomPolygonMode ||
+      adjacentDrawMode ||
+      subtractMode ||
+      openingModeActive
+    ) {
+      disablePointEditMode(false);
+    }
+  }, [adjacentDrawMode, openingModeActive, planReviewMode, pointEditMode, roomDrawMode, roomPolygonMode, subtractMode, traceTool, workflowStep]);
+
+  useEffect(() => {
+    if (!pointEditDropIndicator) return;
+    const timeout = window.setTimeout(() => setPointEditDropIndicator(null), 900);
+    return () => window.clearTimeout(timeout);
+  }, [pointEditDropIndicator]);
 
   const takeoffProject = useMemo<TakeoffProject>(
     () => makeTakeoffProject(projectName, location, dimensionInputMode, mechanicalVentilation, ventilationCfm, frontDoorFaces, floors, componentSchedule, connectedVolumes, validationDecisions),
@@ -9199,6 +9322,11 @@ export function TakeoffApp() {
     setEditingOpeningTarget(null);
     setSelectedOpening(null);
     setPendingPlanFocus(null);
+    setPointEditMode(false);
+    setHoveredPointTarget(null);
+    setSelectedPointTarget(null);
+    setHoveredInsertTarget(null);
+    setPointEditDropIndicator(null);
     setDragState(null);
     setAlignmentDrag(null);
     setWorkflowStep("trace");
@@ -11871,30 +11999,49 @@ export function TakeoffApp() {
     return point;
   }
 
-  function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean } = {}) {
+  function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean; excludeMovableTarget?: MovablePointTarget } = {}) {
     const localThreshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
     const floorAlignmentThreshold = Math.max(3, floor.scale.gridSnapInches / 12);
     let best = { point, distance: Number.POSITIVE_INFINITY };
-    const considerSegmentSet = (points: TakeoffPoint[], threshold: number) => {
+    const isExcludedVertex = (source: { type: "exterior" } | { type: "room"; id: string } | { type: "adjacent"; id: string } | null, index: number) => {
+      const excluded = options.excludeMovableTarget;
+      if (!excluded || !source) return false;
+      if (excluded.type === "exterior") return source.type === "exterior" && excluded.index === index;
+      if (excluded.type === "room") return source.type === "room" && source.id === excluded.roomId && excluded.index === index;
+      return source.type === "adjacent" && source.id === excluded.spaceId && excluded.index === index;
+    };
+    const segmentTouchesExcludedVertex = (source: { type: "exterior" } | { type: "room"; id: string } | { type: "adjacent"; id: string } | null, startIndex: number, pointCount: number) => (
+      isExcludedVertex(source, startIndex) || isExcludedVertex(source, (startIndex + 1) % pointCount)
+    );
+    const considerSegmentSet = (
+      points: TakeoffPoint[],
+      threshold: number,
+      source: { type: "exterior" } | { type: "room"; id: string } | { type: "adjacent"; id: string } | null = null,
+    ) => {
       if (points.length < 2) return;
       for (let index = 0; index < points.length; index += 1) {
         const start = points[index];
         const end = points[(index + 1) % points.length];
-        const startDistance = distance(point, start);
-        if (startDistance <= threshold && startDistance <= best.distance) best = { point: start, distance: startDistance };
-        const projected = closestPointOnSegment(point, start, end);
-        const projectedDistance = distance(point, projected);
-        if (projectedDistance <= threshold && projectedDistance <= best.distance) best = { point: projected, distance: projectedDistance };
+        if (!isExcludedVertex(source, index)) {
+          const startDistance = distance(point, start);
+          if (startDistance <= threshold && startDistance <= best.distance) best = { point: start, distance: startDistance };
+        }
+        if (!segmentTouchesExcludedVertex(source, index, points.length)) {
+          const projected = closestPointOnSegment(point, start, end);
+          const projectedDistance = distance(point, projected);
+          if (projectedDistance <= threshold && projectedDistance <= best.distance) best = { point: projected, distance: projectedDistance };
+        }
       }
     };
     const segmentSets = [
-      ...(options.excludeActiveExterior ? [] : [floor.exteriorPolygon]),
-      ...floor.rooms.map((room) => roomCorners(room)),
-      ...activeOpenToBelowReservations.map((reservation) => reservation.points),
-    ].filter((points) => points.length >= 2);
+      ...(options.excludeActiveExterior ? [] : [{ points: floor.exteriorPolygon, source: { type: "exterior" as const } }]),
+      ...floor.rooms.map((room) => ({ points: roomCorners(room), source: { type: "room" as const, id: room.id } })),
+      ...(floor.adjacentSpaces ?? []).map((space) => ({ points: adjacentSpaceCorners(space), source: { type: "adjacent" as const, id: space.id } })),
+      ...activeOpenToBelowReservations.map((reservation) => ({ points: reservation.points, source: null })),
+    ].filter((entry) => entry.points.length >= 2);
 
-    for (const points of segmentSets) {
-      considerSegmentSet(points, localThreshold);
+    for (const entry of segmentSets) {
+      considerSegmentSet(entry.points, localThreshold, entry.source);
     }
 
     if (options.includeFloorAlignment && floor.floorAlignmentSnapEnabled !== false) {
@@ -11945,36 +12092,166 @@ export function TakeoffApp() {
     return precise ? point : snapAdjacentSpacePoint(point);
   }
 
+  function pointEditTargetPriority(target: MovablePointTarget | null | undefined) {
+    if (!target) return -1;
+    const selectedTargetKey = movablePointTargetKey(selectedPointTarget);
+    if (selectedTargetKey && movablePointTargetKey(target) === selectedTargetKey) return 5;
+    if (target.type === "room" && target.roomId === selectedRoomId) return 4;
+    if (target.type === "adjacent" && target.spaceId === selectedRoomId) return 4;
+    if (target.type === "exterior" && !selectedRoomId) return 3;
+    if (target.type === "adjacent") return 2;
+    if (target.type === "room") return 1;
+    return 0;
+  }
+
   function findMovablePoint(point: TakeoffPoint) {
     const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
     let bestTarget: MovablePointTarget | null = null;
     let bestDistance = threshold;
-    for (let index = 0; index < floor.exteriorPolygon.length; index += 1) {
-      const candidate = floor.exteriorPolygon[index];
+    const considerTarget = (target: MovablePointTarget, candidate: TakeoffPoint) => {
       const candidateDistance = distance(point, candidate);
-      if (candidateDistance <= bestDistance) {
-        bestTarget = { type: "exterior", index };
+      if (candidateDistance > threshold) return;
+      const improvesDistance = candidateDistance < bestDistance - 0.001;
+      const tiesWithHigherPriority = Math.abs(candidateDistance - bestDistance) <= 0.001 &&
+        pointEditTargetPriority(target) >= pointEditTargetPriority(bestTarget);
+      if (improvesDistance || tiesWithHigherPriority) {
+        bestTarget = target;
         bestDistance = candidateDistance;
       }
+    };
+    for (let index = 0; index < floor.exteriorPolygon.length; index += 1) {
+      considerTarget({ type: "exterior", index }, floor.exteriorPolygon[index]);
     }
     for (const room of floor.rooms) {
-      if (!room.polygon) continue;
-      for (let index = 0; index < room.polygon.length; index += 1) {
-        const candidate = room.polygon[index];
-        const candidateDistance = distance(point, candidate);
-        if (candidateDistance <= bestDistance) {
-          bestTarget = { type: "room", roomId: room.id, index };
-          bestDistance = candidateDistance;
-        }
+      const points = roomCorners(room);
+      for (let index = 0; index < points.length; index += 1) {
+        considerTarget({ type: "room", roomId: room.id, index }, points[index]);
+      }
+    }
+    for (const space of floor.adjacentSpaces ?? []) {
+      const points = adjacentSpaceCorners(space);
+      for (let index = 0; index < points.length; index += 1) {
+        considerTarget({ type: "adjacent", spaceId: space.id, index }, points[index]);
       }
     }
     return bestTarget;
   }
 
-  function movePoint(target: MovablePointTarget | undefined, point: TakeoffPoint) {
+  function snapPointForMovableTarget(target: MovablePointTarget | undefined, point: TakeoffPoint) {
+    return snapToExistingGeometry(point, { includeFloorAlignment: target?.type === "exterior", excludeMovableTarget: target });
+  }
+
+  function findInsertablePointOnSegment(point: TakeoffPoint): MovableSegmentTarget | null {
+    const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
+    let bestTarget: MovableSegmentTarget | null = null;
+    let bestDistance = threshold;
+    const considerPointSet = (
+      points: TakeoffPoint[],
+      makeTarget: (segmentIndex: number, projected: TakeoffPoint) => MovableSegmentTarget,
+    ) => {
+      if (points.length < 2) return;
+      for (let index = 0; index < points.length; index += 1) {
+        const projected = closestPointOnSegment(point, points[index], points[(index + 1) % points.length]);
+        const projectedDistance = distance(point, projected);
+        if (projectedDistance <= bestDistance) {
+          bestTarget = makeTarget(index, { x: Number(projected.x.toFixed(3)), y: Number(projected.y.toFixed(3)) });
+          bestDistance = projectedDistance;
+        }
+      }
+    };
+
+    const selectedRoom = selectedRoomId ? floor.rooms.find((room) => room.id === selectedRoomId) : null;
+    if (selectedRoom) {
+      considerPointSet(roomCorners(selectedRoom), (segmentIndex, projected) => ({ type: "room", roomId: selectedRoom.id, segmentIndex, point: projected }));
+      return bestTarget;
+    }
+    const selectedSpace = selectedRoomId ? (floor.adjacentSpaces ?? []).find((space) => space.id === selectedRoomId) : null;
+    if (selectedSpace) {
+      considerPointSet(adjacentSpaceCorners(selectedSpace), (segmentIndex, projected) => ({ type: "adjacent", spaceId: selectedSpace.id, segmentIndex, point: projected }));
+      return bestTarget;
+    }
+    if (activeFloorViewOptions.exterior) {
+      considerPointSet(floor.exteriorPolygon, (segmentIndex, projected) => ({ type: "exterior", segmentIndex, point: projected }));
+    }
+    return bestTarget;
+  }
+
+  function insertPointOnSegment(target: MovableSegmentTarget, options: { recordUndo?: boolean } = {}) {
+    const insertIndex = target.segmentIndex + 1;
+    const point = { x: Number(target.point.x.toFixed(3)), y: Number(target.point.y.toFixed(3)) };
+    const applyFloorUpdate = options.recordUndo === false ? setFloorWithoutUndo : setFloor;
+    applyFloorUpdate((current) => {
+      if (target.type === "exterior") {
+        const exteriorPolygon = [
+          ...current.exteriorPolygon.slice(0, insertIndex),
+          point,
+          ...current.exteriorPolygon.slice(insertIndex),
+        ];
+        return { ...current, perimeterLocked: false, exteriorPolygon };
+      }
+      if (target.type === "room") {
+        return {
+          ...current,
+          rooms: current.rooms.map((room) => {
+            if (room.id !== target.roomId) return room;
+            const currentPoints = roomCorners(room);
+            const polygon = [
+              ...currentPoints.slice(0, insertIndex),
+              point,
+              ...currentPoints.slice(insertIndex),
+            ];
+            const bounds = polygonBounds(polygon);
+            return { ...room, ...bounds, polygon };
+          }),
+        };
+      }
+      return {
+        ...current,
+        adjacentSpaces: (current.adjacentSpaces ?? []).map((space) => {
+          if (space.id !== target.spaceId) return space;
+          const currentPoints = adjacentSpaceCorners(space);
+          const polygon = [
+            ...currentPoints.slice(0, insertIndex),
+            point,
+            ...currentPoints.slice(insertIndex),
+          ];
+          const bounds = polygonBounds(polygon);
+          return { ...space, ...bounds, polygon };
+        }),
+      };
+    });
+    if (target.type === "exterior") return { type: "exterior", index: insertIndex } as const;
+    if (target.type === "room") return { type: "room", roomId: target.roomId, index: insertIndex } as const;
+    return { type: "adjacent", spaceId: target.spaceId, index: insertIndex } as const;
+  }
+
+  function pointTargetLabel(target: MovablePointTarget | undefined) {
+    if (!target) return "Point";
+    if (target.type === "exterior") return `Exterior point ${target.index + 1}`;
+    if (target.type === "room") {
+      const room = floor.rooms.find((candidate) => candidate.id === target.roomId);
+      return `${room?.name || "Room"} point ${target.index + 1}`;
+    }
+    const space = (floor.adjacentSpaces ?? []).find((candidate) => candidate.id === target.spaceId);
+    return `${space?.name || "Adjacent space"} point ${target.index + 1}`;
+  }
+
+  function pointForMovableTarget(target: MovablePointTarget | null | undefined) {
+    if (!target) return null;
+    if (target.type === "exterior") return floor.exteriorPolygon[target.index] ?? null;
+    if (target.type === "room") {
+      const room = floor.rooms.find((candidate) => candidate.id === target.roomId);
+      return room ? roomCorners(room)[target.index] ?? null : null;
+    }
+    const space = (floor.adjacentSpaces ?? []).find((candidate) => candidate.id === target.spaceId);
+    return space ? adjacentSpaceCorners(space)[target.index] ?? null : null;
+  }
+
+  function movePoint(target: MovablePointTarget | undefined, point: TakeoffPoint, options: { recordUndo?: boolean } = {}) {
     if (!target) return;
-    const snapped = snapToExistingGeometry(point, { includeFloorAlignment: target.type === "exterior" });
-    setFloor((current) => {
+    const snapped = snapPointForMovableTarget(target, point);
+    const applyFloorUpdate = options.recordUndo === false ? setFloorWithoutUndo : setFloor;
+    applyFloorUpdate((current) => {
       if (target.type === "exterior") {
         return {
           ...current,
@@ -11982,16 +12259,82 @@ export function TakeoffApp() {
           exteriorPolygon: current.exteriorPolygon.map((existing, index) => (index === target.index ? snapped : existing)),
         };
       }
+      if (target.type === "room") {
+        return {
+          ...current,
+          rooms: current.rooms.map((room) => {
+            if (room.id !== target.roomId) return room;
+            const polygon = roomCorners(room).map((existing, index) => (index === target.index ? snapped : existing));
+            const bounds = polygonBounds(polygon);
+            return { ...room, ...bounds, polygon };
+          }),
+        };
+      }
       return {
         ...current,
-        rooms: current.rooms.map((room) => {
-          if (room.id !== target.roomId || !room.polygon) return room;
-          const polygon = room.polygon.map((existing, index) => (index === target.index ? snapped : existing));
+        adjacentSpaces: (current.adjacentSpaces ?? []).map((space) => {
+          if (space.id !== target.spaceId) return space;
+          const polygon = adjacentSpaceCorners(space).map((existing, index) => (index === target.index ? snapped : existing));
           const bounds = polygonBounds(polygon);
-          return { ...room, ...bounds, polygon };
+          return { ...space, ...bounds, polygon };
         }),
       };
     });
+  }
+
+  function removePointTarget(target: MovablePointTarget) {
+    const label = pointTargetLabel(target);
+    if (target.type === "exterior") {
+      if (floor.exteriorPolygon.length <= 3) {
+        setMessage("Exterior trace needs at least three points.");
+        return;
+      }
+      setFloor((current) => ({
+        ...current,
+        perimeterLocked: false,
+        exteriorPolygon: current.exteriorPolygon.filter((_, index) => index !== target.index),
+      }));
+      setSelectedPointTarget(null);
+      setMessage(`${label} removed.`);
+      return;
+    }
+    if (target.type === "room") {
+      const room = floor.rooms.find((candidate) => candidate.id === target.roomId);
+      const points = room ? roomCorners(room) : [];
+      if (!room || points.length <= 3) {
+        setMessage("Room polygons need at least three points.");
+        return;
+      }
+      setFloor((current) => ({
+        ...current,
+        rooms: current.rooms.map((candidate) => {
+          if (candidate.id !== target.roomId) return candidate;
+          const polygon = roomCorners(candidate).filter((_, index) => index !== target.index);
+          const bounds = polygonBounds(polygon);
+          return { ...candidate, ...bounds, polygon };
+        }),
+      }));
+      setSelectedPointTarget(null);
+      setMessage(`${label} removed.`);
+      return;
+    }
+    const space = (floor.adjacentSpaces ?? []).find((candidate) => candidate.id === target.spaceId);
+    const points = space ? adjacentSpaceCorners(space) : [];
+    if (!space || points.length <= 3) {
+      setMessage("Adjacent space polygons need at least three points.");
+      return;
+    }
+    setFloor((current) => ({
+      ...current,
+      adjacentSpaces: (current.adjacentSpaces ?? []).map((candidate) => {
+        if (candidate.id !== target.spaceId) return candidate;
+        const polygon = adjacentSpaceCorners(candidate).filter((_, index) => index !== target.index);
+        const bounds = polygonBounds(polygon);
+        return { ...candidate, ...bounds, polygon };
+      }),
+    }));
+    setSelectedPointTarget(null);
+    setMessage(`${label} removed.`);
   }
 
   function addCalibrationPoint(point: TakeoffPoint) {
@@ -12824,14 +13167,32 @@ export function TakeoffApp() {
     const pointer = syncPrecisionLoupeFromCanvasEvent(event);
     const point = pointer?.point ?? null;
     if (!point) return;
-    if (event.shiftKey && !adjacentDrawMode) {
+    if (pointEditMode) {
+      event.preventDefault();
+      setHoveredInsertTarget(null);
       const target = findMovablePoint(point);
       if (target) {
+        pushUndoSnapshot("point edit");
         event.currentTarget.setPointerCapture(event.pointerId);
+        setSelectedPointTarget(target);
         setDragState({ kind: "move-point", start: point, current: point, target });
-        setMessage("Move point started. Drag to the new location.");
+        setMessage(`${pointTargetLabel(target)} selected.`);
         return;
       }
+      const insertionTarget = findInsertablePointOnSegment(point);
+      if (insertionTarget) {
+        pushUndoSnapshot("point edit");
+        const insertedTarget = insertPointOnSegment(insertionTarget, { recordUndo: false });
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setSelectedPointTarget(insertedTarget);
+        setPointEditDropIndicator({ id: Date.now(), point: insertionTarget.point });
+        setDragState({ kind: "move-point", start: insertionTarget.point, current: insertionTarget.point, target: insertedTarget, insertedPoint: true });
+        setMessage(`${pointTargetLabel(insertedTarget)} added. Drag to adjust or release to keep it.`);
+        return;
+      }
+      setSelectedPointTarget(null);
+      setMessage("Point Edit is on. Select one of the red points.");
+      return;
     }
     if (workflowStep === "calibrate") {
       event.preventDefault();
@@ -12882,10 +13243,19 @@ export function TakeoffApp() {
   function handleCanvasPointerMove(event: React.PointerEvent<SVGSVGElement>) {
     const pointer = syncPrecisionLoupeFromCanvasEvent(event);
     const point = pointer?.point ?? null;
+    if (pointEditMode && point) {
+      if (dragState?.kind === "move-point") {
+        setHoveredInsertTarget(null);
+      } else {
+        const target = findMovablePoint(point);
+        setHoveredInsertTarget(target ? null : findInsertablePointOnSegment(point));
+      }
+    }
     if (!dragState) return;
     if (!point) return;
     if (dragState.kind === "move-point") {
-      movePoint(dragState.target, point);
+      setHoveredInsertTarget(null);
+      movePoint(dragState.target, point, { recordUndo: false });
     }
     if (dragState.kind === "move-opening") {
       moveOpening(dragState.openingTarget, point);
@@ -12908,7 +13278,11 @@ export function TakeoffApp() {
     setDragState(null);
     suppressNextCanvasClickRef.current = true;
     if (kind === "move-point") {
-      setMessage("Point moved.");
+      const rawPoint = releasePoint ?? dragState.current;
+      const snappedPoint = snapPointForMovableTarget(dragState.target, rawPoint);
+      movePoint(dragState.target, rawPoint, { recordUndo: false });
+      setPointEditDropIndicator({ id: Date.now(), point: snappedPoint });
+      setMessage(`${pointTargetLabel(dragState.target)} ${dragState.insertedPoint ? "added" : "moved"}${distance(rawPoint, snappedPoint) > 0.02 ? " and snapped" : ""}.`);
       return;
     }
     if (kind === "move-opening") {
@@ -12934,11 +13308,13 @@ export function TakeoffApp() {
 
   function handleCanvasPointerCancel() {
     setDragState(null);
+    setHoveredInsertTarget(null);
     clearCanvasPrecisionLoupe();
   }
 
   function handleCanvasPointerLeave() {
     if (dragState) return;
+    setHoveredInsertTarget(null);
     clearCanvasPrecisionLoupe();
   }
 
@@ -13632,6 +14008,13 @@ export function TakeoffApp() {
         body: "Review exterior exposure, wall components, windows, doors, and no-load boundaries created by conditioned adjacent space.",
       };
     }
+    if (pointEditMode) {
+      return {
+        tone: "active" as const,
+        title: "Point Edit",
+        body: "Drag a red point to move it. Hover an edge for the add-point marker. Q or Esc exits; Delete removes a selected point when the shape remains valid.",
+      };
+    }
     if (traceTool === "exterior" && !floor.perimeterLocked) {
       return {
         tone: "active" as const,
@@ -13693,6 +14076,28 @@ export function TakeoffApp() {
     precisionLoupeTargetPoint &&
     distance(precisionLoupe.point, precisionLoupeTargetPoint) > 0.02,
   );
+  const activeMovePointTarget = dragState?.kind === "move-point" ? dragState.target ?? null : null;
+  const activePointEditTarget = activeMovePointTarget ?? hoveredPointTarget ?? selectedPointTarget;
+  const activePointEditTargetKey = movablePointTargetKey(activePointEditTarget);
+  const activePointEditOwnerKey = movablePointOwnerKey(activePointEditTarget);
+  const activePointEditScreenPoint = pointEditMode ? (() => {
+    const point = pointForMovableTarget(activePointEditTarget);
+    return point ? screenPointForPlanPoint(point) : null;
+  })() : null;
+  const pointEditDragRawPoint = pointEditMode && dragState?.kind === "move-point" ? dragState.current : null;
+  const pointEditDragSnapPoint = pointEditDragRawPoint ? snapPointForMovableTarget(dragState?.kind === "move-point" ? dragState.target : undefined, pointEditDragRawPoint) : null;
+  const pointEditDragRawScreenPoint = pointEditDragRawPoint ? screenPointForPlanPoint(pointEditDragRawPoint) : null;
+  const pointEditDragSnapScreenPoint = pointEditDragSnapPoint ? screenPointForPlanPoint(pointEditDragSnapPoint) : null;
+  const pointEditDragHasSnapOffset = Boolean(pointEditDragRawPoint && pointEditDragSnapPoint && distance(pointEditDragRawPoint, pointEditDragSnapPoint) > 0.02);
+  const pointEditInsertPreviewScreenPoint = pointEditMode && !pointEditDragRawPoint && hoveredInsertTarget
+    ? screenPointForPlanPoint(hoveredInsertTarget.point)
+    : null;
+  const pointEditHandleRooms = pointEditMode
+    ? [...floor.rooms].sort((first, second) => Number(first.id === selectedRoomId) - Number(second.id === selectedRoomId))
+    : floor.rooms;
+  const pointEditHandleAdjacentSpaces = pointEditMode
+    ? [...(floor.adjacentSpaces ?? [])].sort((first, second) => Number(first.id === selectedRoomId) - Number(second.id === selectedRoomId))
+    : floor.adjacentSpaces ?? [];
 
   return (
     <main className="takeoff-root">
@@ -13722,6 +14127,7 @@ export function TakeoffApp() {
           <span className={`takeoff-save-status ${isDirty ? "takeoff-save-status--dirty" : ""}`}>
             {isDirty ? "Unsaved" : "Saved"}
           </span>
+          {pointEditMode && <span className="takeoff-point-edit-status">Point Edit: On</span>}
           <a
             className="button"
             href="#"
@@ -13960,6 +14366,9 @@ export function TakeoffApp() {
               <button type="button" onClick={recheckValidation}>Recheck</button>
               <button type="button" onClick={resetValidationDecisions} disabled={validationDecisionCount === 0}>Reset Dismissed</button>
               <button type="button" onClick={focusFirstTraceGeometryIssue}>Review Trace</button>
+              <button type="button" className={pointEditMode ? "toolbar-primary" : ""} onClick={togglePointEditMode}>
+                Edit Points
+              </button>
             </div>
             <p className="takeoff-note">
               Generated wall segments can be rebuilt after trace geometry is confirmed; ceiling settings remain unchanged.
@@ -14461,7 +14870,7 @@ export function TakeoffApp() {
               onPointerCancel={handleCanvasPointerCancel}
               onPointerLeave={handleCanvasPointerLeave}
               onClick={handleCanvasClick}
-              style={{ cursor: workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || adjacentDrawMode || openingModeActive || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
+              style={{ cursor: pointEditMode ? (dragState?.kind === "move-point" ? "grabbing" : hoveredInsertTarget ? "copy" : "default") : workflowStep === "crop" || workflowStep === "calibrate" || roomDrawMode || adjacentDrawMode || openingModeActive || (traceTool === "exterior" && !floor.perimeterLocked) ? "crosshair" : "default" }}
             >
               <defs>
                 <pattern id="takeoff-grid-small" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
@@ -14527,7 +14936,12 @@ export function TakeoffApp() {
                 return overlays;
               })}
               {activeFloorViewOptions.visible && activeFloorViewOptions.exterior && (floor.exteriorPolygon.length >= 3 ? (
-                <polygon points={exteriorPath} fill="rgba(31, 111, 178, 0.08)" stroke="#1f6fb2" strokeWidth="2.5" />
+                <polygon
+                  points={exteriorPath}
+                  fill="rgba(31, 111, 178, 0.08)"
+                  stroke={activePointEditOwnerKey === "exterior" ? "#39ff14" : "#1f6fb2"}
+                  strokeWidth={activePointEditOwnerKey === "exterior" ? "3.5" : "2.5"}
+                />
               ) : (
                 <rect x={offsetX} y={offsetY} width={floor.conditionedPerimeter.width * scale} height={floor.conditionedPerimeter.depth * scale} fill="rgba(31, 111, 178, 0.07)" stroke="#1f6fb2" strokeDasharray="6 5" strokeWidth="2" />
               ))}
@@ -14624,6 +15038,7 @@ export function TakeoffApp() {
                 const points = adjacentSpaceCorners(space);
                 const labelPoint = polygonLabelPoint(points);
                 const isSelected = selectedRoomId === space.id;
+                const isPointEditOwner = activePointEditOwnerKey === `adjacent:${space.id}`;
                 return (
                   <g
                     key={space.id}
@@ -14638,9 +15053,9 @@ export function TakeoffApp() {
                     <polygon
                       points={points.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ")}
                       fill={color.fill}
-                      stroke={isSelected ? "#0f5fa8" : color.stroke}
+                      stroke={isPointEditOwner ? "#39ff14" : isSelected ? "#0f5fa8" : color.stroke}
                       strokeDasharray="7 4"
-                      strokeWidth={isSelected ? "3" : "2"}
+                      strokeWidth={isPointEditOwner ? "3.5" : isSelected ? "3" : "2"}
                     />
                     <text
                       x={offsetX + labelPoint.x * scale}
@@ -14671,6 +15086,7 @@ export function TakeoffApp() {
                   ? { x: bounds.x + bounds.width, y: bounds.y + bounds.depth * ridgeRatio }
                   : { x: bounds.x + bounds.width * ridgeRatio, y: bounds.y + bounds.depth };
                 const planPoints = points.map((point) => `${offsetX + point.x * scale},${offsetY + point.y * scale}`).join(" ");
+                const isPointEditOwner = activePointEditOwnerKey === `room:${room.id}`;
                 return (
                 <g
                   key={room.id}
@@ -14681,6 +15097,7 @@ export function TakeoffApp() {
                     setSelectedRoomId(room.id);
                   }}
                   onDoubleClick={(event) => {
+                    if (pointEditMode) return;
                     if (!roomRenameShortcutEnabled) return;
                     event.preventDefault();
                     event.stopPropagation();
@@ -14692,8 +15109,8 @@ export function TakeoffApp() {
                     points={planPoints}
                     fill={color}
                     fillOpacity={reviewActive ? "0.5" : "0.75"}
-                    stroke={selectedRoomId === room.id ? "#0f5fa8" : "#324457"}
-                    strokeWidth={selectedRoomId === room.id ? "3" : "1.5"}
+                    stroke={isPointEditOwner ? "#39ff14" : selectedRoomId === room.id ? "#0f5fa8" : "#324457"}
+                    strokeWidth={isPointEditOwner ? "3.5" : selectedRoomId === room.id ? "3" : "1.5"}
                   />
                   {planReviewMode === "ceiling" && (
                     <g pointerEvents="none">
@@ -14781,7 +15198,7 @@ export function TakeoffApp() {
                       pointerEvents="none"
                     />
                   ))}
-                  {!polygonDraftActive && room.polygon?.map((point, pointIndex) => (
+                  {!polygonDraftActive && !pointEditMode && room.polygon?.map((point, pointIndex) => (
                     <circle key={`${room.id}-point-${pointIndex}`} cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="3.5" fill="#324457" stroke="#ffffff" strokeWidth="1.2" />
                   ))}
                   {editingRoomId === room.id ? (
@@ -14819,11 +15236,13 @@ export function TakeoffApp() {
                       fill="#1f2933"
                       textAnchor="middle"
                       onClick={(event) => {
+                        if (pointEditMode) return;
                         if (openingModeActive) return;
                         event.stopPropagation();
                         startInlineRoomRename(room.id);
                       }}
                       onDoubleClick={(event) => {
+                        if (pointEditMode) return;
                         if (!roomRenameShortcutEnabled) return;
                         event.preventDefault();
                         event.stopPropagation();
@@ -14846,6 +15265,7 @@ export function TakeoffApp() {
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
+                        if (pointEditMode) return;
                         if (openingDragMovedRef.current) {
                           openingDragMovedRef.current = false;
                           return;
@@ -14854,6 +15274,7 @@ export function TakeoffApp() {
                         openOpeningEditor(room, component);
                       }}
                       onPointerDown={(event) => {
+                        if (pointEditMode) return;
                         if (openingModeActive) return;
                         event.preventDefault();
                         event.stopPropagation();
@@ -14863,7 +15284,7 @@ export function TakeoffApp() {
                         setSelectedOpening(target);
                         setDragState({ kind: "move-opening", start: placement, current: placement, openingTarget: target });
                       }}
-                      style={{ cursor: openingModeActive ? "crosshair" : "grab" }}
+                      style={{ cursor: pointEditMode ? "default" : openingModeActive ? "crosshair" : "grab" }}
                     >
                       <rect
                         x={offsetX + (component.placement?.x ?? 0) * scale - 8}
@@ -14891,6 +15312,140 @@ export function TakeoffApp() {
                 </g>
                 );
               })}
+              {pointEditMode && !polygonDraftActive && (
+                <g className="takeoff-point-edit-handles">
+                  {activeFloorViewOptions.visible && activeFloorViewOptions.exterior && floor.exteriorPolygon.map((point, index) => {
+                    const target: MovablePointTarget = { type: "exterior", index };
+                    const targetKey = movablePointTargetKey(target);
+                    const isActive = targetKey === activePointEditTargetKey;
+                    const label = pointTargetLabel(target);
+                    return (
+                      <g
+                        key={targetKey}
+                        className={`takeoff-point-edit-handle${isActive ? " takeoff-point-edit-handle--active" : ""}`}
+                        onPointerEnter={() => setHoveredPointTarget(target)}
+                        onPointerLeave={() => setHoveredPointTarget((current) => movablePointTargetKey(current) === targetKey ? null : current)}
+                        style={{ cursor: dragState?.kind === "move-point" ? "grabbing" : "grab" }}
+                      >
+                        <title>{label}</title>
+                        <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="11" className="takeoff-point-edit-hit" />
+                        <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r={isActive ? "5.5" : "4.5"} className="takeoff-point-edit-dot" />
+                        {isActive && (
+                          <text x={offsetX + point.x * scale + 10} y={offsetY + point.y * scale - 10} className="takeoff-point-edit-label">
+                            {label}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
+                  {activeFloorViewOptions.visible && activeFloorViewOptions.rooms && pointEditHandleRooms.flatMap((room) => roomCorners(room).map((point, index) => {
+                    const target: MovablePointTarget = { type: "room", roomId: room.id, index };
+                    const targetKey = movablePointTargetKey(target);
+                    const isActive = targetKey === activePointEditTargetKey;
+                    const label = pointTargetLabel(target);
+                    return (
+                      <g
+                        key={targetKey}
+                        className={`takeoff-point-edit-handle${isActive ? " takeoff-point-edit-handle--active" : ""}`}
+                        onPointerEnter={() => setHoveredPointTarget(target)}
+                        onPointerLeave={() => setHoveredPointTarget((current) => movablePointTargetKey(current) === targetKey ? null : current)}
+                        style={{ cursor: dragState?.kind === "move-point" ? "grabbing" : "grab" }}
+                      >
+                        <title>{label}</title>
+                        <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="11" className="takeoff-point-edit-hit" />
+                        <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r={isActive ? "5.5" : "4.5"} className="takeoff-point-edit-dot" />
+                        {isActive && (
+                          <text x={offsetX + point.x * scale + 10} y={offsetY + point.y * scale - 10} className="takeoff-point-edit-label">
+                            {label}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  }))}
+                  {activeFloorViewOptions.visible && activeFloorViewOptions.rooms && pointEditHandleAdjacentSpaces.flatMap((space) => adjacentSpaceCorners(space).map((point, index) => {
+                    const target: MovablePointTarget = { type: "adjacent", spaceId: space.id, index };
+                    const targetKey = movablePointTargetKey(target);
+                    const isActive = targetKey === activePointEditTargetKey;
+                    const label = pointTargetLabel(target);
+                    return (
+                      <g
+                        key={targetKey}
+                        className={`takeoff-point-edit-handle${isActive ? " takeoff-point-edit-handle--active" : ""}`}
+                        onPointerEnter={() => setHoveredPointTarget(target)}
+                        onPointerLeave={() => setHoveredPointTarget((current) => movablePointTargetKey(current) === targetKey ? null : current)}
+                        style={{ cursor: dragState?.kind === "move-point" ? "grabbing" : "grab" }}
+                      >
+                        <title>{label}</title>
+                        <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r="11" className="takeoff-point-edit-hit" />
+                        <circle cx={offsetX + point.x * scale} cy={offsetY + point.y * scale} r={isActive ? "5.5" : "4.5"} className="takeoff-point-edit-dot" />
+                        {isActive && (
+                          <text x={offsetX + point.x * scale + 10} y={offsetY + point.y * scale - 10} className="takeoff-point-edit-label">
+                            {label}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  }))}
+                </g>
+              )}
+              {pointEditMode && activePointEditTarget && activePointEditScreenPoint && (
+                <g className="takeoff-point-edit-active-overlay" pointerEvents="none">
+                  <circle cx={activePointEditScreenPoint.x} cy={activePointEditScreenPoint.y} r="8" className="takeoff-point-edit-active-ring" />
+                  <circle cx={activePointEditScreenPoint.x} cy={activePointEditScreenPoint.y} r="4.8" className="takeoff-point-edit-dot" />
+                  <text x={activePointEditScreenPoint.x + 10} y={activePointEditScreenPoint.y - 10} className="takeoff-point-edit-label">
+                    {pointTargetLabel(activePointEditTarget)}
+                  </text>
+                </g>
+              )}
+              {pointEditMode && pointEditDragRawScreenPoint && pointEditDragSnapScreenPoint && (
+                <g className="takeoff-point-edit-preview" pointerEvents="none">
+                  {pointEditDragHasSnapOffset && (
+                    <line
+                      x1={pointEditDragRawScreenPoint.x}
+                      y1={pointEditDragRawScreenPoint.y}
+                      x2={pointEditDragSnapScreenPoint.x}
+                      y2={pointEditDragSnapScreenPoint.y}
+                      className="takeoff-point-edit-snap-line"
+                    />
+                  )}
+                  <circle cx={pointEditDragRawScreenPoint.x} cy={pointEditDragRawScreenPoint.y} r="3.5" className="takeoff-point-edit-raw-dot" />
+                  <circle cx={pointEditDragSnapScreenPoint.x} cy={pointEditDragSnapScreenPoint.y} r={pointEditDragHasSnapOffset ? "7" : "5"} className="takeoff-point-edit-snap-dot" />
+                </g>
+              )}
+              {pointEditInsertPreviewScreenPoint && (
+                <g className="takeoff-point-edit-insert-preview" pointerEvents="none">
+                  <circle
+                    cx={pointEditInsertPreviewScreenPoint.x}
+                    cy={pointEditInsertPreviewScreenPoint.y}
+                    r="7"
+                    className="takeoff-point-edit-insert-dot"
+                  />
+                  <line
+                    x1={pointEditInsertPreviewScreenPoint.x - 5}
+                    y1={pointEditInsertPreviewScreenPoint.y}
+                    x2={pointEditInsertPreviewScreenPoint.x + 5}
+                    y2={pointEditInsertPreviewScreenPoint.y}
+                    className="takeoff-point-edit-insert-cross"
+                  />
+                  <line
+                    x1={pointEditInsertPreviewScreenPoint.x}
+                    y1={pointEditInsertPreviewScreenPoint.y - 5}
+                    x2={pointEditInsertPreviewScreenPoint.x}
+                    y2={pointEditInsertPreviewScreenPoint.y + 5}
+                    className="takeoff-point-edit-insert-cross"
+                  />
+                </g>
+              )}
+              {pointEditDropIndicator && (
+                <circle
+                  key={pointEditDropIndicator.id}
+                  cx={offsetX + pointEditDropIndicator.point.x * scale}
+                  cy={offsetY + pointEditDropIndicator.point.y * scale}
+                  r="7"
+                  className="takeoff-point-edit-drop-flash"
+                  pointerEvents="none"
+                />
+              )}
               {roomPolygonDraft.length > 0 && (
                 <g>
                   <polyline
