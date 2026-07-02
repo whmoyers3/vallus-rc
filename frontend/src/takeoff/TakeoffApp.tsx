@@ -70,8 +70,6 @@ const appCommitSha = __APP_COMMIT_SHA__ || "local";
 const appCommitLabel = appCommitSha.length > 12 ? appCommitSha.slice(0, 12) : appCommitSha;
 const legacyWallSliceValidationEnabled = false;
 const legacyWallGapFillValidationEnabled = false;
-const legacyCeilingWallSuggestionEnabled = false;
-const legacyCeilingWallMeshRenderingEnabled = false;
 const componentCategories: TakeoffComponentCategory[] = ["Wall", "Door", "Ceiling", "Floor", "Glass"];
 const allComponentSurfaces: TakeoffRoomComponent["surface"][] = ["floor", "ceiling", "wall", "glass", "door"];
 const defaultComponentSchedule: TakeoffComponentDefinition[] = [
@@ -1300,20 +1298,6 @@ function ceilingGeometryInfo(room: TakeoffRectRoom, defaultCeilingHeight = 9) {
   };
 }
 
-type CeilingWallSuggestion = {
-  key: string;
-  direction?: TakeoffRoomComponent["direction"];
-  area: number;
-  label: string;
-  description: string;
-  geometryLabel: string;
-  basis: "raised-wall" | "gable-end" | "tray-step";
-  source: Extract<TakeoffRoomComponentSource, "raised-ceiling" | "vault-gable" | "tray-knee-wall">;
-  adjacency: TakeoffWallAdjacency;
-  length?: number;
-  addedHeight?: number;
-};
-
 function defaultWallAssemblyForAdjacency(adjacency: TakeoffWallAdjacency) {
   if (adjacency === "attic") return "W3";
   if (adjacency === "crawlspace" || adjacency === "conditioned") return "W2";
@@ -1348,104 +1332,6 @@ function recommendedWallTreatment(kinds: TakeoffAdjacentSpaceKind[], fallbackAss
     assembly,
     label: wallAdjacencyLabel(adjacency),
   };
-}
-
-function ceilingWallSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom, defaultCeilingHeight = 9): CeilingWallSuggestion[] {
-  if (!legacyCeilingWallSuggestionEnabled) return [];
-  if (openToAboveLinkForRoom(room)) return [];
-  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
-  const suggestions: CeilingWallSuggestion[] = [];
-  const exteriorDirections = roomExteriorDirections(floor, room);
-  const addedLowHeight = isVaultCeilingType(ceilingInfo.ceilingType)
-    ? Math.max(0, ceilingInfo.lowHeight - defaultCeilingHeight)
-    : Math.max(0, room.ceilingHeight - defaultCeilingHeight);
-  if (ceilingInfo.ceilingType !== "none" && addedLowHeight > 0.25) {
-    for (const edge of pointsToEdges(roomCorners(room))) {
-      if (edgeSharesSameHeightRoom(floor, room, edge, addedLowHeight)) continue;
-      const length = distance(edge.a, edge.b);
-      const direction = edgeDirectionFromRoom(edge, room);
-      if (edgeSharesConditionedRoom(floor, room, edge)) continue;
-      const area = Math.round(length * addedLowHeight * 10) / 10;
-      if (area <= 0.5) continue;
-      suggestions.push({
-        key: `ceiling-raised-${direction}-${Math.round(edge.a.x * 10)}-${Math.round(edge.a.y * 10)}`,
-        direction,
-        area,
-        label: `Raised ceiling wall - ${direction}`,
-        description: `${direction}-facing raised wall band`,
-        geometryLabel: `Raised wall band - ${direction}`,
-        basis: "raised-wall",
-        source: "raised-ceiling",
-        adjacency: exteriorDirections.includes(direction) ? "outside" : "attic",
-        length,
-        addedHeight: addedLowHeight,
-      });
-    }
-  }
-  if (ceilingInfo.ceilingType === "tray" && ceilingInfo.trayArea > 0.5) {
-    suggestions.push({
-      key: `ceiling-tray-${ceilingInfo.trayShape}-${Math.round(ceilingInfo.trayOffset * 10)}-${ceilingInfo.traySteps}`,
-      area: Math.round(ceilingInfo.trayArea * 10) / 10,
-      label: "Tray ceiling knee wall",
-      description: `${ceilingInfo.traySteps} step${ceilingInfo.traySteps === 1 ? "" : "s"} · ${trayModeLabel(ceilingInfo.trayMode)} · ${ceilingInfo.trayOffset} ft ${ceilingInfo.trayShape === "clipped" ? "clipped-corner" : "rectangular"} tray offset`,
-      geometryLabel: "Tray ceiling knee wall",
-      basis: "tray-step",
-      source: "tray-knee-wall",
-      adjacency: "attic",
-      length: Math.round((ceilingInfo.trayArea / trayStepHeight()) * 10) / 10,
-      addedHeight: trayStepHeight(),
-    });
-  }
-  if (!isVaultCeilingType(ceilingInfo.ceilingType) || ceilingInfo.gableArea <= 0) return suggestions;
-  const directions: Array<NonNullable<TakeoffRoomComponent["direction"]>> = [...vaultGableDirections(ceilingInfo)];
-  const area = Math.round((ceilingInfo.gableArea / 2) * 10) / 10;
-  suggestions.push(...directions.flatMap((direction, index) => {
-    const geometryLabel = `Gable ${index === 0 ? "A" : "B"}`;
-    const breakdown = gableEndLengthBreakdown(floor, room, direction);
-    const hasMatchingConditionedVault = gableEndSharesMatchingConditionedRoom(floor, room, direction, defaultCeilingHeight);
-    const conditionedLength = Math.min(
-      breakdown.totalLength,
-      hasMatchingConditionedVault
-        ? Math.max(breakdown.conditionedLength, Math.max(0, breakdown.totalLength - breakdown.exteriorLength))
-        : breakdown.conditionedLength,
-    );
-    const exteriorLength = Math.min(Math.max(0, breakdown.totalLength - conditionedLength), breakdown.exteriorLength);
-    const atticLength = Math.max(0, breakdown.totalLength - exteriorLength - conditionedLength);
-    const rows = [
-      { key: "outside", adjacency: "outside" as const, length: exteriorLength },
-      { key: "attic", adjacency: "attic" as const, length: atticLength },
-    ].filter((row) => row.length > 0.25 && breakdown.totalLength > 0.001);
-    const split = rows.length > 1;
-    return rows.map((row) => {
-      const rowArea = Math.round(area * Math.min(1, row.length / breakdown.totalLength) * 10) / 10;
-      const label = split
-        ? `${geometryLabel} - ${wallAdjacencyLabel(row.adjacency).replace(/ wall$/i, "")}`
-        : geometryLabel;
-      return {
-        key: `ceiling-gable-${direction}-${row.key}`,
-        direction,
-        area: rowArea,
-        label,
-        description: `${geometryLabel} · ${direction}-side gable end`,
-        geometryLabel,
-        basis: "gable-end" as const,
-        source: "vault-gable" as const,
-        adjacency: row.adjacency,
-        length: Math.round(row.length * 10) / 10,
-        addedHeight: Math.round(ceilingInfo.peakDelta * 10) / 10,
-      };
-    });
-  }));
-  return suggestions;
-}
-
-function ceilingWallSuggestionApplied(room: TakeoffRectRoom, suggestion: CeilingWallSuggestion) {
-  return roomSurfaceComponents(room, "wall").some((component) =>
-    component.label === suggestion.label &&
-    component.direction === suggestion.direction &&
-    (component.adjacency ?? suggestion.adjacency) === suggestion.adjacency &&
-    Math.abs((component.area || 0) - Math.round(suggestion.area)) <= 0.5
-  );
 }
 
 function defaultCeilingLoadComponentsForRoom(room: TakeoffRectRoom): TakeoffRoomComponent[] {
@@ -1954,16 +1840,9 @@ function reconcileBaseWallAreasForProfileCoverage(floor: TakeoffFloor, room: Tak
 }
 
 function staleGeneratedCeilingWallComponents(floor: TakeoffFloor, room: TakeoffRectRoom) {
-  const currentSuggestions = ceilingWallSuggestionsForRoom(floor, room, floor.defaultCeilingHeight ?? 9);
   return roomSurfaceComponents(room, "wall").filter((component) => {
     if (!componentIsGeneratedCeilingWall(component)) return false;
-    if (currentSuggestions.length === 0) return true;
-    return !currentSuggestions.some((suggestion) =>
-      suggestion.source === component.source &&
-      suggestion.label === component.label &&
-      suggestion.direction === component.direction &&
-      Math.abs(Math.round(suggestion.area) - (component.area || 0)) <= 0.5
-    );
+    return true;
   });
 }
 
@@ -3082,133 +2961,6 @@ function exteriorEdgeDirection(
   return compassFromVector(midpoint.x - fallbackCenter.x, midpoint.y - fallbackCenter.y);
 }
 
-function edgeSharesSameHeightRoom(floor: TakeoffFloor, room: TakeoffRectRoom, edge: { a: TakeoffPoint; b: TakeoffPoint }, addedHeight: number) {
-  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
-  return floor.rooms.some((other) => {
-    if (other.id === room.id) return false;
-    const otherHeight = (isVaultCeilingType(other.ceilingType) ? other.ceilingLowHeight ?? other.ceilingHeight : other.ceilingHeight);
-    if (Math.abs(otherHeight - (isVaultCeilingType(room.ceilingType) ? room.ceilingLowHeight ?? room.ceilingHeight : room.ceilingHeight)) > 0.25) return false;
-    return pointsToEdges(roomCorners(other)).some((otherEdge) =>
-      sharedSegmentLength(edge, otherEdge, tolerance) >= Math.max(0.5, Math.min(distance(edge.a, edge.b), 4) * 0.5)
-    );
-  }) && addedHeight > 0;
-}
-
-function edgeSharesConditionedRoom(
-  floor: TakeoffFloor,
-  room: TakeoffRectRoom,
-  edge: { a: TakeoffPoint; b: TakeoffPoint },
-  minSharedLength = 0.25,
-) {
-  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
-  const sharesRoom = floor.rooms.some((other) => {
-    if (other.id === room.id) return false;
-    return pointsToEdges(roomCorners(other)).some((otherEdge) =>
-      sharedSegmentLength(edge, otherEdge, tolerance) >= minSharedLength
-    );
-  });
-  if (sharesRoom) return true;
-  return (floor.adjacentSpaces ?? [])
-    .filter(adjacentSpaceIsConditionedProfile)
-    .some((space) => adjacentSpaceContactLength(space, edge, tolerance) >= minSharedLength);
-}
-
-function edgeSharesExteriorSegment(
-  floor: TakeoffFloor,
-  room: TakeoffRectRoom,
-  edge: { a: TakeoffPoint; b: TakeoffPoint },
-  minSharedLength = 0.25,
-) {
-  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
-  return roomExteriorSegments(floor, room).some((segment) =>
-    sharedSegmentLength(edge, segment, tolerance) >= minSharedLength
-  );
-}
-
-function roomsHaveMatchingVaultGeometry(first: TakeoffRectRoom, second: TakeoffRectRoom, defaultCeilingHeight = 9) {
-  const firstInfo = ceilingGeometryInfo(first, defaultCeilingHeight);
-  const secondInfo = ceilingGeometryInfo(second, defaultCeilingHeight);
-  if (!isVaultCeilingType(firstInfo.ceilingType) || !isVaultCeilingType(secondInfo.ceilingType)) return false;
-  return (
-    firstInfo.ceilingType === secondInfo.ceilingType &&
-    firstInfo.ridgeDirection === secondInfo.ridgeDirection &&
-    Math.abs(firstInfo.lowHeight - secondInfo.lowHeight) <= 0.25 &&
-    Math.abs(firstInfo.peakHeight - secondInfo.peakHeight) <= 0.25 &&
-    Math.abs(firstInfo.ridgeOffset - secondInfo.ridgeOffset) <= 0.05 &&
-    Math.abs(firstInfo.flatPeakWidth - secondInfo.flatPeakWidth) <= 0.25
-  );
-}
-
-function vaultGableDirections(ceilingInfo: ReturnType<typeof ceilingGeometryInfo>): Array<NonNullable<TakeoffRoomComponent["direction"]>> {
-  return ceilingInfo.ridgeDirection === "N-S"
-    ? ["N", "S"]
-    : ["E", "W"];
-}
-
-function gableEndLengthBreakdown(
-  floor: TakeoffFloor,
-  room: TakeoffRectRoom,
-  direction: NonNullable<TakeoffRoomComponent["direction"]>,
-) {
-  const roomEdges = pointsToEdges(roomCorners(room))
-    .filter((edge) => edgeDirectionFromRoom(edge, room) === direction);
-  const totalLength = roomEdges.reduce((sum, edge) => sum + distance(edge.a, edge.b), 0);
-  if (totalLength <= 0.001) return { totalLength: 0, exteriorLength: 0, conditionedLength: 0, atticLength: 0 };
-  const exteriorLength = roomExteriorSegments(floor, room)
-    .filter((segment) => segment.direction === direction)
-    .reduce((sum, segment) => sum + segment.length, 0);
-  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
-  let conditionedLength = 0;
-  for (const edge of roomEdges) {
-    for (const other of floor.rooms) {
-      if (other.id === room.id) continue;
-      for (const otherEdge of pointsToEdges(roomCorners(other))) {
-        conditionedLength += sharedSegmentLength(edge, otherEdge, tolerance);
-      }
-    }
-  }
-  for (const edge of roomEdges) {
-    for (const space of floor.adjacentSpaces ?? []) {
-      if (!adjacentSpaceIsConditionedProfile(space)) continue;
-      conditionedLength += adjacentSpaceContactLength(space, edge, tolerance);
-    }
-  }
-  const cappedConditionedLength = Math.min(totalLength, conditionedLength);
-  const cappedExteriorLength = Math.min(Math.max(0, totalLength - cappedConditionedLength), exteriorLength);
-  return {
-    totalLength,
-    exteriorLength: cappedExteriorLength,
-    conditionedLength: cappedConditionedLength,
-    atticLength: Math.max(0, totalLength - cappedExteriorLength - cappedConditionedLength),
-  };
-}
-
-function gableEndSharesMatchingConditionedRoom(
-  floor: TakeoffFloor,
-  room: TakeoffRectRoom,
-  direction: NonNullable<TakeoffRoomComponent["direction"]>,
-  defaultCeilingHeight = 9,
-) {
-  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
-  const roomEdges = pointsToEdges(roomCorners(room))
-    .filter((edge) => edgeDirectionFromRoom(edge, room) === direction);
-  if (roomEdges.length === 0) return false;
-
-  return floor.rooms.some((other) => {
-    if (other.id === room.id || !roomsHaveMatchingVaultGeometry(room, other, defaultCeilingHeight)) return false;
-    const otherInfo = ceilingGeometryInfo(other, defaultCeilingHeight);
-    const otherGableDirections = vaultGableDirections(otherInfo);
-    return roomEdges.some((edge) =>
-      pointsToEdges(roomCorners(other)).some((otherEdge) => {
-        const otherDirection = edgeDirectionFromRoom(otherEdge, other);
-        if (!otherGableDirections.includes(otherDirection as typeof otherGableDirections[number])) return false;
-        const sharedLength = sharedSegmentLength(edge, otherEdge, tolerance);
-        return sharedLength >= Math.max(0.5, Math.min(distance(edge.a, edge.b), 4) * 0.5);
-      })
-    );
-  });
-}
-
 function exteriorRingPoints(floor: TakeoffFloor) {
   if (floor.exteriorPolygon.length >= 3) return floor.exteriorPolygon;
   const bounds = footprintBounds(floor);
@@ -3880,25 +3632,6 @@ function adjacentWallProfileForSegment(
   };
 }
 
-type WallProfileCandidate = {
-  id: string;
-  roomId: string;
-  roomName: string;
-  adjacentSpaceId: string;
-  adjacentSpaceName: string;
-  adjacentSpaceKind: TakeoffAdjacentSpaceKind;
-  direction: (typeof directionOptions)[number];
-  spanStart: number;
-  spanEnd: number;
-  zMin: number;
-  zMax: number;
-  area: number;
-  placement: TakeoffPoint;
-  wallProfilePolygons: TakeoffPoint[][];
-  complementArea: number;
-  complementProfilePolygons: TakeoffPoint[][];
-};
-
 function wallProfileComplementPolygons(profile: TakeoffPoint[], spanStart: number, spanEnd: number, zMin: number, zMax: number) {
   if (profile.length < 3 || spanEnd <= spanStart + 0.01 || zMax <= zMin + 0.01) return [] as TakeoffPoint[][];
   const rectangle = [
@@ -3912,61 +3645,6 @@ function wallProfileComplementPolygons(profile: TakeoffPoint[], spanStart: numbe
   )
     .map(({ polygon }) => clipPolygonToPoints(polygon))
     .filter((polygon) => polygon.length >= 3 && polygonArea(polygon) > 0.5);
-}
-
-function wallProfileCandidatesForRoom(
-  floor: TakeoffFloor,
-  room: TakeoffRectRoom,
-  predicate: (space: TakeoffAdjacentSpace) => boolean,
-  idPrefix: string,
-): WallProfileCandidate[] {
-  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
-  const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
-  return roomExteriorSegments(floor, room, { includeConditionedAdjacency: true }).flatMap((segment) =>
-    (floor.adjacentSpaces ?? []).flatMap((space) => {
-      if (!predicate(space)) return [];
-      const span = adjacentSpaceContactSpan(space, segment, tolerance);
-      if (!span || span.length < meaningfulAdjacentContactLength(segment, tolerance)) return [];
-      const wallProfile = adjacentWallProfileForSegment(space, room, segment, span, floor.defaultCeilingHeight ?? 9);
-      if (!wallProfile) return [];
-      const complementProfilePolygons = wallProfileComplementPolygons(
-        wallProfile.profile,
-        span.start,
-        span.end,
-        0,
-        Math.max(baseHeight, wallProfile.zMax),
-      );
-      const complementArea = Number(complementProfilePolygons.reduce((sum, polygon) => sum + polygonArea(polygon), 0).toFixed(3));
-      const id = [
-        idPrefix,
-        room.id,
-        space.id,
-        segment.direction,
-        Math.round(span.start * 10),
-        Math.round(span.end * 10),
-        Math.round(wallProfile.zMin * 10),
-        Math.round(wallProfile.zMax * 10),
-      ].join(":");
-      return [{
-        id,
-        roomId: room.id,
-        roomName: room.name || "Room",
-        adjacentSpaceId: space.id,
-        adjacentSpaceName: space.name || adjacentSpaceLabel(space.kind),
-        adjacentSpaceKind: space.kind,
-        direction: segment.direction,
-        spanStart: Number(span.start.toFixed(3)),
-        spanEnd: Number(span.end.toFixed(3)),
-        zMin: wallProfile.zMin,
-        zMax: wallProfile.zMax,
-        area: wallProfile.area,
-        placement: wallProfile.placement,
-        wallProfilePolygons: [wallProfile.profile],
-        complementArea,
-        complementProfilePolygons,
-      }];
-    })
-  );
 }
 
 function boundaryCandidatesForFloor(floor: TakeoffFloor): TakeoffBoundaryCandidate[] {
@@ -4139,317 +3817,6 @@ function roomIntersectionWallSliceCandidatesForRoom(floor: TakeoffFloor, room: T
 
   const uniqueById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
   return Array.from(uniqueById.values()).filter((candidate) => !roomIntersectionWallSliceCandidateApplied(room, candidate));
-}
-
-type WallGapFillSuggestion = {
-  key: string;
-  direction: NonNullable<TakeoffRoomComponent["direction"]>;
-  area: number;
-  label: string;
-  geometryLabel: string;
-  adjacency: TakeoffWallAdjacency;
-  assembly: string;
-  boundary: TakeoffBoundaryType;
-  spanStart: number;
-  spanEnd: number;
-  zMin: number;
-  zMax: number;
-  placement: TakeoffPoint;
-  wallProfilePolygons?: TakeoffPoint[][];
-};
-
-function wallProfilePolygonBounds(polygons: TakeoffPoint[][]) {
-  const points = polygons.flat();
-  if (points.length === 0) return null;
-  return polygonBounds(points);
-}
-
-function wallProfileRemainderGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): WallGapFillSuggestion[] {
-  const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
-  const profileComponents = roomSurfaceComponents(room, "wall").filter(componentDefinesWallProfileCoverage);
-  if (profileComponents.length === 0 || baseHeight <= 0.05) return [];
-
-  const suggestions: WallGapFillSuggestion[] = [];
-  for (const segment of roomExteriorSegments(floor, room, { includeConditionedAdjacency: true })) {
-    const segmentProfileComponents = wallProfileComponentsForSegment(floor, room, segment, profileComponents);
-    if (segmentProfileComponents.length === 0) continue;
-
-    const entries = segmentProfileComponents
-      .map((component) => {
-        const polygons = wallProfilePolygonsForComponent(component, segment.length, baseHeight);
-        const range = wallProfileSpanRangeForComponent(component, segment.length, baseHeight);
-        const maxY = Math.max(baseHeight, ...polygons.flatMap((polygon) => polygon.map((point) => point.y)));
-        return { component, polygons, range, maxY };
-      })
-      .filter((entry) => entry.polygons.length > 0 && entry.range.end - entry.range.start > 0.05);
-    if (entries.length === 0) continue;
-
-    const mergedRanges = mergeSegmentRanges(entries.map((entry) => entry.range), segment.length);
-    mergedRanges.forEach((range, rangeIndex) => {
-      const overlappingEntries = entries.filter((entry) => entry.range.end > range.start + 0.05 && entry.range.start < range.end - 0.05);
-      if (overlappingEntries.length === 0) return;
-      const envelopeHeight = Math.max(baseHeight, ...overlappingEntries.map((entry) => entry.maxY));
-      if (envelopeHeight <= 0.05) return;
-      const envelope = [
-        { x: range.start, y: 0 },
-        { x: range.end, y: 0 },
-        { x: range.end, y: envelopeHeight },
-        { x: range.start, y: envelopeHeight },
-      ];
-      const envelopePolygon = pointsToClipPolygon(envelope);
-      const coveredPolygons = overlappingEntries.flatMap((entry) =>
-        entry.polygons.flatMap((polygon) => intersection([pointsToClipPolygon(polygon)], [envelopePolygon]))
-      );
-      if (coveredPolygons.length === 0) return;
-      const [firstCoveredPolygon, ...remainingCoveredPolygons] = coveredPolygons;
-      const covered = union(firstCoveredPolygon, ...remainingCoveredPolygons);
-      const remainders = simplePolygonsFromMultiPolygon(difference([envelopePolygon], covered))
-        .map(({ polygon }) => clipPolygonToPoints(polygon))
-        .filter((polygon) => polygon.length >= 3 && polygonArea(polygon) > 0.5);
-      if (remainders.length === 0) return;
-      const area = Number(remainders.reduce((sum, polygon) => sum + polygonArea(polygon), 0).toFixed(3));
-      if (area <= 0.5) return;
-      const bounds = wallProfilePolygonBounds(remainders);
-      const spanStart = Number((bounds?.x ?? range.start).toFixed(3));
-      const spanEnd = Number(((bounds ? bounds.x + bounds.width : range.end)).toFixed(3));
-      const zMin = Number((bounds?.y ?? 0).toFixed(3));
-      const zMax = Number(((bounds ? bounds.y + bounds.depth : envelopeHeight)).toFixed(3));
-      suggestions.push({
-        key: `profile-remainder:${room.id}:${segment.direction}:${Math.round(range.start * 10)}:${Math.round(range.end * 10)}:${Math.round(envelopeHeight * 10)}:${rangeIndex}`,
-        direction: segment.direction,
-        area,
-        label: `${segment.direction} exterior wall profile remainder`,
-        geometryLabel: `Exterior wall remainder around generated profiles ${Number(range.start.toFixed(1))}-${Number(range.end.toFixed(1))} lf`,
-        adjacency: "outside",
-        assembly: defaultWallAssemblyForAdjacency("outside"),
-        boundary: "exterior",
-        spanStart,
-        spanEnd,
-        zMin,
-        zMax,
-        placement: pointAtSegmentDistance(segment, (spanStart + spanEnd) / 2),
-        wallProfilePolygons: remainders,
-      });
-    });
-  }
-
-  return suggestions;
-}
-
-function wallSegmentContinuityGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): WallGapFillSuggestion[] {
-  if (!legacyWallGapFillValidationEnabled) return [];
-  const baseHeight = baseEnvelopeHeightForWallSuggestion(floor, room);
-  const profileComponents = roomSurfaceComponents(room, "wall").filter(componentDefinesWallProfileCoverage);
-  if (profileComponents.length === 0 || baseHeight <= 0.05) return [];
-
-  const suggestions: WallGapFillSuggestion[] = [];
-  for (const segment of roomExteriorSegments(floor, room, { includeConditionedAdjacency: true })) {
-    const segmentProfileComponents = wallProfileComponentsForSegment(floor, room, segment, profileComponents);
-    if (segmentProfileComponents.length === 0) continue;
-    const profileRanges = segmentProfileComponents
-      .map((component) => wallProfileSpanRangeForComponent(component, segment.length, baseHeight))
-      .filter((range) => range.end - range.start > 0.05);
-    const uncoveredRanges = uncoveredSegmentRanges(profileRanges, segment.length);
-    uncoveredRanges.forEach((range, rangeIndex) => {
-      const spanLength = range.end - range.start;
-      const area = Number((spanLength * baseHeight).toFixed(3));
-      if (spanLength <= 0.25 || area <= 0.5) return;
-      const polygon = [
-        { x: Number(range.start.toFixed(3)), y: 0 },
-        { x: Number(range.end.toFixed(3)), y: 0 },
-        { x: Number(range.end.toFixed(3)), y: Number(baseHeight.toFixed(3)) },
-        { x: Number(range.start.toFixed(3)), y: Number(baseHeight.toFixed(3)) },
-      ];
-      suggestions.push({
-        key: `segment-continuity:${room.id}:${segment.direction}:${Math.round(range.start * 10)}:${Math.round(range.end * 10)}:${rangeIndex}`,
-        direction: segment.direction,
-        area,
-        label: `${segment.direction} exterior wall continuity panel`,
-        geometryLabel: `Exterior continuity panel ${Number(range.start.toFixed(1))}-${Number(range.end.toFixed(1))} lf beside generated profiles`,
-        adjacency: "outside",
-        assembly: defaultWallAssemblyForAdjacency("outside"),
-        boundary: "exterior",
-        spanStart: Number(range.start.toFixed(3)),
-        spanEnd: Number(range.end.toFixed(3)),
-        zMin: 0,
-        zMax: Number(baseHeight.toFixed(3)),
-        placement: pointAtSegmentDistance(segment, (range.start + range.end) / 2),
-        wallProfilePolygons: [polygon],
-      });
-    });
-  }
-
-  return suggestions;
-}
-
-function wallGapFillSuggestionsOverlap(first: WallGapFillSuggestion, second: WallGapFillSuggestion) {
-  if (first.direction !== second.direction) return false;
-  const spanOverlap = intervalOverlap(first.spanStart, first.spanEnd, second.spanStart, second.spanEnd);
-  const zOverlap = intervalOverlap(first.zMin, first.zMax, second.zMin, second.zMax);
-  if (spanOverlap <= 0.1 || zOverlap <= 0.1) return false;
-  const smallerArea = Math.min(first.area, second.area);
-  if (smallerArea <= 0.5) return false;
-  return Math.abs(first.area - second.area) <= Math.max(1, smallerArea * 0.08);
-}
-
-function wallGapSuggestionPolygons(suggestion: WallGapFillSuggestion) {
-  const fallbackPolygon = [
-    { x: suggestion.spanStart, y: suggestion.zMin },
-    { x: suggestion.spanEnd, y: suggestion.zMin },
-    { x: suggestion.spanEnd, y: suggestion.zMax },
-    { x: suggestion.spanStart, y: suggestion.zMax },
-  ];
-  return (suggestion.wallProfilePolygons?.length ? suggestion.wallProfilePolygons : [fallbackPolygon])
-    .map(dedupeProfilePoints)
-    .filter((polygon) => polygon.length >= 3 && polygonArea(polygon) > 0.05);
-}
-
-function componentWallProfilePolygonsForGapSuggestion(component: TakeoffRoomComponent, suggestion: WallGapFillSuggestion) {
-  const fallbackPolygon = [
-    { x: component.spanStart ?? suggestion.spanStart, y: component.zMin ?? suggestion.zMin },
-    { x: component.spanEnd ?? suggestion.spanEnd, y: component.zMin ?? suggestion.zMin },
-    { x: component.spanEnd ?? suggestion.spanEnd, y: component.zMax ?? suggestion.zMax },
-    { x: component.spanStart ?? suggestion.spanStart, y: component.zMax ?? suggestion.zMax },
-  ];
-  return (component.wallProfilePolygons?.length ? component.wallProfilePolygons : [fallbackPolygon])
-    .map(dedupeProfilePoints)
-    .filter((polygon) => polygon.length >= 3 && polygonArea(polygon) > 0.05);
-}
-
-function wallGapSuggestionCoveredByComponent(component: TakeoffRoomComponent, suggestion: WallGapFillSuggestion) {
-  if (component.surface !== "wall") return false;
-  if (!component.direction || component.direction !== suggestion.direction) return false;
-  const adjacency = component.adjacency ?? "outside";
-  if (adjacency !== suggestion.adjacency) return false;
-  if ((component.boundary ?? boundaryForAdjacency(adjacency)) !== suggestion.boundary) return false;
-  if (!componentHasWallProfileGeometry(component)) return false;
-
-  const suggestionPolygons = wallGapSuggestionPolygons(suggestion);
-  const componentPolygons = componentWallProfilePolygonsForGapSuggestion(component, suggestion);
-  if (suggestionPolygons.length === 0 || componentPolygons.length === 0) return false;
-
-  let coveredArea = 0;
-  for (const suggestionPolygon of suggestionPolygons) {
-    const suggestionClip = pointsToClipPolygon(suggestionPolygon);
-    for (const componentPolygon of componentPolygons) {
-      coveredArea += intersection([suggestionClip], [pointsToClipPolygon(componentPolygon)])
-        .reduce((sum, polygon) => sum + clipPolygonArea(polygon), 0);
-    }
-  }
-  return coveredArea >= Math.max(0.5, suggestion.area - Math.max(1, suggestion.area * 0.08));
-}
-
-type ConditionedWallProfileSuggestion = {
-  key: string;
-  direction: NonNullable<TakeoffRoomComponent["direction"]>;
-  area: number;
-  label: string;
-  geometryLabel: string;
-  spanStart: number;
-  spanEnd: number;
-  zMin: number;
-  zMax: number;
-  placement: TakeoffPoint;
-  wallProfilePolygons?: TakeoffPoint[][];
-};
-
-function conditionedWallProfileCandidatesForRoom(floor: TakeoffFloor, room: TakeoffRectRoom) {
-  return wallProfileCandidatesForRoom(floor, room, adjacentSpaceIsConditionedProfile, "conditioned-wall-profile");
-}
-
-function wallGapFillSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): WallGapFillSuggestion[] {
-  if (!legacyWallGapFillValidationEnabled) return [];
-  if (roomUsesGeneratedEnvelopeWallGeometry(room)) return [];
-  const boundaryGapFills = boundaryCandidatesForFloor(floor)
-    .filter((candidate) => candidate.roomId === room.id)
-    .filter((candidate) => {
-      const resolution = floor.boundaryCandidateResolutions?.[candidate.id];
-      return !resolution || resolution === "ignore" || !boundaryCandidateResolutionSatisfied(floor, candidate);
-    })
-    .filter((candidate) => candidate.exteriorProfileArea > 0.5 && (candidate.exteriorProfilePolygons?.length ?? 0) > 0)
-    .map((candidate) => ({
-      key: candidate.id,
-      direction: candidate.direction,
-      area: candidate.exteriorProfileArea,
-      label: `${candidate.direction} exterior wall gap fill`,
-      geometryLabel: `${candidate.adjacentSpaceName} exterior wall remainder ${candidate.zMin}-${candidate.zMax} ft`,
-      adjacency: "outside" as const,
-      assembly: defaultWallAssemblyForAdjacency("outside"),
-      boundary: "exterior" as const,
-      spanStart: candidate.spanStart,
-      spanEnd: candidate.spanEnd,
-      zMin: candidate.zMin,
-      zMax: candidate.zMax,
-      placement: candidate.placement,
-      wallProfilePolygons: candidate.exteriorProfilePolygons,
-    }));
-  const conditionedProfileGapFills = conditionedWallProfileCandidatesForRoom(floor, room)
-    .filter((candidate) => candidate.complementArea > 0.5 && candidate.complementProfilePolygons.length > 0)
-    .map((candidate) => ({
-      key: `conditioned-gap-fill:${candidate.id}`,
-      direction: candidate.direction,
-      area: candidate.complementArea,
-      label: `${candidate.direction} exterior wall profile gap fill`,
-      geometryLabel: `${candidate.adjacentSpaceName} conditioned profile side gaps ${candidate.zMin}-${candidate.zMax} ft`,
-      adjacency: "outside" as const,
-      assembly: defaultWallAssemblyForAdjacency("outside"),
-      boundary: "exterior" as const,
-      spanStart: candidate.spanStart,
-      spanEnd: candidate.spanEnd,
-      zMin: candidate.zMin,
-      zMax: candidate.zMax,
-      placement: candidate.placement,
-      wallProfilePolygons: candidate.complementProfilePolygons,
-    }));
-  const specificGapFills = [...boundaryGapFills, ...conditionedProfileGapFills];
-  const profileRemainderGapFills = wallProfileRemainderGapFillSuggestionsForRoom(floor, room)
-    .filter((suggestion) => !specificGapFills.some((existing) => wallGapFillSuggestionsOverlap(existing, suggestion)));
-  const continuityGapFills = wallSegmentContinuityGapFillSuggestionsForRoom(floor, room)
-    .filter((suggestion) => ![...specificGapFills, ...profileRemainderGapFills].some((existing) => wallGapFillSuggestionsOverlap(existing, suggestion)));
-  return [...specificGapFills, ...profileRemainderGapFills, ...continuityGapFills];
-}
-
-function wallGapFillSuggestionApplied(room: TakeoffRectRoom, suggestion: WallGapFillSuggestion) {
-  return roomSurfaceComponents(room, "wall").some((component) => {
-    if (wallGapSuggestionCoveredByComponent(component, suggestion)) return true;
-    return (
-      component.source === "wall-gap-fill" &&
-      component.direction === suggestion.direction &&
-      Math.abs((component.area || 0) - Math.round(suggestion.area)) <= 0.5 &&
-      Math.abs((component.spanStart ?? suggestion.spanStart) - suggestion.spanStart) <= 0.1 &&
-      Math.abs((component.spanEnd ?? suggestion.spanEnd) - suggestion.spanEnd) <= 0.1 &&
-      Math.abs((component.zMin ?? suggestion.zMin) - suggestion.zMin) <= 0.1 &&
-      Math.abs((component.zMax ?? suggestion.zMax) - suggestion.zMax) <= 0.1
-    );
-  });
-}
-
-function conditionedWallProfileSuggestionsForRoom(floor: TakeoffFloor, room: TakeoffRectRoom): ConditionedWallProfileSuggestion[] {
-  return conditionedWallProfileCandidatesForRoom(floor, room).map((candidate) => ({
-    key: candidate.id,
-    direction: candidate.direction,
-    area: candidate.area,
-    label: `${candidate.direction} conditioned wall profile - no load`,
-    geometryLabel: `${candidate.adjacentSpaceName} conditioned profile ${candidate.zMin}-${candidate.zMax} ft`,
-    spanStart: candidate.spanStart,
-    spanEnd: candidate.spanEnd,
-    zMin: candidate.zMin,
-    zMax: candidate.zMax,
-    placement: candidate.placement,
-    wallProfilePolygons: candidate.wallProfilePolygons,
-  }));
-}
-
-function conditionedWallProfileSuggestionApplied(room: TakeoffRectRoom, suggestion: ConditionedWallProfileSuggestion) {
-  return roomSurfaceComponents(room, "wall").some((component) =>
-    component.source === "conditioned-wall-profile" &&
-    component.direction === suggestion.direction &&
-    Math.abs((component.area || 0) - Math.round(suggestion.area)) <= 0.5 &&
-    Math.abs((component.spanStart ?? suggestion.spanStart) - suggestion.spanStart) <= 0.1 &&
-    Math.abs((component.spanEnd ?? suggestion.spanEnd) - suggestion.spanEnd) <= 0.1 &&
-    Math.abs((component.zMin ?? suggestion.zMin) - suggestion.zMin) <= 0.1 &&
-    Math.abs((component.zMax ?? suggestion.zMax) - suggestion.zMax) <= 0.1
-  );
 }
 
 function adjacentKindsForPlacedOpening(floor: TakeoffFloor, room: TakeoffRectRoom, component: TakeoffRoomComponent) {
@@ -5051,35 +4418,6 @@ function buildValidation(
       issues.push({
         severity: "warning",
         message: `${room.name || "Room"} ceiling height differs from the floor default by about ${ceilingInfo.heightDelta.toFixed(1)} ft. If attic space is above this may create about ${Math.round(ceilingInfo.estimatedAddedWallArea)} sf of raised wall/knee-wall exposure. Review and approve ceiling geometry.`,
-        target: roomTarget,
-      });
-    }
-    const missingCeilingWallSuggestions = ceilingWallSuggestionsForRoom(floor, room, defaultCeilingHeight)
-      .filter((suggestion) => !ceilingWallSuggestionApplied(room, suggestion));
-    if (room.ceilingGeometryApproved && missingCeilingWallSuggestions.length > 0) {
-      issues.push({
-        severity: "warning",
-        message: `${room.name || "Room"} approved ceiling geometry is missing ${missingCeilingWallSuggestions.length} generated raised wall/gable component${missingCeilingWallSuggestions.length === 1 ? "" : "s"}. Re-approve the ceiling geometry or add the wall sections manually.`,
-        target: roomTarget,
-      });
-    }
-    const missingGapFillSuggestions = wallGapFillSuggestionsForRoom(floor, room)
-      .filter((suggestion) => !wallGapFillSuggestionApplied(room, suggestion));
-    if (missingGapFillSuggestions.length > 0) {
-      const missingArea = missingGapFillSuggestions.reduce((sum, suggestion) => sum + suggestion.area, 0);
-      issues.push({
-        severity: "warning",
-        message: `${room.name || "Room"} has about ${Math.round(missingArea)} sf of building-envelope continuity gap not assigned. Review generated envelope sections to fill the geometry and choose the wall type.`,
-        target: roomTarget,
-      });
-    }
-    const missingConditionedProfiles = conditionedWallProfileSuggestionsForRoom(floor, room)
-      .filter((suggestion) => !conditionedWallProfileSuggestionApplied(room, suggestion));
-    if (missingConditionedProfiles.length > 0) {
-      const missingArea = missingConditionedProfiles.reduce((sum, suggestion) => sum + suggestion.area, 0);
-      issues.push({
-        severity: "warning",
-        message: `${room.name || "Room"} has about ${Math.round(missingArea)} sf of conditioned wall-profile overlap that should be no-load. Re-approve the ceiling geometry to remove that profile from exterior wall load.`,
         target: roomTarget,
       });
     }
@@ -5955,45 +5293,6 @@ function createPanelMesh(vertices: THREE.Vector3[], material: THREE.Material, vi
   return new THREE.Mesh(geometry, material);
 }
 
-function raisedWallMeshPartsForRoom(
-  floor: TakeoffFloor | undefined,
-  room: TakeoffRectRoom,
-  center: TakeoffPoint,
-  baseHeight: number,
-  topHeight: number,
-  kneeWallMaterial: THREE.Material,
-  exteriorWallMaterial = kneeWallMaterial,
-): ModelMeshPart[] {
-  if (topHeight <= baseHeight + 0.01) return [];
-  return pointsToEdges(roomCorners(room)).flatMap((edge) => {
-    const direction = edgeDirectionFromRoom(edge, room);
-    const length = distance(edge.a, edge.b);
-    const conditioned = floor
-      ? edgeSharesConditionedRoom(floor, room, edge, Math.max(0.1, length * 0.5))
-      : false;
-    if (conditioned) return [];
-    const exterior = floor
-      ? edgeSharesExteriorSegment(floor, room, edge, Math.max(0.1, length * 0.5))
-      : false;
-    const material = exterior ? exteriorWallMaterial : kneeWallMaterial;
-    return {
-      mesh: createPanelMesh([
-        modelPoint(edge.a, center, baseHeight),
-        modelPoint(edge.b, center, baseHeight),
-        modelPoint(edge.b, center, topHeight),
-        modelPoint(edge.a, center, topHeight),
-      ], material, wallPanelVisualOverlapFt),
-      kind: exterior ? "load-wall" : "knee-wall",
-      label: exterior ? `${direction}-side exterior raised wall band` : `${direction}-side raised wall band`,
-      surface: "wall",
-      direction,
-      area: Number((length * Math.max(0, topHeight - baseHeight)).toFixed(3)),
-      source: "raised-ceiling",
-      geometryLabel: exterior ? `Exterior raised wall band - ${direction}` : `Raised wall band - ${direction}`,
-    };
-  });
-}
-
 function vaultedRoofHeightAtPoint(point: TakeoffPoint, bounds: PlanRect, ceilingInfo: ReturnType<typeof ceilingGeometryInfo>) {
   const peakDelta = Math.max(0, ceilingInfo.peakHeight - ceilingInfo.lowHeight);
   if (peakDelta <= 0) return ceilingInfo.lowHeight;
@@ -6258,145 +5557,6 @@ function roomRidgePoints(room: TakeoffRectRoom, center: TakeoffPoint, defaultCei
   ];
 }
 
-function sortedUniqueEdgePoints(edge: { a: TakeoffPoint; b: TakeoffPoint }, points: TakeoffPoint[]) {
-  const dx = edge.b.x - edge.a.x;
-  const dy = edge.b.y - edge.a.y;
-  const length = Math.max(0.001, Math.hypot(dx, dy));
-  const ux = dx / length;
-  const uy = dy / length;
-  const sorted = [...points].sort((first, second) =>
-    ((first.x - edge.a.x) * ux + (first.y - edge.a.y) * uy) -
-    ((second.x - edge.a.x) * ux + (second.y - edge.a.y) * uy)
-  );
-  return sorted.filter((point, index) => index === 0 || distance(point, sorted[index - 1]) > 0.05);
-}
-
-function conditionedRoomBreakPointsForEdge(floor: TakeoffFloor | undefined, room: TakeoffRectRoom, edge: { a: TakeoffPoint; b: TakeoffPoint }) {
-  if (!floor) return [] as TakeoffPoint[];
-  const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
-  const breakPoints: TakeoffPoint[] = [];
-  for (const other of floor.rooms) {
-    if (other.id === room.id) continue;
-    for (const otherEdge of pointsToEdges(roomCorners(other))) {
-      const shared = sharedSegment(edge, otherEdge, tolerance);
-      if (!shared || shared.length <= 0.25) continue;
-      breakPoints.push(shared.a, shared.b);
-    }
-  }
-  return breakPoints;
-}
-
-function splitEdgeAtVaultAndConditionedRooms(
-  floor: TakeoffFloor | undefined,
-  room: TakeoffRectRoom,
-  edge: { a: TakeoffPoint; b: TakeoffPoint },
-  bounds: PlanRect,
-  ceilingInfo: ReturnType<typeof ceilingGeometryInfo>,
-) {
-  return sortedUniqueEdgePoints(edge, [
-    ...splitEdgeAtVaultRidge(edge, bounds, ceilingInfo),
-    ...conditionedRoomBreakPointsForEdge(floor, room, edge),
-  ]);
-}
-
-function vaultedWallMeshPartsForRoom(
-  floor: TakeoffFloor | undefined,
-  room: TakeoffRectRoom,
-  center: TakeoffPoint,
-  defaultCeilingHeight: number,
-  kneeWallMaterial: THREE.Material,
-  exteriorWallMaterial = kneeWallMaterial,
-): ModelMeshPart[] {
-  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
-  const points = roomCorners(room);
-  const bounds = polygonBounds(points);
-  const parts: ModelMeshPart[] = [];
-  parts.push(...raisedWallMeshPartsForRoom(floor, room, center, defaultCeilingHeight, ceilingInfo.lowHeight, kneeWallMaterial, exteriorWallMaterial));
-
-  for (const edge of pointsToEdges(points)) {
-    const splitPoints = splitEdgeAtVaultAndConditionedRooms(floor, room, edge, bounds, ceilingInfo);
-    for (let index = 0; index < splitPoints.length - 1; index += 1) {
-      const a = splitPoints[index];
-      const b = splitPoints[index + 1];
-      const aHeight = vaultedRoofHeightAtPoint(a, bounds, ceilingInfo);
-      const bHeight = vaultedRoofHeightAtPoint(b, bounds, ceilingInfo);
-      if (Math.max(aHeight, bHeight) <= ceilingInfo.lowHeight + 0.01) continue;
-      const direction = edgeDirectionFromRoom({ a, b }, room);
-      const averageHeight = Math.max(0, ((aHeight + bHeight) / 2) - ceilingInfo.lowHeight);
-      const conditioned = floor
-        ? edgeSharesConditionedRoom(floor, room, { a, b }, Math.max(0.1, distance(a, b) * 0.5))
-        : false;
-      if (conditioned) continue;
-      const exterior = floor
-        ? edgeSharesExteriorSegment(floor, room, { a, b }, Math.max(0.1, distance(a, b) * 0.5))
-        : false;
-      const material = exterior ? exteriorWallMaterial : kneeWallMaterial;
-      parts.push({
-        mesh: createPanelMesh([
-          modelPoint(a, center, ceilingInfo.lowHeight),
-          modelPoint(b, center, ceilingInfo.lowHeight),
-          modelPoint(b, center, bHeight),
-          modelPoint(a, center, aHeight),
-        ], material, wallPanelVisualOverlapFt),
-        kind: exterior ? "load-wall" : "knee-wall",
-        label: exterior ? `${direction}-side exterior vault gable panel` : `${direction}-side vault gable / knee-wall panel`,
-        surface: "wall",
-        direction,
-        area: Number((distance(a, b) * averageHeight).toFixed(3)),
-        source: "vault-gable",
-        geometryLabel: exterior ? `Exterior vault gable - ${direction}` : `Vault gable / knee-wall - ${direction}`,
-      });
-    }
-  }
-
-  return parts;
-}
-
-function trayWallMeshPartsForRoom(room: TakeoffRectRoom, center: TakeoffPoint, defaultCeilingHeight: number, kneeWallMaterial: THREE.Material): ModelMeshPart[] {
-  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
-  if (ceilingInfo.ceilingType !== "tray") return [];
-  const parts: ModelMeshPart[] = [];
-  for (let stepIndex = 0; stepIndex < ceilingInfo.traySteps; stepIndex += 1) {
-    const offset = ceilingInfo.trayOffset + stepIndex;
-    const points = trayBoundaryPoints(room, offset);
-    if (points.length < 3) continue;
-    const bottom = room.ceilingHeight + stepIndex * trayStepHeight();
-    const top = bottom + trayStepHeight();
-    for (const edge of pointsToEdges(points)) {
-      parts.push({
-        mesh: createPanelMesh([
-          modelPoint(edge.a, center, bottom),
-          modelPoint(edge.b, center, bottom),
-          modelPoint(edge.b, center, top),
-          modelPoint(edge.a, center, top),
-        ], kneeWallMaterial, wallPanelVisualOverlapFt),
-        kind: "knee-wall",
-        label: `Tray step ${stepIndex + 1} knee-wall panel`,
-        surface: "wall",
-        area: Number(distance(edge.a, edge.b).toFixed(3)),
-        source: "tray-knee-wall",
-        geometryLabel: `Tray ceiling knee wall - step ${stepIndex + 1}`,
-      });
-    }
-  }
-  return parts;
-}
-
-function ceilingWallMeshPartsForRoom(
-  floor: TakeoffFloor | undefined,
-  room: TakeoffRectRoom,
-  center: TakeoffPoint,
-  defaultCeilingHeight: number,
-  kneeWallMaterial: THREE.Material,
-  exteriorWallMaterial = kneeWallMaterial,
-): ModelMeshPart[] {
-  if (!legacyCeilingWallMeshRenderingEnabled) return [];
-  const ceilingInfo = ceilingGeometryInfo(room, defaultCeilingHeight);
-  if (isVaultCeilingType(ceilingInfo.ceilingType)) return vaultedWallMeshPartsForRoom(floor, room, center, defaultCeilingHeight, kneeWallMaterial, exteriorWallMaterial);
-  if (ceilingInfo.ceilingType === "tray") return trayWallMeshPartsForRoom(room, center, defaultCeilingHeight, kneeWallMaterial);
-  return raisedWallMeshPartsForRoom(floor, room, center, defaultCeilingHeight, room.ceilingHeight, kneeWallMaterial, exteriorWallMaterial);
-}
-
 function wallSegmentForProfileComponent(floor: TakeoffFloor, room: TakeoffRectRoom, component: TakeoffRoomComponent) {
   const segments = roomExteriorSegments(floor, room, { includeConditionedAdjacency: componentIsWallGapFill(component) || componentIsConditionedWallProfile(component) || componentHasWallProfileGeometry(component) })
     .filter((segment) => segment.direction === component.direction);
@@ -6505,13 +5665,6 @@ function envelopePanelMeshPart(panel: EnvelopePanel, center: TakeoffPoint, mater
     boundary: panel.boundary,
     loadExempt: panel.loadState === "no-load",
   };
-}
-
-function roomFor3DCeilingWallParts(sourceRoom: TakeoffRectRoom, renderedRoom: TakeoffRectRoom, baseWallHeight: number) {
-  if (openToAboveLinkForRoom(sourceRoom) && (sourceRoom.ceilingType ?? "flat") === "tray") {
-    return renderedRoom;
-  }
-  return { ...renderedRoom, ceilingHeight: baseWallHeight };
 }
 
 function openToAboveWallExtensionMeshPartsForRoom(
@@ -7032,7 +6185,6 @@ function TakeoffModelPreview({
       for (const sourceRoom of otherFloor.rooms) {
         const baseWallHeight = baseEnvelopeHeightForWallSuggestion(otherFloor, sourceRoom);
         const room = { ...sourceRoom, ceilingHeight: computedOpenToAboveHeight(otherFloor, sourceRoom, floors) };
-        const wallRoom = roomFor3DCeilingWallParts(sourceRoom, room, baseWallHeight);
         const points = cleanPolygonPointsForRender(roomCorners(room));
         if (points.length < 3) continue;
         if (visibleLayers.floors) scene.add(createHorizontalShapeMesh(points, center, yOffset + 0.025, ghostRoomMaterial));
@@ -7056,21 +6208,6 @@ function TakeoffModelPreview({
               );
               wallMesh.position.y += yOffset;
               scene.add(wallMesh);
-            }
-            const generatedWallParts = ceilingWallMeshPartsForRoom(otherFloor, wallRoom, center, otherFloor.defaultCeilingHeight ?? 9, passivePreviewKneeWallMaterial, passivePreviewWallMaterial);
-            const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
-            for (const part of generatedWallParts) {
-              const component = generatedWallComponents.find((candidate) =>
-                (!part.source || candidate.source === part.source) &&
-                (!part.direction || candidate.direction === part.direction)
-              );
-              if (!component && !visibleLayers.generatedPreview) continue;
-              if (component?.loadExempt || component?.adjacency === "conditioned") continue;
-              const treatment = componentWallTreatmentKind(component);
-              if (treatment === "exterior") part.mesh.material = passiveWallMaterial;
-              if (treatment === "attic") part.mesh.material = passiveKneeWallMaterial;
-              part.mesh.position.y += yOffset;
-              scene.add(part.mesh);
             }
             for (const part of wallGapFillMeshPartsForRoom(otherFloor, room, center, passiveKneeWallMaterial, passiveWallMaterial)) {
               part.mesh.position.y += yOffset;
@@ -7257,48 +6394,8 @@ function TakeoffModelPreview({
             }
           }
           const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
-          const wallRoom = roomFor3DCeilingWallParts(sourceRoom, room, baseWallHeight);
           const generatedExteriorWallMaterial = room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
           const generatedKneeWallMaterial = room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial;
-          const generatedPreviewExteriorWallMaterial = room.id === selectedRoomId ? selectedPreviewWallMaterial : previewWallMaterial;
-          const generatedPreviewKneeWallMaterial = room.id === selectedRoomId ? selectedPreviewKneeWallMaterial : previewKneeWallMaterial;
-          const generatedWallParts = ceilingWallMeshPartsForRoom(floor, wallRoom, center, floor.defaultCeilingHeight ?? 9, generatedPreviewKneeWallMaterial, generatedPreviewExteriorWallMaterial);
-          const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
-          for (const part of generatedWallParts) {
-            const component = generatedWallComponents.find((candidate) =>
-              (!part.source || candidate.source === part.source) &&
-              (!part.direction || candidate.direction === part.direction)
-            );
-            if (!component && !visibleLayers.generatedPreview) continue;
-            if (component?.loadExempt || component?.adjacency === "conditioned") continue;
-            const treatment = componentWallTreatmentKind(component);
-            const modelKind = treatment === "attic"
-                ? "knee-wall"
-                : treatment === "exterior"
-                  ? "load-wall"
-                  : part.kind;
-            if (treatment === "exterior") part.mesh.material = generatedExteriorWallMaterial;
-            if (treatment === "attic") part.mesh.material = generatedKneeWallMaterial;
-            part.mesh.position.y += activeFloorYOffset;
-            part.mesh.userData.roomId = room.id;
-            part.mesh.userData.modelSurface = {
-              floorId: floor.id,
-              roomId: room.id,
-              roomName: room.name,
-              kind: modelKind,
-              label: component?.label ?? part.label,
-              surface: "wall",
-              direction: part.direction,
-              area: part.area,
-              assembly: component?.assembly ?? part.assembly,
-              componentId: component ? roomComponentStableId(room.id, component) : undefined,
-              source: component?.source ?? part.source,
-              geometryLabel: component?.geometryLabel ?? part.geometryLabel,
-              adjacency: component?.adjacency ?? part.adjacency,
-              boundary: component?.boundary ?? part.boundary,
-            } satisfies ModelSurfaceSelection;
-            scene.add(part.mesh);
-          }
           for (const part of wallGapFillMeshPartsForRoom(floor, room, center, generatedKneeWallMaterial, generatedExteriorWallMaterial)) {
             part.mesh.position.y += activeFloorYOffset;
             part.mesh.userData.roomId = room.id;
@@ -8851,8 +7948,6 @@ export function TakeoffApp() {
   const [componentScheduleOpen, setComponentScheduleOpen] = useState(false);
   const [componentSearch, setComponentSearch] = useState("");
   const [pendingComponentAssignment, setPendingComponentAssignment] = useState<TakeoffComponentDefinition | null>(null);
-  const [ceilingWallAssemblies, setCeilingWallAssemblies] = useState<Record<string, string>>({});
-  const [ceilingWallAdjacencies, setCeilingWallAdjacencies] = useState<Record<string, TakeoffWallAdjacency>>({});
   const [staleCeilingWallPrompt, setStaleCeilingWallPrompt] = useState<StaleCeilingWallPrompt>(null);
   const [libraryComponents, setLibraryComponents] = useState<TakeoffComponentDefinition[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -10855,111 +9950,14 @@ export function TakeoffApp() {
     };
   }
 
-  function approveRoomCeilingGeometry(
-    roomId: string,
-    wallAssemblies: Record<string, string> = {},
-    wallAdjacencies: Record<string, TakeoffWallAdjacency> = {},
-  ) {
+  function approveRoomCeilingGeometry(roomId: string) {
     setFloor((current) => ({
       ...current,
       rooms: current.rooms.map((room) => {
         if (room.id !== roomId) return room;
         const ceilingInfo = ceilingGeometryInfo(room, current.defaultCeilingHeight ?? 9);
         const components = roomComponents(room);
-        const ceilingSuggestions = ceilingWallSuggestionsForRoom(current, room, current.defaultCeilingHeight ?? 9);
-        const gapFillSuggestions = wallGapFillSuggestionsForRoom(current, room);
-        const conditionedProfileSuggestions = conditionedWallProfileSuggestionsForRoom(current, room);
-        const suggestionLabels = new Set(ceilingSuggestions.map((suggestion) => suggestion.label));
-        const matchesGapFillSuggestion = (component: TakeoffRoomComponent, suggestion: WallGapFillSuggestion) =>
-          component.source === "wall-gap-fill" &&
-          component.direction === suggestion.direction &&
-          Math.abs((component.spanStart ?? suggestion.spanStart) - suggestion.spanStart) <= 0.1 &&
-          Math.abs((component.spanEnd ?? suggestion.spanEnd) - suggestion.spanEnd) <= 0.1 &&
-          Math.abs((component.zMin ?? suggestion.zMin) - suggestion.zMin) <= 0.1 &&
-          Math.abs((component.zMax ?? suggestion.zMax) - suggestion.zMax) <= 0.1;
-        const matchesConditionedProfileSuggestion = (component: TakeoffRoomComponent, suggestion: ConditionedWallProfileSuggestion) =>
-          component.source === "conditioned-wall-profile" &&
-          component.direction === suggestion.direction &&
-          Math.abs((component.spanStart ?? suggestion.spanStart) - suggestion.spanStart) <= 0.1 &&
-          Math.abs((component.spanEnd ?? suggestion.spanEnd) - suggestion.spanEnd) <= 0.1 &&
-          Math.abs((component.zMin ?? suggestion.zMin) - suggestion.zMin) <= 0.1 &&
-          Math.abs((component.zMax ?? suggestion.zMax) - suggestion.zMax) <= 0.1;
-        const nextWallComponents = ceilingSuggestions.map((suggestion) => {
-          const existing = components.find((component) => component.surface === "wall" && component.label === suggestion.label);
-          const key = `${room.id}:${suggestion.key}`;
-          const adjacency = wallAdjacencies[key] || existing?.adjacency || suggestion.adjacency;
-          const loadExempt = adjacency === "conditioned";
-          const assembly = loadExempt ? "NO_LOAD" : wallAssemblies[key] || existing?.assembly || defaultWallAssemblyForAdjacency(adjacency);
-          return {
-            ...(existing ?? defaultComponent("wall", suggestion.area)),
-            assembly,
-            area: Math.round(suggestion.area),
-            direction: suggestion.direction,
-            label: suggestion.label,
-            geometryLabel: suggestion.geometryLabel,
-            source: suggestion.source,
-            adjacency,
-            boundary: loadExempt ? "partition" : existing?.boundary,
-            loadExempt,
-          };
-        });
-        const nextGapFillComponents = gapFillSuggestions.map((suggestion) => {
-          const existing = components.find((component) =>
-            matchesGapFillSuggestion(component, suggestion)
-          );
-          const key = `${room.id}:${suggestion.key}`;
-          const adjacency = wallAdjacencies[key] || suggestion.adjacency || existing?.adjacency || "outside";
-          const loadExempt = adjacency === "conditioned";
-          const assembly = loadExempt ? "NO_LOAD" : wallAssemblies[key] || suggestion.assembly || existing?.assembly || defaultWallAssemblyForAdjacency(adjacency);
-          return {
-            ...(existing ?? defaultComponent("wall", suggestion.area)),
-            assembly,
-            area: Math.round(suggestion.area),
-            direction: suggestion.direction,
-            label: suggestion.label,
-            geometryLabel: suggestion.geometryLabel,
-            source: "wall-gap-fill" as const,
-            adjacency,
-            boundary: loadExempt ? "partition" as const : boundaryForAdjacency(adjacency),
-            spanStart: suggestion.spanStart,
-            spanEnd: suggestion.spanEnd,
-            zMin: suggestion.zMin,
-            zMax: suggestion.zMax,
-            placement: suggestion.placement,
-            wallProfilePolygons: suggestion.wallProfilePolygons,
-            loadExempt,
-          };
-        });
-        const nextConditionedProfileComponents = conditionedProfileSuggestions.map((suggestion) => {
-          const existing = components.find((component) =>
-            matchesConditionedProfileSuggestion(component, suggestion)
-          );
-          return {
-            ...(existing ?? defaultComponent("wall", suggestion.area)),
-            assembly: "NO_LOAD",
-            area: Math.round(suggestion.area),
-            direction: suggestion.direction,
-            label: suggestion.label,
-            geometryLabel: suggestion.geometryLabel,
-            source: "conditioned-wall-profile" as const,
-            adjacency: "conditioned" as const,
-            boundary: "partition" as const,
-            spanStart: suggestion.spanStart,
-            spanEnd: suggestion.spanEnd,
-            zMin: suggestion.zMin,
-            zMax: suggestion.zMax,
-            placement: suggestion.placement,
-            wallProfilePolygons: suggestion.wallProfilePolygons,
-            loadExempt: true,
-          };
-        });
         const baseComponents = components.filter((component) =>
-          !(component.surface === "wall" && (
-            componentIsGeneratedCeilingProfileOutput(component) ||
-            (component.label != null && suggestionLabels.has(component.label))
-          )) &&
-          !gapFillSuggestions.some((suggestion) => matchesGapFillSuggestion(component, suggestion)) &&
-          !conditionedProfileSuggestions.some((suggestion) => matchesConditionedProfileSuggestion(component, suggestion)) &&
           !(isVaultCeilingType(ceilingInfo.ceilingType) && component.surface === "ceiling")
         );
         const approvedRoom = isVaultCeilingType(ceilingInfo.ceilingType)
@@ -10969,25 +9967,17 @@ export function TakeoffApp() {
               components: [
                 ...baseComponents,
                 ...defaultCeilingLoadComponentsForRoom(room),
-                ...nextWallComponents,
-                ...nextGapFillComponents,
-                ...nextConditionedProfileComponents,
               ],
             }
           : {
               ...room,
               ceilingGeometryApproved: true,
-              components: [
-                ...baseComponents,
-                ...nextWallComponents,
-                ...nextGapFillComponents,
-                ...nextConditionedProfileComponents,
-              ],
+              components: baseComponents,
             };
-        return reconcileBaseWallAreasForProfileCoverage(current, approvedRoom);
+        return approvedRoom;
       }),
     }));
-    setMessage("Ceiling geometry reviewed and approved. Generated envelope walls now come from the edge-continuity compiler.");
+    setMessage("Ceiling geometry reviewed and approved. Use Rebuild Walls to persist the compiler-generated wall panels.");
   }
 
   function addRoomComponent(roomId: string, surface: TakeoffRoomComponent["surface"]) {
@@ -16229,8 +15219,6 @@ export function TakeoffApp() {
                   const showSuggestionReview = pendingSuggestionRows.length > 0 || Boolean(suggestionHighlightClass);
                   const ceilingInfo = ceilingGeometryInfo(selectedRoom, floor.defaultCeilingHeight ?? 9);
                   const roomBounds = polygonBounds(roomCorners(selectedRoom));
-                  const ceilingSuggestions = ceilingWallSuggestionsForRoom(floor, selectedRoom, floor.defaultCeilingHeight ?? 9);
-                  const envelopeGapSuggestions = wallGapFillSuggestionsForRoom(floor, selectedRoom);
                   return (
                     <>
                       <div className="takeoff-workbench-head">
@@ -16369,7 +15357,7 @@ export function TakeoffApp() {
                                 ) : envelopeTopologyIssue ? (
                                   <button className="toolbar-primary" onClick={() => rebuildRoomEnvelopeGeometry(selectedRoom.id, activeRoomValidationTarget.floorId ?? floor.id)}>Rebuild Walls</button>
                                 ) : activeRoomValidationTarget.section === "ceiling-geometry" ? (
-                                  <button className="toolbar-primary" onClick={() => approveRoomCeilingGeometry(selectedRoom.id, ceilingWallAssemblies, ceilingWallAdjacencies)}>Apply Fix</button>
+                                  <button className="toolbar-primary" onClick={() => approveRoomCeilingGeometry(selectedRoom.id)}>Apply Fix</button>
                                 ) : boundaryCandidate ? (
                                   <button className="toolbar-primary" onClick={() => scrollToWallSlices(selectedRoom.id)}>Review wall slices</button>
                                 ) : (
@@ -16697,7 +15685,7 @@ export function TakeoffApp() {
                             <div className={`takeoff-ceiling-qa ${ceilingInfo.needsReview ? "takeoff-ceiling-qa--warning" : ""}`}>
                               <div className="takeoff-component-head">
                                 <h3>Ceiling Geometry</h3>
-                                <button className={selectedRoom.ceilingGeometryApproved ? "toolbar-primary" : ""} onClick={() => approveRoomCeilingGeometry(selectedRoom.id, ceilingWallAssemblies, ceilingWallAdjacencies)}>
+                                <button className={selectedRoom.ceilingGeometryApproved ? "toolbar-primary" : ""} onClick={() => approveRoomCeilingGeometry(selectedRoom.id)}>
                                   {selectedRoom.ceilingGeometryApproved ? "Approved" : "Approve"}
                                 </button>
                               </div>
@@ -16713,129 +15701,6 @@ export function TakeoffApp() {
                                   <span>Estimated added exposure <strong>{Math.round(ceilingInfo.estimatedAddedWallArea)} sf</strong></span>
                                 </div>
                               </div>
-                              {(ceilingSuggestions.length > 0 || envelopeGapSuggestions.length > 0) && (
-                                <div className="takeoff-ceiling-wall-suggestions">
-                                  <div className="takeoff-component-head">
-                                    <h4>Generated Envelope Sections</h4>
-                                    <span>
-                                      {ceilingSuggestions.filter((suggestion) => ceilingWallSuggestionApplied(selectedRoom, suggestion)).length + envelopeGapSuggestions.filter((suggestion) => wallGapFillSuggestionApplied(selectedRoom, suggestion)).length}
-                                      {" / "}
-                                      {ceilingSuggestions.length + envelopeGapSuggestions.length} added
-                                    </span>
-                                  </div>
-                                  {ceilingSuggestions.map((suggestion) => {
-                                    const key = `${selectedRoom.id}:${suggestion.key}`;
-                                    const applied = ceilingWallSuggestionApplied(selectedRoom, suggestion);
-                                    const selectedAdjacency = ceilingWallAdjacencies[key] || suggestion.adjacency;
-                                    const suggestionNoLoad = selectedAdjacency === "conditioned";
-                                    const selectedAssembly = suggestionNoLoad ? "NO_LOAD" : ceilingWallAssemblies[key] || defaultWallAssemblyForAdjacency(selectedAdjacency);
-                                    return (
-                                      <button
-                                        key={suggestion.key}
-                                        className={`takeoff-ceiling-wall-suggestion ${applied ? "takeoff-ceiling-wall-suggestion--applied" : ""}`}
-                                        type="button"
-                                        onClick={() => {
-                                          if (!applied) return;
-                                          setMessage(`${suggestion.label} has been added. Review it in Wall Components below.`);
-                                          scrollToWallComponents(selectedRoom.id);
-                                        }}
-                                      >
-                                        <span>
-                                          <strong>{suggestion.description}</strong>
-                                          <small>
-                                            {Math.round(suggestion.area)} sf
-                                            {suggestion.length && suggestion.addedHeight ? ` · ${Number(suggestion.length.toFixed(1))} lf x ${Number(suggestion.addedHeight.toFixed(1))} ft` : ""}
-                                            {suggestion.basis === "gable-end" ? " · vault gable" : suggestion.basis === "tray-step" ? " · tray knee wall" : " · raised wall band"} · {suggestion.direction ? `${suggestion.direction}-side` : "no direction required"} · {selectedAdjacency}
-                                          </small>
-                                        </span>
-                                        <select
-                                          value={selectedAdjacency}
-                                          disabled={applied}
-                                          onClick={(event) => event.stopPropagation()}
-                                          onChange={(event) => {
-                                            const adjacency = event.target.value as TakeoffWallAdjacency;
-                                            setCeilingWallAdjacencies((current) => ({ ...current, [key]: adjacency }));
-                                            setCeilingWallAssemblies((current) => current[key] ? current : { ...current, [key]: defaultWallAssemblyForAdjacency(adjacency) });
-                                          }}
-                                        >
-                                          <option value="outside">Exterior</option>
-                                          <option value="attic">Attic / knee wall</option>
-                                          <option value="garage">Garage adjacent</option>
-                                          <option value="crawlspace">Crawlspace adjacent</option>
-                                          <option value="conditioned">Conditioned / adiabatic</option>
-                                          <option value="unknown">Unknown</option>
-                                        </select>
-                                        <select
-                                          value={selectedAssembly}
-                                          disabled={applied || suggestionNoLoad}
-                                          onClick={(event) => event.stopPropagation()}
-                                          onChange={(event) => setCeilingWallAssemblies((current) => ({ ...current, [key]: event.target.value }))}
-                                        >
-                                          {suggestionNoLoad ? <option value="NO_LOAD">NO_LOAD - Conditioned</option> : scheduleOptionsBySurface.wall.map((option) => (
-                                            <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                                          ))}
-                                        </select>
-                                        <em>{applied ? "Added" : suggestionNoLoad ? "No load" : "Pending"}</em>
-                                      </button>
-                                    );
-                                  })}
-                                  {envelopeGapSuggestions.map((suggestion) => {
-                                    const key = `${selectedRoom.id}:${suggestion.key}`;
-                                    const applied = wallGapFillSuggestionApplied(selectedRoom, suggestion);
-                                    const selectedAdjacency = ceilingWallAdjacencies[key] || suggestion.adjacency;
-                                    const suggestionNoLoad = selectedAdjacency === "conditioned";
-                                    const selectedAssembly = suggestionNoLoad ? "NO_LOAD" : ceilingWallAssemblies[key] || suggestion.assembly || defaultWallAssemblyForAdjacency(selectedAdjacency);
-                                    return (
-                                      <button
-                                        key={suggestion.key}
-                                        className={`takeoff-ceiling-wall-suggestion ${applied ? "takeoff-ceiling-wall-suggestion--applied" : ""}`}
-                                        type="button"
-                                        onClick={() => {
-                                          if (!applied) return;
-                                          setMessage(`${suggestion.label} has been added. Review it in Wall Components below.`);
-                                          scrollToWallComponents(selectedRoom.id);
-                                        }}
-                                      >
-                                        <span>
-                                          <strong>{suggestion.label}</strong>
-                                          <small>
-                                            {Math.round(suggestion.area)} sf · {Number((suggestion.spanEnd - suggestion.spanStart).toFixed(1))} lf
-                                            {` · ${suggestion.geometryLabel}`} · {suggestion.direction}-side · {selectedAdjacency}
-                                          </small>
-                                        </span>
-                                        <select
-                                          value={selectedAdjacency}
-                                          disabled={applied}
-                                          onClick={(event) => event.stopPropagation()}
-                                          onChange={(event) => {
-                                            const adjacency = event.target.value as TakeoffWallAdjacency;
-                                            setCeilingWallAdjacencies((current) => ({ ...current, [key]: adjacency }));
-                                            setCeilingWallAssemblies((current) => current[key] ? current : { ...current, [key]: defaultWallAssemblyForAdjacency(adjacency) });
-                                          }}
-                                        >
-                                          <option value="outside">Exterior</option>
-                                          <option value="attic">Attic / knee wall</option>
-                                          <option value="garage">Garage adjacent</option>
-                                          <option value="crawlspace">Crawlspace adjacent</option>
-                                          <option value="conditioned">Conditioned / adiabatic</option>
-                                          <option value="unknown">Unknown</option>
-                                        </select>
-                                        <select
-                                          value={selectedAssembly}
-                                          disabled={applied || suggestionNoLoad}
-                                          onClick={(event) => event.stopPropagation()}
-                                          onChange={(event) => setCeilingWallAssemblies((current) => ({ ...current, [key]: event.target.value }))}
-                                        >
-                                          {suggestionNoLoad ? <option value="NO_LOAD">NO_LOAD - Conditioned</option> : scheduleOptionsBySurface.wall.map((option) => (
-                                            <option key={option.id} value={option.code}>{option.code} - {option.description}</option>
-                                          ))}
-                                        </select>
-                                        <em>{applied ? "Added" : suggestionNoLoad ? "No load" : "Pending"}</em>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
                             </div>
                             {renderAreaWorkspace(selectedRoom, "ceiling")}
                           </div>
