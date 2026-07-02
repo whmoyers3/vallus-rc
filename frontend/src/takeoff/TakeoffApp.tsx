@@ -1685,7 +1685,12 @@ function componentIsConditionedWallProfile(component: TakeoffRoomComponent) {
 }
 
 function componentIsGeneratedEnvelopeWall(component: TakeoffRoomComponent) {
-  return componentIsGeneratedCeilingWall(component) || componentIsWallGapFill(component) || componentIsConditionedWallProfile(component) || component.source === "open-to-above-envelope" || component.source === "connected-volume";
+  return componentIsGeneratedCeilingWall(component) ||
+    componentIsWallGapFill(component) ||
+    componentIsConditionedWallProfile(component) ||
+    component.source === "transition-profile-difference" ||
+    component.source === "open-to-above-envelope" ||
+    component.source === "connected-volume";
 }
 
 function componentIsAcceptedEnvelopeCompilerWall(component: TakeoffRoomComponent) {
@@ -11676,6 +11681,7 @@ export function TakeoffApp() {
   }
 
   function envelopeDraftComponentSource(draft: EnvelopeComponentDraft): TakeoffRoomComponentSource {
+    if (draft.source === "transition-profile-difference") return "transition-profile-difference";
     if (draft.loadExempt || draft.adjacency === "conditioned") return "conditioned-wall-profile";
     if (draft.adjacency === "outside") return "exterior-perimeter";
     return "wall-gap-fill";

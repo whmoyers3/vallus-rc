@@ -85,12 +85,15 @@ const project = {
 
 const result = compileEnvelope(project);
 const transitionPanels = result.panels.filter((panel) => panel.source === "transition-profile-difference");
+const transitionDrafts = result.componentDrafts.filter((draft) => draft.source === "transition-profile-difference");
 const transitionIssues = result.issues.filter((issue) => issue.kind === "missing-transition-panel");
 const tinyOutsideRemainders = result.panels.filter((panel) => panel.source === "outside-remainder" && panel.area < 2);
 
 console.log(JSON.stringify({
   panelCount: result.panels.length,
+  draftCount: result.componentDrafts.length,
   transitionPanelCount: transitionPanels.length,
+  transitionDraftCount: transitionDrafts.length,
   transitionIssueCount: transitionIssues.length,
   transitionPanels: transitionPanels.map((panel) => ({
     room: panel.roomName,
@@ -111,8 +114,47 @@ if (transitionPanels.length < 2) {
   process.exit(1);
 }
 
+if (transitionDrafts.length < 2) {
+  console.error("Expected shared-profile transition panels to become rebuildable wall component drafts.");
+  process.exit(1);
+}
+
 if (transitionIssues.length !== transitionPanels.length) {
   console.error("Expected each transition panel to create a matching topology issue.");
+  process.exit(1);
+}
+
+const persistedTransitionProject = {
+  ...project,
+  floors: [{
+    ...floor,
+    rooms: floor.rooms.map((room) => (
+      room.id === "wic"
+        ? {
+            ...room,
+            components: transitionDrafts.map((draft, index) => ({
+              id: `persisted-transition-${index}`,
+              surface: "wall",
+              assembly: draft.assembly,
+              direction: draft.direction,
+              area: draft.area,
+              label: draft.label,
+              source: "transition-profile-difference",
+              adjacency: draft.adjacency,
+              boundary: draft.boundary,
+              geometryLabel: draft.geometryLabel,
+              wallProfilePolygons: draft.wallProfilePolygons,
+            })),
+          }
+        : room
+    )),
+  }],
+};
+const persistedTransitionResult = compileEnvelope(persistedTransitionProject);
+const persistedTransitionIssues = persistedTransitionResult.issues.filter((issue) => issue.kind === "missing-transition-panel");
+
+if (persistedTransitionIssues.length !== 0) {
+  console.error("Expected persisted transition wall components to satisfy transition-panel warnings.");
   process.exit(1);
 }
 

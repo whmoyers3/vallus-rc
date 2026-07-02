@@ -60,6 +60,8 @@ export type EnvelopeComponentDraft = {
   area: number;
   label: string;
   geometryLabel: string;
+  loadState: EnvelopePanelLoadState;
+  source: EnvelopePanel["source"];
   loadExempt?: boolean;
   spanStart?: number;
   spanEnd?: number;
@@ -126,6 +128,7 @@ const compilerGeneratedWallSources = new Set<TakeoffRoomComponent["source"]>([
   "exterior-perimeter",
   "wall-gap-fill",
   "conditioned-wall-profile",
+  "transition-profile-difference",
 ]);
 
 export function isEnvelopeCompilerGeneratedWall(component: TakeoffRoomComponent) {
@@ -655,7 +658,7 @@ function groupPanelsIntoDraftComponents(panels: EnvelopePanel[]) {
   const groups = new Map<string, EnvelopeComponentDraft>();
   for (const panel of panels) {
     if (panel.surface !== "wall" || !panel.direction) continue;
-    if (panel.loadState === "review" || panel.loadState === "gap") continue;
+    if (panel.loadState === "gap") continue;
     const assembly = panel.loadState === "no-load" ? "NO_LOAD" : panel.assembly ?? defaultWallAssemblyForAdjacency(panel.adjacency);
     const key = [
       panel.floorId,
@@ -665,9 +668,15 @@ function groupPanelsIntoDraftComponents(panels: EnvelopePanel[]) {
       panel.boundary,
       assembly,
       panel.loadState,
+      panel.source,
     ].join(":");
     const current = groups.get(key);
-    const geometryLabel = `${panel.direction} ${wallAdjacencyLabel(panel.adjacency).toLowerCase()} envelope compiler`;
+    const label = panel.source === "transition-profile-difference"
+      ? `${panel.direction} transition profile review`
+      : `${panel.direction} ${wallAdjacencyLabel(panel.adjacency).toLowerCase()}`;
+    const geometryLabel = panel.source === "transition-profile-difference"
+      ? `${panel.direction} shared profile transition envelope compiler`
+      : `${panel.direction} ${wallAdjacencyLabel(panel.adjacency).toLowerCase()} envelope compiler`;
     if (current) {
       current.area = round(current.area + panel.area);
       current.wallProfilePolygons.push(panel.polygon2d);
@@ -687,8 +696,10 @@ function groupPanelsIntoDraftComponents(panels: EnvelopePanel[]) {
         adjacency: panel.adjacency,
         boundary: panel.boundary,
         area: panel.area,
-        label: `${panel.direction} ${wallAdjacencyLabel(panel.adjacency).toLowerCase()}`,
+        label,
         geometryLabel,
+        loadState: panel.loadState,
+        source: panel.source,
         loadExempt: panel.loadState === "no-load",
         spanStart: panel.spanStart,
         spanEnd: panel.spanEnd,
@@ -709,6 +720,7 @@ function buildEnvelopeIssues(project: TakeoffProject, panels: EnvelopePanel[], d
   const issues: EnvelopeIssue[] = [];
   for (const draft of drafts) {
     if (draft.loadExempt) continue;
+    if (draft.source === "transition-profile-difference") continue;
     const floor = project.floors.find((entry) => entry.id === draft.floorId);
     const room = floor?.rooms.find((entry) => entry.id === draft.roomId);
     if (!floor || !room) continue;
@@ -736,6 +748,9 @@ function buildEnvelopeIssues(project: TakeoffProject, panels: EnvelopePanel[], d
     });
   }
   for (const panel of panels.filter((entry) => entry.source === "transition-profile-difference")) {
+    const floor = project.floors.find((entry) => entry.id === panel.floorId);
+    const room = floor?.rooms.find((entry) => entry.id === panel.roomId);
+    if (room && transitionPanelCoveredByRoomComponents(room, panel)) continue;
     issues.push({
       id: stableEnvelopeId(["issue", panel.id]),
       floorId: panel.floorId,
@@ -748,6 +763,25 @@ function buildEnvelopeIssues(project: TakeoffProject, panels: EnvelopePanel[], d
   }
   issues.push(...buildPersistedWallProfileOverlapIssues(project));
   return issues;
+}
+
+function transitionPanelCoveredByRoomComponents(room: TakeoffRectRoom, panel: EnvelopePanel) {
+  const tolerance = Math.max(1, panel.area * 0.08);
+  let matchingArea = 0;
+  for (const component of roomComponents(room)) {
+    if (component.surface !== "wall") continue;
+    if (component.source !== "transition-profile-difference") continue;
+    if (component.direction !== panel.direction) continue;
+    if (component.wallProfilePolygons?.some((polygon) => polygon.length >= 3)) {
+      for (const polygon of component.wallProfilePolygons ?? []) {
+        const clipped = intersection([pointsToClipPolygon(polygon)], [pointsToClipPolygon(panel.polygon2d)]);
+        for (const { area } of simplePolygonsFromMultiPolygon(clipped)) matchingArea += area;
+      }
+      continue;
+    }
+    matchingArea += Math.max(0, component.area || 0);
+  }
+  return matchingArea >= panel.area - tolerance;
 }
 
 function buildPersistedWallProfileOverlapIssues(project: TakeoffProject): EnvelopeIssue[] {
