@@ -152,7 +152,7 @@ type PlanRect = { x: number; y: number; width: number; depth: number };
 type UnassignedCell = { x: number; y: number; width: number; depth: number; polygon?: TakeoffPoint[]; area?: number };
 type ModelViewPreset = "iso" | "front" | "rear" | "left" | "right";
 type ModelCameraMode = "orbit" | "fly" | "walkthrough";
-type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "interiorWalls" | "adjacentSpaces" | "bandJoists";
+type ModelLayerKey = "reference" | "windows" | "doors" | "ceilings" | "floors" | "walls" | "generatedPreview" | "interiorWalls" | "adjacentSpaces" | "bandJoists";
 type ModelSurfaceKind = "floor" | "ceiling" | "load-wall" | "interior-wall" | "knee-wall" | "window" | "door";
 type FloorViewOptions = {
   visible: boolean;
@@ -6600,6 +6600,7 @@ function TakeoffModelPreview({
     ceilings: true,
     floors: true,
     walls: true,
+    generatedPreview: true,
     interiorWalls: false,
     adjacentSpaces: true,
     bandJoists: true,
@@ -6823,6 +6824,11 @@ function TakeoffModelPreview({
     const interiorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9aa9b5, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.16, 0.94), side: THREE.DoubleSide });
     const selectedWallMaterial = new THREE.MeshPhongMaterial({ color: 0x0f5fa8, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.5, 0.96), side: THREE.DoubleSide });
     const selectedKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xc9332c, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.52, 0.96), side: THREE.DoubleSide });
+    const previewWallMaterial = new THREE.MeshPhongMaterial({ color: 0xb38a35, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.26, 0.74), side: THREE.DoubleSide });
+    const selectedPreviewWallMaterial = new THREE.MeshPhongMaterial({ color: 0xd4a53b, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.36, 0.84), side: THREE.DoubleSide });
+    const previewKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0x8a6fad, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.26, 0.74), side: THREE.DoubleSide });
+    const selectedPreviewKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xa982d4, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.36, 0.84), side: THREE.DoubleSide });
+    const previewInteriorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9f9a8a, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.18, 0.58), side: THREE.DoubleSide });
     const ceilingMaterial = new THREE.MeshPhongMaterial({ color: 0xcfe3ec, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.25, 0.72), side: THREE.DoubleSide });
     const adjacentFloorMaterial = new THREE.MeshPhongMaterial({ color: 0xd9c274, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.22, 0.68), side: THREE.DoubleSide });
     const adjacentWallMaterial = new THREE.MeshPhongMaterial({ color: 0xc59a49, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.24, 0.82), side: THREE.DoubleSide });
@@ -6842,6 +6848,9 @@ function TakeoffModelPreview({
     const passiveInteriorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x7e8a94, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.12, 0.48), side: THREE.DoubleSide });
     const passiveCeilingMaterial = new THREE.MeshPhongMaterial({ color: 0xaebfc8, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.14, 0.5), side: THREE.DoubleSide });
     const passiveKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0xa84642, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.22, 0.6), side: THREE.DoubleSide });
+    const passivePreviewWallMaterial = new THREE.MeshPhongMaterial({ color: 0x9a7f45, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.18, 0.48), side: THREE.DoubleSide });
+    const passivePreviewKneeWallMaterial = new THREE.MeshPhongMaterial({ color: 0x796a96, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.18, 0.48), side: THREE.DoubleSide });
+    const passivePreviewInteriorWallMaterial = new THREE.MeshPhongMaterial({ color: 0x8b887e, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.1, 0.38), side: THREE.DoubleSide });
     const passiveGlassMaterial = new THREE.MeshBasicMaterial({ color: 0x4f9ab8, transparent: true, opacity: modelComponentOpacity(0.38, 0.28), side: THREE.DoubleSide });
     const passiveDoorMaterial = new THREE.MeshBasicMaterial({ color: 0x6f5228, transparent: true, opacity: modelComponentOpacity(0.36, 0.5), side: THREE.DoubleSide });
     const bandJoistMaterial = new THREE.MeshPhongMaterial({ color: 0x587082, depthWrite: false, transparent: true, opacity: modelComponentOpacity(0.34, 0.74), side: THREE.DoubleSide });
@@ -6862,12 +6871,12 @@ function TakeoffModelPreview({
     };
     const envelopeMaterialForPanel = (panel: EnvelopePanel, selected: boolean, passive = false): THREE.Material => {
       if (panel.adjacency === "attic") {
-        if (passive) return passiveKneeWallMaterial;
-        return selected ? selectedKneeWallMaterial : kneeWallMaterial;
+        if (passive) return passivePreviewKneeWallMaterial;
+        return selected ? selectedPreviewKneeWallMaterial : previewKneeWallMaterial;
       }
-      if (panel.adjacency === "conditioned") return passive ? passiveInteriorWallMaterial : interiorWallMaterial;
-      if (passive) return passiveWallMaterial;
-      return selected ? selectedWallMaterial : wallMaterial;
+      if (panel.adjacency === "conditioned") return passive ? passivePreviewInteriorWallMaterial : previewInteriorWallMaterial;
+      if (passive) return passivePreviewWallMaterial;
+      return selected ? selectedPreviewWallMaterial : previewWallMaterial;
     };
     const addEnvelopeWallPanels = (
       targetFloor: TakeoffFloor,
@@ -6876,6 +6885,7 @@ function TakeoffModelPreview({
       selectable: boolean,
       passive = false,
     ) => {
+      if (!visibleLayers.generatedPreview) return false;
       if (roomUsesPersistedEnvelopeWallGeometry(sourceRoom)) return false;
       const panels = envelopePanelsForRoom(envelopeCompilation, targetFloor.id, sourceRoom.id)
         .filter((panel) => panel.surface === "wall" && panel.loadState !== "gap")
@@ -6959,23 +6969,28 @@ function TakeoffModelPreview({
               const baseWallComponent = roomSurfaceComponents(room, "wall").find((component) =>
                 component.direction === segment.direction && componentIsBaseWallArea(component)
               );
+              const isPreviewWall = !baseWallComponent;
+              if (isPreviewWall && !visibleLayers.generatedPreview) continue;
               const wallMesh = wallMeshForEdge(
                 segment.a,
                 segment.b,
                 center,
                 Math.max(baseWallHeight, 0.1),
-                componentIsAtticKneeWallTreatment(baseWallComponent) ? passiveKneeWallMaterial : passiveWallMaterial,
+                isPreviewWall
+                  ? passivePreviewWallMaterial
+                  : componentIsAtticKneeWallTreatment(baseWallComponent) ? passiveKneeWallMaterial : passiveWallMaterial,
               );
               wallMesh.position.y += yOffset;
               scene.add(wallMesh);
             }
-            const generatedWallParts = ceilingWallMeshPartsForRoom(otherFloor, wallRoom, center, otherFloor.defaultCeilingHeight ?? 9, passiveKneeWallMaterial, passiveWallMaterial);
+            const generatedWallParts = ceilingWallMeshPartsForRoom(otherFloor, wallRoom, center, otherFloor.defaultCeilingHeight ?? 9, passivePreviewKneeWallMaterial, passivePreviewWallMaterial);
             const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
             for (const part of generatedWallParts) {
               const component = generatedWallComponents.find((candidate) =>
                 (!part.source || candidate.source === part.source) &&
                 (!part.direction || candidate.direction === part.direction)
               );
+              if (!component && !visibleLayers.generatedPreview) continue;
               if (component?.loadExempt || component?.adjacency === "conditioned") continue;
               const treatment = componentWallTreatmentKind(component);
               if (treatment === "exterior") part.mesh.material = passiveWallMaterial;
@@ -6988,12 +7003,21 @@ function TakeoffModelPreview({
               scene.add(part.mesh);
             }
           }
-          for (const part of openToAboveWallExtensionMeshPartsForRoom(otherFloor, sourceRoom, floors, center, passiveWallMaterial, passiveKneeWallMaterial)) {
+          for (const part of openToAboveWallExtensionMeshPartsForRoom(otherFloor, sourceRoom, floors, center, passivePreviewWallMaterial, passivePreviewKneeWallMaterial)) {
+            const component = roomSurfaceComponents(room, "wall").find((candidate) =>
+              candidate.source === part.source &&
+              candidate.direction === part.direction &&
+              (!part.geometryLabel || candidate.geometryLabel === part.geometryLabel)
+            );
+            if (!component && !visibleLayers.generatedPreview) continue;
+            const treatment = componentWallTreatmentKind(component);
+            if (treatment === "exterior") part.mesh.material = passiveWallMaterial;
+            if (treatment === "attic") part.mesh.material = passiveKneeWallMaterial;
             part.mesh.position.y += yOffset;
             scene.add(part.mesh);
           }
         }
-        if (visibleLayers.interiorWalls) {
+        if (visibleLayers.interiorWalls && visibleLayers.generatedPreview) {
           const exposedSegments = roomExteriorSegments(otherFloor, room);
           const tolerance = Math.max(0.35, otherFloor.scale.feetPerGrid * 0.35);
           for (const edge of pointsToEdges(points)) {
@@ -7055,7 +7079,7 @@ function TakeoffModelPreview({
           const adjacentWallHeight = isVaultCeilingType(ceilingInfo.ceilingType) ? ceilingInfo.lowHeight : room.ceilingHeight;
           const porchRoofOnly = space.kind === "covered_porch";
           if (visibleLayers.floors && !porchRoofOnly) scene.add(createHorizontalShapeMesh(roomCorners(room), center, yOffset + 0.02, adjacentFloorMaterial));
-          if (visibleLayers.walls && !porchRoofOnly) {
+          if (visibleLayers.walls && visibleLayers.generatedPreview && !porchRoofOnly) {
             for (const edge of pointsToEdges(roomCorners(room))) {
               const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(adjacentWallHeight, 0.1), adjacentWallMaterial);
               wallMesh.position.y += yOffset;
@@ -7127,15 +7151,17 @@ function TakeoffModelPreview({
             const baseWallMaterial = componentIsAtticKneeWallTreatment(baseWallComponent)
               ? room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial
               : room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
+            const previewBaseWallMaterial = room.id === selectedRoomId ? selectedPreviewWallMaterial : previewWallMaterial;
             const profileRanges = wallProfileCoverageRangesForSegment(floor, room, segment, wallProfileComponents);
             const baseRanges = profileRanges.length > 0
               ? uncoveredSegmentRanges(profileRanges, segment.length)
               : [{ start: 0, end: segment.length }];
             for (const range of baseRanges) {
               if (range.end - range.start <= 0.25) continue;
+              if (!baseWallComponent && !visibleLayers.generatedPreview) continue;
               const rangeStart = pointAtSegmentDistance(segment, range.start);
               const rangeEnd = pointAtSegmentDistance(segment, range.end);
-              const wallMesh = wallMeshForEdge(rangeStart, rangeEnd, center, Math.max(baseWallHeight, 0.1), baseWallMaterial);
+              const wallMesh = wallMeshForEdge(rangeStart, rangeEnd, center, Math.max(baseWallHeight, 0.1), baseWallComponent ? baseWallMaterial : previewBaseWallMaterial);
               wallMesh.position.y += activeFloorYOffset;
               wallMesh.userData.roomId = room.id;
               wallMesh.userData.modelSurface = {
@@ -7157,13 +7183,16 @@ function TakeoffModelPreview({
           const wallRoom = roomFor3DCeilingWallParts(sourceRoom, room, baseWallHeight);
           const generatedExteriorWallMaterial = room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
           const generatedKneeWallMaterial = room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial;
-          const generatedWallParts = ceilingWallMeshPartsForRoom(floor, wallRoom, center, floor.defaultCeilingHeight ?? 9, generatedKneeWallMaterial, generatedExteriorWallMaterial);
+          const generatedPreviewExteriorWallMaterial = room.id === selectedRoomId ? selectedPreviewWallMaterial : previewWallMaterial;
+          const generatedPreviewKneeWallMaterial = room.id === selectedRoomId ? selectedPreviewKneeWallMaterial : previewKneeWallMaterial;
+          const generatedWallParts = ceilingWallMeshPartsForRoom(floor, wallRoom, center, floor.defaultCeilingHeight ?? 9, generatedPreviewKneeWallMaterial, generatedPreviewExteriorWallMaterial);
           const generatedWallComponents = roomSurfaceComponents(room, "wall").filter(componentIsGeneratedCeilingWall);
           for (const part of generatedWallParts) {
             const component = generatedWallComponents.find((candidate) =>
               (!part.source || candidate.source === part.source) &&
               (!part.direction || candidate.direction === part.direction)
             );
+            if (!component && !visibleLayers.generatedPreview) continue;
             if (component?.loadExempt || component?.adjacency === "conditioned") continue;
             const treatment = componentWallTreatmentKind(component);
             const modelKind = treatment === "attic"
@@ -7218,14 +7247,18 @@ function TakeoffModelPreview({
           sourceRoom,
           floors,
           center,
-          room.id === selectedRoomId ? selectedWallMaterial : wallMaterial,
-          room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial,
+          room.id === selectedRoomId ? selectedPreviewWallMaterial : previewWallMaterial,
+          room.id === selectedRoomId ? selectedPreviewKneeWallMaterial : previewKneeWallMaterial,
         )) {
           const component = roomSurfaceComponents(room, "wall").find((candidate) =>
             candidate.source === part.source &&
             candidate.direction === part.direction &&
             (!part.geometryLabel || candidate.geometryLabel === part.geometryLabel)
           );
+          if (!component && !visibleLayers.generatedPreview) continue;
+          const treatment = componentWallTreatmentKind(component);
+          if (treatment === "exterior") part.mesh.material = room.id === selectedRoomId ? selectedWallMaterial : wallMaterial;
+          if (treatment === "attic") part.mesh.material = room.id === selectedRoomId ? selectedKneeWallMaterial : kneeWallMaterial;
           part.mesh.position.y += activeFloorYOffset;
           part.mesh.userData.roomId = room.id;
           part.mesh.userData.modelSurface = {
@@ -7247,7 +7280,7 @@ function TakeoffModelPreview({
         }
       }
 
-      if (visibleLayers.interiorWalls) {
+      if (visibleLayers.interiorWalls && visibleLayers.generatedPreview) {
         const baseWallHeight = baseEnvelopeHeightForWallSuggestion(floor, sourceRoom);
         const exposedSegments = roomExteriorSegments(floor, room);
         const tolerance = Math.max(0.35, floor.scale.feetPerGrid * 0.35);
@@ -7398,7 +7431,7 @@ function TakeoffModelPreview({
         scene.add(floorMesh);
       }
 
-      if (visibleLayers.walls && !porchRoofOnly) {
+      if (visibleLayers.walls && visibleLayers.generatedPreview && !porchRoofOnly) {
         for (const edge of pointsToEdges(points)) {
           const wallMesh = wallMeshForEdge(edge.a, edge.b, center, Math.max(adjacentWallHeight, 0.1), selected ? adjacentSelectedMaterial : adjacentWallMaterial);
           wallMesh.position.y += activeFloorYOffset;
@@ -8013,6 +8046,7 @@ function TakeoffModelPreview({
           ["floors", "Floor plates"],
           ["ceilings", "Ceilings"],
           ["walls", "Exterior walls"],
+          ["generatedPreview", "Geometry preview"],
           ["bandJoists", "Band joists"],
           ["interiorWalls", "Interior walls"],
           ["adjacentSpaces", "Adjacent spaces"],
@@ -8040,6 +8074,7 @@ function TakeoffModelPreview({
             ceilings: true,
             floors: true,
             walls: true,
+            generatedPreview: true,
             interiorWalls: true,
             adjacentSpaces: true,
             bandJoists: true,
