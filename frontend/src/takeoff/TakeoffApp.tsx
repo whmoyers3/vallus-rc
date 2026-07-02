@@ -2603,6 +2603,11 @@ function shortPointLabel(point: TakeoffPoint) {
   return `${Number(point.x.toFixed(2))}, ${Number(point.y.toFixed(2))}`;
 }
 
+function traceQaLengthLabel(length: number) {
+  if (length > 0 && length < 0.01) return "<0.01";
+  return Number(length.toFixed(2)).toString();
+}
+
 function traceQaTarget(floor: TakeoffFloor): TakeoffValidationIssue["target"] {
   return { type: "floor", floorId: floor.id };
 }
@@ -2652,6 +2657,14 @@ function traceQaFocusPoint(issue: TakeoffValidationIssue): TakeoffPoint | null {
     const b = pointFromTraceQaEvidence(evidence.b);
     return averagedTraceQaPoint([a, b].filter((point): point is TakeoffPoint => Boolean(point)));
   }
+  if (category === "tiny-segment-group") {
+    const segments = Array.isArray(evidence.segments) ? evidence.segments : [];
+    const segmentPoints = segments.flatMap((segment) => [
+      nestedTraceQaPoint(segment, "a"),
+      nestedTraceQaPoint(segment, "b"),
+    ]).filter((point): point is TakeoffPoint => Boolean(point));
+    return averagedTraceQaPoint(segmentPoints);
+  }
   if (category === "close-point-cluster") {
     const first = nestedTraceQaPoint(evidence.first, "point");
     const second = nestedTraceQaPoint(evidence.second, "point");
@@ -2680,24 +2693,44 @@ function traceGeometryQaIssues(floor: TakeoffFloor): TakeoffValidationIssue[] {
   const tinySegmentFt = 0.5;
   const narrowParallelGapFt = 3;
 
+  const tinySegmentsBySource = new Map<string, TraceQaSegment[]>();
   for (const segment of segmentSources) {
+    if (segment.length > tinySegmentFt) continue;
+    const key = `${segment.sourceType}:${segment.sourceId}`;
+    tinySegmentsBySource.set(key, [...(tinySegmentsBySource.get(key) ?? []), segment]);
+  }
+  for (const segments of tinySegmentsBySource.values()) {
     if (issues.length >= maxFindings) break;
-    if (segment.length <= tinySegmentFt) {
-      issues.push(traceQaIssue(
-        floor,
-        `${segment.sourceLabel} has a ${Number(segment.length.toFixed(2))} ft trace segment that may create a tiny wall panel.`,
-        {
-          category: "tiny-segment",
-          sourceType: segment.sourceType,
-          sourceId: segment.sourceId,
-          sourceLabel: segment.sourceLabel,
-          segmentIndex: segment.segmentIndex,
-          length: Number(segment.length.toFixed(3)),
-          a: segment.a,
-          b: segment.b,
-        },
-      ));
-    }
+    const sortedSegments = [...segments].sort((first, second) => first.length - second.length);
+    const shortest = sortedSegments[0];
+    const count = sortedSegments.length;
+    const segmentEvidence = sortedSegments.map((segment) => ({
+      sourceType: segment.sourceType,
+      sourceId: segment.sourceId,
+      sourceLabel: segment.sourceLabel,
+      segmentIndex: segment.segmentIndex,
+      length: Number(segment.length.toFixed(3)),
+      a: segment.a,
+      b: segment.b,
+    }));
+    issues.push(traceQaIssue(
+      floor,
+      count === 1
+        ? `${shortest.sourceLabel} has a ${traceQaLengthLabel(shortest.length)} ft trace segment that may create a tiny wall panel.`
+        : `${shortest.sourceLabel} has ${count} tiny trace segments; shortest is ${traceQaLengthLabel(shortest.length)} ft. These may create tiny wall panels.`,
+      {
+        category: count === 1 ? "tiny-segment" : "tiny-segment-group",
+        sourceType: shortest.sourceType,
+        sourceId: shortest.sourceId,
+        sourceLabel: shortest.sourceLabel,
+        segmentIndex: shortest.segmentIndex,
+        count,
+        length: Number(shortest.length.toFixed(3)),
+        a: shortest.a,
+        b: shortest.b,
+        segments: segmentEvidence,
+      },
+    ));
   }
 
   for (let firstIndex = 0; firstIndex < pointSources.length && issues.length < maxFindings; firstIndex += 1) {
@@ -8650,7 +8683,7 @@ export function TakeoffApp() {
     setHoveredPointTarget(null);
     setSelectedPointTarget(null);
     setHoveredInsertTarget(null);
-    setMessage("Point Edit on. Drag a red point to move it, or click a highlighted edge to add a point.");
+    setMessage("Point Edit on. Drag a red point to move it, or click a highlighted edge to add a point. Nearby points snap together automatically.");
   }
 
   function disablePointEditMode(showMessage = true) {
@@ -11968,12 +12001,20 @@ export function TakeoffApp() {
     return room && component ? projectedOpeningPlacement(floor, point, room, component) : null;
   }
 
+  function tracePointSnapThresholdFt() {
+    return Math.max(1, floor.scale.gridSnapInches / 12);
+  }
+
+  function traceSegmentSnapThresholdFt() {
+    return Math.max(0.75, floor.scale.gridSnapInches / 12);
+  }
+
   function precisionTargetPointForCursor(point: TakeoffPoint, shiftKey: boolean) {
     if (dragState?.kind === "adjacent" || (workflowStep === "trace" && adjacentDrawMode)) {
       return adjacentSpacePointForEvent(point, shiftKey);
     }
     if (dragState?.kind === "move-point") {
-      return snapToExistingGeometry(point, { includeFloorAlignment: dragState.target?.type === "exterior" });
+      return snapPointForMovableTarget(dragState.target, point);
     }
     if (dragState?.kind === "move-opening") {
       return projectedOpeningPointForTarget(dragState.openingTarget, point) ?? point;
@@ -12000,9 +12041,11 @@ export function TakeoffApp() {
   }
 
   function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean; excludeMovableTarget?: MovablePointTarget } = {}) {
-    const localThreshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
+    const pointThreshold = tracePointSnapThresholdFt();
+    const segmentThreshold = traceSegmentSnapThresholdFt();
     const floorAlignmentThreshold = Math.max(3, floor.scale.gridSnapInches / 12);
-    let best = { point, distance: Number.POSITIVE_INFINITY };
+    let bestVertex = { point, distance: Number.POSITIVE_INFINITY };
+    let bestSegment = { point, distance: Number.POSITIVE_INFINITY };
     const isExcludedVertex = (source: { type: "exterior" } | { type: "room"; id: string } | { type: "adjacent"; id: string } | null, index: number) => {
       const excluded = options.excludeMovableTarget;
       if (!excluded || !source) return false;
@@ -12015,7 +12058,8 @@ export function TakeoffApp() {
     );
     const considerSegmentSet = (
       points: TakeoffPoint[],
-      threshold: number,
+      vertexThreshold: number,
+      projectionThreshold: number,
       source: { type: "exterior" } | { type: "room"; id: string } | { type: "adjacent"; id: string } | null = null,
     ) => {
       if (points.length < 2) return;
@@ -12024,12 +12068,12 @@ export function TakeoffApp() {
         const end = points[(index + 1) % points.length];
         if (!isExcludedVertex(source, index)) {
           const startDistance = distance(point, start);
-          if (startDistance <= threshold && startDistance <= best.distance) best = { point: start, distance: startDistance };
+          if (startDistance <= vertexThreshold && startDistance <= bestVertex.distance) bestVertex = { point: start, distance: startDistance };
         }
         if (!segmentTouchesExcludedVertex(source, index, points.length)) {
           const projected = closestPointOnSegment(point, start, end);
           const projectedDistance = distance(point, projected);
-          if (projectedDistance <= threshold && projectedDistance <= best.distance) best = { point: projected, distance: projectedDistance };
+          if (projectedDistance <= projectionThreshold && projectedDistance <= bestSegment.distance) bestSegment = { point: projected, distance: projectedDistance };
         }
       }
     };
@@ -12041,18 +12085,22 @@ export function TakeoffApp() {
     ].filter((entry) => entry.points.length >= 2);
 
     for (const entry of segmentSets) {
-      considerSegmentSet(entry.points, localThreshold, entry.source);
+      considerSegmentSet(entry.points, pointThreshold, segmentThreshold, entry.source);
     }
 
     if (options.includeFloorAlignment && floor.floorAlignmentSnapEnabled !== false) {
       for (const entry of [nearestFloorByElevation(floor, floors, "below"), nearestFloorByElevation(floor, floors, "above")]) {
         if (!entry) continue;
         const exteriorPoints = exteriorRingPoints(entry);
-        if (polygonArea(exteriorPoints) > 0.5) considerSegmentSet(exteriorPoints, floorAlignmentThreshold);
+        if (polygonArea(exteriorPoints) > 0.5) considerSegmentSet(exteriorPoints, floorAlignmentThreshold, floorAlignmentThreshold);
       }
     }
 
-    const snapped = Number.isFinite(best.distance) ? best.point : point;
+    const snapped = Number.isFinite(bestVertex.distance)
+      ? bestVertex.point
+      : Number.isFinite(bestSegment.distance)
+        ? bestSegment.point
+        : point;
     return { x: Number(snapped.x.toFixed(3)), y: Number(snapped.y.toFixed(3)) };
   }
 
@@ -12075,7 +12123,7 @@ export function TakeoffApp() {
   }
 
   function snapAdjacentSpacePoint(point: TakeoffPoint) {
-    const threshold = 5;
+    const threshold = tracePointSnapThresholdFt();
     const exteriorCorners = cornerPoints(exteriorRingPoints(floor));
     let best = { point, distance: threshold };
     for (const corner of exteriorCorners) {
@@ -12105,7 +12153,7 @@ export function TakeoffApp() {
   }
 
   function findMovablePoint(point: TakeoffPoint) {
-    const threshold = Math.max(0.75, floor.scale.gridSnapInches / 12);
+    const threshold = tracePointSnapThresholdFt();
     let bestTarget: MovablePointTarget | null = null;
     let bestDistance = threshold;
     const considerTarget = (target: MovablePointTarget, candidate: TakeoffPoint) => {
@@ -13260,7 +13308,10 @@ export function TakeoffApp() {
     if (dragState.kind === "move-opening") {
       moveOpening(dragState.openingTarget, point);
     }
-    setDragState((current) => (current ? { ...current, current: current.kind === "adjacent" ? adjacentSpacePointForEvent(point, event.shiftKey) : point } : current));
+    setDragState((current) => (current ? {
+      ...current,
+      current: current.kind === "adjacent" ? adjacentSpacePointForEvent(point, event.shiftKey) : point,
+    } : current));
   }
 
   function handleCanvasPointerUp(event: React.PointerEvent<SVGSVGElement>) {
@@ -13389,7 +13440,7 @@ export function TakeoffApp() {
     setWorkflowStep("trace");
     setTraceTool("select");
     setZoom(maxPlanZoom);
-    setMessage("Trace QA review opened at max zoom. Hold Option/Alt for the loupe while checking close points.");
+    setMessage("Trace QA review opened at max zoom. Points snap to nearby vertices by default; hold Option/Alt for the loupe.");
   }
 
   function clampPrecisionLoupeZoom(value: number) {
@@ -14012,7 +14063,7 @@ export function TakeoffApp() {
       return {
         tone: "active" as const,
         title: "Point Edit",
-        body: "Drag a red point to move it. Hover an edge for the add-point marker. Q or Esc exits; Delete removes a selected point when the shape remains valid.",
+        body: "Drag a red point to move it. Hover an edge for the add-point marker. Points snap to nearby vertices by default; Option/Alt only opens the loupe.",
       };
     }
     if (traceTool === "exterior" && !floor.perimeterLocked) {
@@ -14085,7 +14136,10 @@ export function TakeoffApp() {
     return point ? screenPointForPlanPoint(point) : null;
   })() : null;
   const pointEditDragRawPoint = pointEditMode && dragState?.kind === "move-point" ? dragState.current : null;
-  const pointEditDragSnapPoint = pointEditDragRawPoint ? snapPointForMovableTarget(dragState?.kind === "move-point" ? dragState.target : undefined, pointEditDragRawPoint) : null;
+  const pointEditDragSnapPoint = pointEditDragRawPoint ? snapPointForMovableTarget(
+    dragState?.kind === "move-point" ? dragState.target : undefined,
+    pointEditDragRawPoint,
+  ) : null;
   const pointEditDragRawScreenPoint = pointEditDragRawPoint ? screenPointForPlanPoint(pointEditDragRawPoint) : null;
   const pointEditDragSnapScreenPoint = pointEditDragSnapPoint ? screenPointForPlanPoint(pointEditDragSnapPoint) : null;
   const pointEditDragHasSnapOffset = Boolean(pointEditDragRawPoint && pointEditDragSnapPoint && distance(pointEditDragRawPoint, pointEditDragSnapPoint) > 0.02);
