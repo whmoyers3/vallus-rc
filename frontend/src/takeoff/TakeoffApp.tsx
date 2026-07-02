@@ -12322,7 +12322,7 @@ export function TakeoffApp() {
     return point;
   }
 
-  function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean; excludeMovableTarget?: MovablePointTarget } = {}) {
+  function snapToExistingGeometryResult(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean; excludeMovableTarget?: MovablePointTarget } = {}) {
     const pointThreshold = tracePointSnapThresholdFt();
     const segmentThreshold = traceSegmentSnapThresholdFt();
     const floorAlignmentThreshold = Math.max(3, floor.scale.gridSnapInches / 12);
@@ -12379,11 +12379,19 @@ export function TakeoffApp() {
     }
 
     const snapped = Number.isFinite(bestVertex.distance)
-      ? bestVertex.point
+      ? { point: bestVertex.point, kind: "vertex" as const, distance: bestVertex.distance }
       : Number.isFinite(bestSegment.distance)
-        ? bestSegment.point
-        : point;
-    return { x: Number(snapped.x.toFixed(3)), y: Number(snapped.y.toFixed(3)) };
+        ? { point: bestSegment.point, kind: "segment" as const, distance: bestSegment.distance }
+        : { point, kind: null, distance: Number.POSITIVE_INFINITY };
+    return {
+      point: { x: Number(snapped.point.x.toFixed(3)), y: Number(snapped.point.y.toFixed(3)) },
+      kind: snapped.kind,
+      distance: snapped.distance,
+    };
+  }
+
+  function snapToExistingGeometry(point: TakeoffPoint, options: { includeFloorAlignment?: boolean; excludeActiveExterior?: boolean; excludeMovableTarget?: MovablePointTarget } = {}) {
+    return snapToExistingGeometryResult(point, options).point;
   }
 
   function constrainPointToAngle(previous: TakeoffPoint | undefined, point: TakeoffPoint) {
@@ -12400,8 +12408,11 @@ export function TakeoffApp() {
   }
 
   function prepareCornerPoint(point: TakeoffPoint, previous: TakeoffPoint | undefined, constrainAngle: boolean, includeFloorAlignment = false, excludeActiveExterior = false) {
-    const snapped = snapToExistingGeometry(point, { includeFloorAlignment, excludeActiveExterior });
-    return constrainAngle ? constrainPointToAngle(previous, snapped) : snapped;
+    const snapResult = snapToExistingGeometryResult(point, { includeFloorAlignment, excludeActiveExterior });
+    if (snapResult.kind) return snapResult.point;
+    if (!constrainAngle) return snapResult.point;
+    const constrained = constrainPointToAngle(previous, point);
+    return snapToExistingGeometry(constrained, { includeFloorAlignment, excludeActiveExterior });
   }
 
   function snapAdjacentSpacePoint(point: TakeoffPoint) {
