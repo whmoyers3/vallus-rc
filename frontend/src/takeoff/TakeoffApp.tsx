@@ -2573,6 +2573,24 @@ type TraceQaSegment = {
   length: number;
 };
 
+type TraceQaPointRef = {
+  sourceType: TraceQaPoint["sourceType"];
+  sourceId: string;
+  sourceLabel: string;
+  pointIndex: number;
+  point?: TakeoffPoint;
+};
+
+type TraceQaSegmentRef = {
+  sourceType: TraceQaPoint["sourceType"];
+  sourceId: string;
+  sourceLabel: string;
+  segmentIndex: number;
+  length?: number;
+  a?: TakeoffPoint;
+  b?: TakeoffPoint;
+};
+
 function traceQaPointSources(floor: TakeoffFloor): TraceQaPoint[] {
   const sources: TraceQaPoint[] = [];
   const addPoints = (sourceType: TraceQaPoint["sourceType"], sourceId: string, sourceLabel: string, points: TakeoffPoint[]) => {
@@ -2638,6 +2656,166 @@ function pointFromTraceQaEvidence(value: unknown): TakeoffPoint | null {
 function nestedTraceQaPoint(value: unknown, key: string) {
   if (!value || typeof value !== "object") return null;
   return pointFromTraceQaEvidence((value as Record<string, unknown>)[key]);
+}
+
+function traceQaSourceTypeFromEvidence(value: unknown): TraceQaPoint["sourceType"] | null {
+  return value === "exterior" || value === "room" || value === "adjacent" ? value : null;
+}
+
+function traceQaPointRefFromEvidence(value: unknown): TraceQaPointRef | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  const sourceType = traceQaSourceTypeFromEvidence(candidate.sourceType);
+  const sourceId = typeof candidate.sourceId === "string" ? candidate.sourceId : "";
+  const pointIndex = typeof candidate.pointIndex === "number" && Number.isInteger(candidate.pointIndex) ? candidate.pointIndex : -1;
+  if (!sourceType || !sourceId || pointIndex < 0) return null;
+  return {
+    sourceType,
+    sourceId,
+    sourceLabel: typeof candidate.sourceLabel === "string" ? candidate.sourceLabel : sourceType,
+    pointIndex,
+    point: pointFromTraceQaEvidence(candidate.point) ?? undefined,
+  };
+}
+
+function traceQaSegmentRefFromEvidence(value: unknown): TraceQaSegmentRef | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  const sourceType = traceQaSourceTypeFromEvidence(candidate.sourceType);
+  const sourceId = typeof candidate.sourceId === "string" ? candidate.sourceId : "";
+  const segmentIndex = typeof candidate.segmentIndex === "number" && Number.isInteger(candidate.segmentIndex) ? candidate.segmentIndex : -1;
+  if (!sourceType || !sourceId || segmentIndex < 0) return null;
+  return {
+    sourceType,
+    sourceId,
+    sourceLabel: typeof candidate.sourceLabel === "string" ? candidate.sourceLabel : sourceType,
+    segmentIndex,
+    length: typeof candidate.length === "number" && Number.isFinite(candidate.length) ? candidate.length : undefined,
+    a: pointFromTraceQaEvidence(candidate.a) ?? undefined,
+    b: pointFromTraceQaEvidence(candidate.b) ?? undefined,
+  };
+}
+
+function traceQaMergeActionLabel(issue: TakeoffValidationIssue) {
+  if (issue.checkType !== "trace-geometry-qa") return null;
+  const category = issue.evidence?.category;
+  if (category === "close-point-cluster") return "Merge Points";
+  if (category === "tiny-segment") return "Collapse Segment";
+  if (category === "tiny-segment-group") return "Collapse Segments";
+  return null;
+}
+
+function normalizedTraceQaPoint(point: TakeoffPoint) {
+  return { x: Number(point.x.toFixed(3)), y: Number(point.y.toFixed(3)) };
+}
+
+function updateTraceSourcePoints(
+  floor: TakeoffFloor,
+  sourceType: TraceQaPoint["sourceType"],
+  sourceId: string,
+  updater: (points: TakeoffPoint[]) => TakeoffPoint[],
+) {
+  if (sourceType === "exterior") {
+    if (sourceId !== floor.id) return floor;
+    const exteriorPolygon = updater(floor.exteriorPolygon).map(normalizedTraceQaPoint);
+    return exteriorPolygon.length >= 3 ? { ...floor, exteriorPolygon, perimeterLocked: false } : floor;
+  }
+  if (sourceType === "room") {
+    return {
+      ...floor,
+      rooms: floor.rooms.map((room) => {
+        if (room.id !== sourceId) return room;
+        const polygon = updater(roomCorners(room)).map(normalizedTraceQaPoint);
+        if (polygon.length < 3) return room;
+        const bounds = polygonBounds(polygon);
+        return { ...room, ...bounds, polygon };
+      }),
+    };
+  }
+  return {
+    ...floor,
+    adjacentSpaces: (floor.adjacentSpaces ?? []).map((space) => {
+      if (space.id !== sourceId) return space;
+      const polygon = updater(adjacentSpaceCorners(space)).map(normalizedTraceQaPoint);
+      if (polygon.length < 3) return space;
+      const bounds = polygonBounds(polygon);
+      return { ...space, ...bounds, polygon };
+    }),
+  };
+}
+
+function applyTracePointRef(floor: TakeoffFloor, ref: TraceQaPointRef, nextPoint: TakeoffPoint) {
+  return updateTraceSourcePoints(floor, ref.sourceType, ref.sourceId, (points) => {
+    if (ref.pointIndex < 0 || ref.pointIndex >= points.length) return points;
+    return points.map((point, index) => (index === ref.pointIndex ? nextPoint : point));
+  });
+}
+
+function traceMergeTargetPoint(first: TraceQaPointRef, second: TraceQaPointRef) {
+  if (first.sourceType === "exterior" && first.point) return first.point;
+  if (second.sourceType === "exterior" && second.point) return second.point;
+  if (first.sourceType === "room" && second.sourceType === "adjacent" && first.point) return first.point;
+  if (second.sourceType === "room" && first.sourceType === "adjacent" && second.point) return second.point;
+  const points = [first.point, second.point].filter((point): point is TakeoffPoint => Boolean(point));
+  return averagedTraceQaPoint(points);
+}
+
+function traceSegmentMidpoint(segment: TraceQaSegmentRef) {
+  return segment.a && segment.b ? averagedTraceQaPoint([segment.a, segment.b]) : null;
+}
+
+function findTraceSegmentIndex(points: TakeoffPoint[], segment: TraceQaSegmentRef) {
+  if (points.length < 2) return -1;
+  const coordinateTolerance = 0.08;
+  if (segment.a && segment.b) {
+    for (let index = 0; index < points.length; index += 1) {
+      const nextIndex = (index + 1) % points.length;
+      const directMatch = distance(points[index], segment.a) <= coordinateTolerance && distance(points[nextIndex], segment.b) <= coordinateTolerance;
+      const reverseMatch = distance(points[index], segment.b) <= coordinateTolerance && distance(points[nextIndex], segment.a) <= coordinateTolerance;
+      if (directMatch || reverseMatch) return index;
+    }
+  }
+  const midpoint = traceSegmentMidpoint(segment);
+  const maxLength = Math.max(0.5, (segment.length ?? 0) + 0.25);
+  let bestIndex = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < points.length; index += 1) {
+    const nextIndex = (index + 1) % points.length;
+    const segmentLength = distance(points[index], points[nextIndex]);
+    if (segmentLength > maxLength) continue;
+    const candidateMidpoint = averagedTraceQaPoint([points[index], points[nextIndex]]);
+    const midpointDistance = midpoint && candidateMidpoint ? distance(midpoint, candidateMidpoint) : segmentLength;
+    if (midpointDistance < bestDistance) {
+      bestDistance = midpointDistance;
+      bestIndex = index;
+    }
+  }
+  if (bestIndex >= 0) return bestIndex;
+  return segment.segmentIndex >= 0 && segment.segmentIndex < points.length ? segment.segmentIndex : -1;
+}
+
+function collapseTraceSegments(floor: TakeoffFloor, segments: TraceQaSegmentRef[]) {
+  const grouped = new Map<string, TraceQaSegmentRef[]>();
+  for (const segment of segments) {
+    const key = `${segment.sourceType}:${segment.sourceId}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), segment]);
+  }
+  let nextFloor = floor;
+  for (const sourceSegments of grouped.values()) {
+    const first = sourceSegments[0];
+    nextFloor = updateTraceSourcePoints(nextFloor, first.sourceType, first.sourceId, (points) => {
+      let next = [...points];
+      for (const segment of [...sourceSegments].sort((a, b) => (a.length ?? 0) - (b.length ?? 0))) {
+        if (next.length <= 3) break;
+        const segmentIndex = findTraceSegmentIndex(next, segment);
+        if (segmentIndex < 0) continue;
+        const removeIndex = (segmentIndex + 1) % next.length;
+        next = next.filter((_, index) => index !== removeIndex);
+      }
+      return next;
+    });
+  }
+  return nextFloor;
 }
 
 function averagedTraceQaPoint(points: TakeoffPoint[]) {
@@ -9675,6 +9853,53 @@ export function TakeoffApp() {
     if (!activeValidationTarget) return;
     recordValidationDecision(activeValidationTarget, "dismissed");
     setActiveValidationTarget(null);
+  }
+
+  function applyTraceGeometryMergeSuggestion(issue: TakeoffValidationIssue, issueFloor: TakeoffFloor) {
+    if (issue.checkType !== "trace-geometry-qa" || !issue.evidence) return;
+    const category = issue.evidence.category;
+    let nextFocus = traceQaFocusPoint(issue);
+    let actionLabel = "Trace points merged";
+    const closePointMerge = category === "close-point-cluster"
+      ? (() => {
+          const first = traceQaPointRefFromEvidence(issue.evidence?.first);
+          const second = traceQaPointRefFromEvidence(issue.evidence?.second);
+          const targetPoint = first && second ? traceMergeTargetPoint(first, second) : null;
+          return first && second && targetPoint ? { first, second, targetPoint } : null;
+        })()
+      : null;
+    const segmentMerge = category === "tiny-segment" || category === "tiny-segment-group"
+      ? (() => {
+          const rawSegments = category === "tiny-segment-group" && Array.isArray(issue.evidence?.segments)
+            ? issue.evidence.segments
+            : [issue.evidence];
+          return rawSegments.map(traceQaSegmentRefFromEvidence).filter((segment): segment is TraceQaSegmentRef => Boolean(segment));
+        })()
+      : [];
+    const canApply = Boolean(closePointMerge || segmentMerge.length > 0);
+    if (!canApply) {
+      setMessage("That trace geometry suggestion could not be applied automatically.");
+      return;
+    }
+    if (closePointMerge) nextFocus = closePointMerge.targetPoint;
+    if (segmentMerge.length > 0) actionLabel = segmentMerge.length === 1 ? "Tiny trace segment collapsed" : `${segmentMerge.length} tiny trace segments collapsed`;
+    pushUndoSnapshot("trace geometry merge");
+    setFloors((current) => current.map((entry) => {
+      if (entry.id !== issueFloor.id) return entry;
+      if (closePointMerge) return applyTracePointRef(applyTracePointRef(entry, closePointMerge.first, closePointMerge.targetPoint), closePointMerge.second, closePointMerge.targetPoint);
+      if (segmentMerge.length > 0) return collapseTraceSegments(entry, segmentMerge);
+      return entry;
+    }));
+    setActiveFloorId(issueFloor.id);
+    setPlanReviewMode("plan");
+    setWorkflowStep("trace");
+    setTraceTool("select");
+    setActiveValidationTarget(null);
+    if (nextFocus) {
+      setZoom(maxPlanZoom);
+      setPendingPlanFocus({ floorId: issueFloor.id, point: nextFocus, zoom: maxPlanZoom });
+    }
+    setMessage(`${actionLabel}. Review the corrected points, then rebuild geometry if needed.`);
   }
 
   function updateRoomCeilingGeometry(roomId: string, patch: Partial<TakeoffRectRoom>) {
@@ -16740,7 +16965,7 @@ export function TakeoffApp() {
                   </button>
                 </div>
                 {adjacentDrawMode ? (
-                  <p className="takeoff-note">Drag a rectangle along the outside of conditioned space. Corners snap within 5 ft; hold Shift for precise placement, then release Shift during the drag to resume snapping.</p>
+                  <p className="takeoff-note">Drag a rectangle along the outside of conditioned space. Nearby corners snap automatically; hold Shift for precise placement, then release Shift during the drag to resume snapping.</p>
                 ) : (
                   <p className="takeoff-muted">Adjacent spaces tag exterior wall treatment without adding conditioned room area.</p>
                 )}
@@ -16802,6 +17027,7 @@ export function TakeoffApp() {
                     const { issue, floor: issueFloor, key: issueKey } = entry;
                     const previousEntry = visibleProjectValidation[listIndex - 1];
                     const showFloorDivider = !previousEntry || previousEntry.floor.id !== issueFloor.id;
+                    const traceMergeLabel = traceQaMergeActionLabel(issue);
                     return (
                       <div key={issueKey} className="takeoff-issue-stack">
                         {showFloorDivider && (
@@ -16817,6 +17043,13 @@ export function TakeoffApp() {
                         >
                           {issue.message}
                         </button>
+                        {traceMergeLabel && (
+                          <div className="takeoff-issue-actions">
+                            <button type="button" onClick={() => applyTraceGeometryMergeSuggestion(issue, issueFloor)}>
+                              {traceMergeLabel}
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })()
